@@ -307,7 +307,7 @@ def _cmdline_matches(pid: int, needle: str) -> Optional[bool]:
     return None
 
 
-def signal_process(
+def signal_daemon(
     koan_root: Path, process_name: str, sig: int, script: Optional[str] = None,
 ) -> bool:
     """Send *sig* to the running ``process_name`` daemon.
@@ -317,6 +317,11 @@ def signal_process(
     An *unverifiable* command line also blocks the signal — SIGUSR1/SIGUSR2
     kill a process that does not handle them — but is reported separately so
     the operator sees why the signal was withheld.
+
+    Distinct from the module's private :func:`_signal_process`, which signals a
+    daemon's whole **process group** (SIGTERM/SIGKILL for ``stop_processes``)
+    and proves identity from the pidfile mtime instead. This one signals the
+    single PID, for the runner-directed SIGUSR1/SIGUSR2 protocols.
 
     Returns True when the signal was delivered.
     """

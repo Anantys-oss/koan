@@ -33,9 +33,12 @@ new mission in the same repo. That is a live window, not a theoretical one:
 mission first, so a new bridge routinely drives an older runner. The runner
 therefore publishes ``.koan-run-caps`` (its PID, that process's start time, and
 one line per capability) *after* installing the handler and removes it on exit;
-``/restart --force`` only signals when :func:`runner_supports_force_signal`
-confirms the live process — PID *and* start time — advertises ``sigusr2``, and
-otherwise degrades to the polite restart the old runner does understand. The
+``/restart --force`` only signals when :func:`force_signal_support` confirms the
+live process — PID *and* start time — advertises ``sigusr2``. When nothing
+vouches for that process at all it degrades to the polite restart the old runner
+does understand, marker included, so the on-disk request matches what the
+operator is told; when a marker exists but cannot be verified it withholds only
+the signal and leaves the forced marker for the wait-loop poll. The
 start time is what makes the marker safe against its writer being SIGKILLed:
 that runner never reaches ``clear_runner_caps``, so a PID-only marker would
 vouch for whatever later reused the PID.
@@ -91,8 +94,12 @@ FORCE_SIGNAL_CAP = "sigusr2"
 # ``mission_scope._record_still_names_its_process``.
 CAPS_START_TOLERANCE = 30.0
 
-# One-shot guard so an unreadable marker logs once, not every poll tick.
-_force_read_error_logged = False
+# Throttle for the unreadable-marker log: the mission loop reads the marker
+# every poll tick, but a *persistent* read failure disables the forced-restart
+# fallback for the whole process lifetime, so it must keep saying so rather
+# than latching silent after the first tick.
+_force_read_error_logged_at: Optional[float] = None
+FORCE_READ_ERROR_LOG_INTERVAL = 300.0
 
 # Files written by request_restart() — the two live per-consumer markers only.
 _WRITE_TARGETS = (RESTART_BRIDGE_FILE, RESTART_RUN_FILE)
@@ -156,10 +163,14 @@ def is_force_restart(koan_root: str, target: str, since: float = 0) -> bool:
 
     A missing marker is the normal case. Any *other* read failure (EACCES on
     a marker written by a differently-privileged path, EIO on the mount)
-    silently disables this fallback, so it is logged — once per process, since
-    the mission loop calls this every poll tick.
+    disables this fallback, so it is logged — throttled to one line per
+    ``FORCE_READ_ERROR_LOG_INTERVAL``, since the mission loop calls this every
+    poll tick. Throttled rather than latched one-shot on purpose: a
+    persistently unreadable marker keeps the fallback dead for every later
+    ``/restart --force`` too, and a single line at the start of a long process
+    life is not something an operator will still see then.
     """
-    global _force_read_error_logged
+    global _force_read_error_logged_at
     path = _marker_path(koan_root, target)
     try:
         if since > 0 and os.path.getmtime(path) <= since:
@@ -169,8 +180,10 @@ def is_force_restart(koan_root: str, target: str, since: float = 0) -> bool:
     except FileNotFoundError:
         return False
     except OSError as exc:
-        if not _force_read_error_logged:
-            _force_read_error_logged = True
+        now = time.monotonic()
+        last = _force_read_error_logged_at
+        if last is None or now - last >= FORCE_READ_ERROR_LOG_INTERVAL:
+            _force_read_error_logged_at = now
             from app.run_log import log
             log("error", f"Cannot read restart marker for forced restart: {exc}")
         return False
@@ -213,8 +226,15 @@ def declare_runner_caps(koan_root: str, pid: int) -> None:
     rollback to a runner image that predates this protocol.
 
     A host where the start time cannot be read publishes the marker without
-    one; :func:`runner_supports_force_signal` then fails closed and
-    ``/restart --force`` degrades to the polite restart.
+    one; :func:`force_signal_support` then reports ``"unknown"`` and
+    ``/restart --force`` withholds the signal but still relies on the forced
+    marker the mission wait loop polls.
+
+    A write failure is logged, never raised: this marker is an *optional*
+    capability advertisement whose absence has a defined degradation, whereas
+    an escaping ``OSError`` (ENOSPC/EDQUOT on the KOAN_ROOT mount) would
+    propagate out of ``main_loop`` and turn a missing marker into a startup
+    crash-loop.
     """
     from app.utils import atomic_write
 
@@ -225,11 +245,15 @@ def declare_runner_caps(koan_root: str, pid: int) -> None:
         log(
             "warning",
             f"Cannot read start time for runner PID {pid}; /restart --force "
-            "will degrade to a polite restart",
+            "cannot verify this runner and will not signal it",
         )
     else:
         body += f"start={started_at}\n"
-    atomic_write(Path(koan_root) / RUN_CAPS_FILE, body + f"{FORCE_SIGNAL_CAP}\n")
+    try:
+        atomic_write(Path(koan_root) / RUN_CAPS_FILE, body + f"{FORCE_SIGNAL_CAP}\n")
+    except OSError as exc:
+        from app.run_log import log
+        log("error", f"Could not publish runner caps marker: {exc}")
 
 
 def clear_runner_caps(koan_root: str) -> None:
@@ -240,7 +264,7 @@ def clear_runner_caps(koan_root: str) -> None:
     root, EIO on an NFS mount) would skip the rest of the cleanup — notably
     ``release_pidfile`` — and, worse, *replace* the in-flight
     ``SystemExit(RESTART_EXIT_CODE)``, turning a forced restart into a crash.
-    A marker left behind is harmless: :func:`runner_supports_force_signal`
+    A marker left behind is harmless: :func:`force_signal_support`
     re-verifies the live process before trusting it.
     """
     try:
@@ -252,37 +276,57 @@ def clear_runner_caps(koan_root: str) -> None:
         log("error", f"Could not withdraw runner caps marker: {exc}")
 
 
-def runner_supports_force_signal(koan_root: str, pid: int) -> bool:
-    """True when the runner at *pid* advertises the SIGUSR2 forced-restart cap.
+def force_signal_support(koan_root: str, pid: int) -> str:
+    """Classify the runner at *pid* for the SIGUSR2 forced-restart capability.
 
     Verifies the *process*, not just the PID: the marker's recorded start time
     must still match the live one, so a marker orphaned by a killed runner
     cannot vouch for whatever later reused its PID.
 
-    Fails closed on every uncertainty — missing, unreadable, or stale marker,
-    a start time that is absent from the body or unreadable from the live
-    process — so ``/restart --force`` degrades to the polite restart instead
-    of hard-killing a runner that has no SIGUSR2 handler.
+    Three outcomes, because the two negative ones call for different operator
+    behaviour and a different on-disk restart request:
+
+    * ``"yes"`` — the live process advertises ``sigusr2``: signal it.
+    * ``"no"`` — nothing vouches for it (no marker, or one that names another
+      process/incarnation). That is a pre-upgrade runner or a stale record, so
+      it very likely has no forced-marker poll either: the caller MUST fall
+      back to a *polite* restart request, not just withhold the signal.
+    * ``"unknown"`` — a marker exists for this PID and advertises the cap, but
+      the identity cannot be confirmed (unreadable caps file, no start time in
+      the body or unreadable from the live process). Withhold the signal, but
+      the forced marker is still worth writing: this is overwhelmingly a
+      capable runner on a host that cannot report start times.
+
+    Signalling therefore happens only on ``"yes"`` — every uncertainty fails
+    closed, so a runner with no SIGUSR2 handler is never hard-killed.
     """
     try:
         with open(os.path.join(koan_root, RUN_CAPS_FILE), encoding="utf-8") as fh:
             lines = {line.strip() for line in fh}
+    except FileNotFoundError:
+        return "no"
     except OSError:
-        return False
+        # EACCES/EIO: a capable runner may well have published a marker we
+        # simply cannot read. Do not claim it predates forced restart.
+        return "unknown"
     if f"pid={pid}" not in lines or FORCE_SIGNAL_CAP not in lines:
-        return False
+        return "no"
     declared = next(
         (line[len("start="):] for line in lines if line.startswith("start=")), None,
     )
     if declared is None:
-        return False
+        return "unknown"
     live = _runner_start_time(pid)
     if live is None:
-        return False
+        return "unknown"
     try:
-        return abs(live - float(declared)) <= CAPS_START_TOLERANCE
+        matches = abs(live - float(declared)) <= CAPS_START_TOLERANCE
     except ValueError:
-        return False
+        return "unknown"
+    # A mismatch means the record names a different incarnation than the live
+    # process — the PID-reuse case the start time exists to catch.
+    return "yes" if matches else "no"
+
 
 
 def check_restart(

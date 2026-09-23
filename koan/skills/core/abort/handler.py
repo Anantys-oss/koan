@@ -14,7 +14,7 @@ from app.skills import SkillContext
 
 def handle(ctx: SkillContext) -> str:
     """Handle /abort command."""
-    from app.pid_manager import signal_process
+    from app.pid_manager import signal_daemon
     from app.run_log import log
     from app.signals import ABORT_FILE
     from app.utils import atomic_write
@@ -25,9 +25,9 @@ def handle(ctx: SkillContext) -> str:
     # Wake the runner immediately via SIGUSR1. The runner's handler kills
     # the active Claude subprocess and clears the abort file. If the runner
     # is paused / between missions, the signal is harmless (no claude_proc).
-    # signal_process guards against a recycled PID belonging to an unrelated
+    # signal_daemon guards against a recycled PID belonging to an unrelated
     # process (SIGUSR1's default disposition would kill it).
-    if signal_process(ctx.koan_root, "run", sig_mod.SIGUSR1):
+    if signal_daemon(ctx.koan_root, "run", sig_mod.SIGUSR1):
         return "⏭️ Abort requested. Current mission will be aborted and moved to Failed."
 
     # Signal not delivered (runner down, stale pidfile, cmdline unverifiable).
@@ -38,5 +38,8 @@ def handle(ctx: SkillContext) -> str:
     )
     return (
         "⏭️ Abort requested. Could not signal the runner — falling back to the "
-        "abort-file poll (up to 30 s), and the mission is then moved to Failed."
+        "abort file: the mission wait loop reads it at its next poll (up to "
+        "30 s) and the mission is then moved to Failed. A skill mission "
+        "(/review, /fix, /implement) has no such poll, so it runs to "
+        "completion."
     )

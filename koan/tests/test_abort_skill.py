@@ -107,7 +107,10 @@ class TestAbortHandler:
              patch("app.run_log.log") as mock_log:
             result = abort_handler.handle(ctx)
 
-        assert "abort-file poll" in result
+        assert "falling back to the abort file" in result
+        # The reply must scope the fallback to the path that actually polls it:
+        # a skill mission blocks on its child's stdout with no poll tick.
+        assert "skill mission" in result
         assert mock_log.called
 
     def test_signal_skipped_when_cmdline_is_unrelated(self, tmp_path, monkeypatch):

@@ -157,9 +157,11 @@ marker (`.koan-restart-run`); stale legacy `.koan-restart` markers are ignored.
 A restart marker is normally honored **between** missions, so `/restart` never
 interrupts work in flight. `/restart --force` writes the same markers with an
 extra `force` line and sends SIGUSR2 to the runner: the signal handler kills the
-mission subprocess and exits with the restart code immediately, and the marker
-is re-read inside the mission wait loop as a fallback if the signal is lost.
-The interrupted mission stays In Progress and is re-queued by `recover.py` on the
+mission subprocess and exits with the restart code immediately. If the signal is
+lost, the marker is re-read inside `run_claude_task`'s mission wait loop as a
+fallback — but only there: a skill-dispatch mission (`/review`, `/fix`,
+`/implement`) blocks on its child's output with no poll tick, so it is not
+killed by the marker and restarts once it ends. The interrupted mission stays In Progress and is re-queued by `recover.py` on the
 next startup — or escalated to Failed if its crash count has already reached
 `max_crash_retries`, since the forced kill counts as a crash. The bridge needs no
 forced path — it re-execs on its next poll tick.
@@ -178,9 +180,16 @@ and a `sigusr2` line) right after installing the handler and removes it on exit;
 start time matters because a runner that is SIGKILLed or OOM-killed never gets to
 remove the file: without it, a later runner that happened to reuse the PID —
 including one rolled back to a version with no handler — would be vouched for by
-the dead one's marker. Whenever the marker cannot be matched to the live process,
-`/restart --force` degrades to the polite restart — the behavior every runner
-understands — and says so in the reply.
+the dead one's marker.
+
+The capability is resolved **before** the markers are written, so what lands on
+disk always matches the reply. When nothing vouches for the live process at all
+(no marker, or one naming another process), `/restart --force` writes a *polite*
+restart request — the behavior every runner understands — and says so. When a
+marker exists but its identity cannot be confirmed (unreadable caps file, or a
+host that cannot report process start times), the runner is almost certainly
+capable: only the signal is withheld, the forced marker stays, and the reply
+describes that weaker fallback instead of promising a kill.
 
 The loop writes real-time state to status files so the bridge, dashboard, and
 commands can report progress without directly controlling the runner.

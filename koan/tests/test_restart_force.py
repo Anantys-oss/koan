@@ -24,9 +24,9 @@ from app.restart_manager import (
     RUN_CAPS_FILE,
     clear_runner_caps,
     declare_runner_caps,
+    force_signal_support,
     is_force_restart,
     request_restart,
-    runner_supports_force_signal,
 )
 from app.skills import SkillContext
 
@@ -80,6 +80,13 @@ def sandbox_run_claude_task(tmp_path, monkeypatch):
     scratch.mkdir(mode=0o700, parents=True, exist_ok=True)
     monkeypatch.setattr("app.utils.sweep_stray_tmp_dirs", lambda *a, **k: [])
     monkeypatch.setattr("app.page_cache.run_reclaim", lambda *a, **k: None)
+    # Unpinned, ``launch_scoped`` probes and then creates a real transient
+    # ``systemd-run --scope`` unit on any host with a live user manager — a
+    # real external boundary, and a different code path than in a
+    # systemd-less container. ``None`` forces the session-mode path, which is
+    # what these tests actually exercise.
+    from app import mission_scope
+    monkeypatch.setattr(mission_scope, "systemd_run", lambda: (None, []))
 
     def fake_popen_cli(cmd, provider=None, launcher=None, cli_lock=None,
                        **kwargs):
@@ -135,18 +142,41 @@ class TestForceMarker:
         import app.restart_manager as rm
 
         request_restart(str(tmp_path), force=True)
-        monkeypatch.setattr(rm, "_force_read_error_logged", False)
+        monkeypatch.setattr(rm, "_force_read_error_logged_at", None)
         with patch("builtins.open", side_effect=PermissionError("EACCES")), \
              patch("app.run_log.log") as mock_log:
             assert is_force_restart(str(tmp_path), target="run") is False
         assert mock_log.called
         assert mock_log.call_args[0][0] == "error"
 
+    def test_unreadable_marker_keeps_reporting_after_the_throttle(
+            self, tmp_path, monkeypatch):
+        """A persistent failure must not go silent for the process lifetime.
+
+        The fallback stays dead for every later ``/restart --force`` too, so
+        the log is throttled, not latched one-shot.
+        """
+        import app.restart_manager as rm
+
+        request_restart(str(tmp_path), force=True)
+        monkeypatch.setattr(rm, "_force_read_error_logged_at", None)
+        clock = [1000.0]
+        monkeypatch.setattr(rm.time, "monotonic", lambda: clock[0])
+        with patch("builtins.open", side_effect=PermissionError("EACCES")), \
+             patch("app.run_log.log") as mock_log:
+            is_force_restart(str(tmp_path), target="run")
+            clock[0] += 1  # next poll tick — still inside the throttle
+            is_force_restart(str(tmp_path), target="run")
+            assert mock_log.call_count == 1
+            clock[0] += rm.FORCE_READ_ERROR_LOG_INTERVAL
+            is_force_restart(str(tmp_path), target="run")
+            assert mock_log.call_count == 2
+
     def test_missing_marker_is_not_logged(self, tmp_path, monkeypatch):
         """Absence is the normal case — no error noise every poll tick."""
         import app.restart_manager as rm
 
-        monkeypatch.setattr(rm, "_force_read_error_logged", False)
+        monkeypatch.setattr(rm, "_force_read_error_logged_at", None)
         with patch("app.run_log.log") as mock_log:
             assert is_force_restart(str(tmp_path), target="run") is False
         mock_log.assert_not_called()
@@ -156,21 +186,21 @@ class TestRunnerCaps:
     """The runner advertises SIGUSR2 only while it actually handles it."""
 
     def test_no_marker_means_unsupported(self, tmp_path):
-        assert runner_supports_force_signal(str(tmp_path), 4242) is False
+        assert force_signal_support(str(tmp_path), 4242) != "yes"
 
     def test_declared_pid_supports_the_signal(self, tmp_path):
         declare_runner_caps(str(tmp_path), 4242)
-        assert runner_supports_force_signal(str(tmp_path), 4242) is True
+        assert force_signal_support(str(tmp_path), 4242) == "yes"
 
     def test_marker_from_another_incarnation_is_ignored(self, tmp_path):
         """A stale marker must not vouch for a different (older) runner."""
         declare_runner_caps(str(tmp_path), 4242)
-        assert runner_supports_force_signal(str(tmp_path), 777) is False
+        assert force_signal_support(str(tmp_path), 777) != "yes"
 
     def test_cleared_marker_withdraws_support(self, tmp_path):
         declare_runner_caps(str(tmp_path), 4242)
         clear_runner_caps(str(tmp_path))
-        assert runner_supports_force_signal(str(tmp_path), 4242) is False
+        assert force_signal_support(str(tmp_path), 4242) != "yes"
 
     def test_clearing_a_missing_marker_is_a_noop(self, tmp_path):
         clear_runner_caps(str(tmp_path))  # must not raise
@@ -192,7 +222,7 @@ class TestRunnerCaps:
     def test_unreadable_marker_fails_closed(self, tmp_path):
         declare_runner_caps(str(tmp_path), 4242)
         with patch("builtins.open", side_effect=PermissionError("EACCES")):
-            assert runner_supports_force_signal(str(tmp_path), 4242) is False
+            assert force_signal_support(str(tmp_path), 4242) != "yes"
 
     def test_marker_outliving_its_writer_does_not_vouch_for_a_reused_pid(
             self, tmp_path, monkeypatch):
@@ -207,7 +237,7 @@ class TestRunnerCaps:
             "app.restart_manager._runner_start_time",
             lambda pid: _FAKE_START + pid + 3600,
         )
-        assert runner_supports_force_signal(str(tmp_path), 4242) is False
+        assert force_signal_support(str(tmp_path), 4242) != "yes"
 
     def test_start_time_within_tolerance_still_vouches(
             self, tmp_path, monkeypatch):
@@ -217,30 +247,60 @@ class TestRunnerCaps:
             "app.restart_manager._runner_start_time",
             lambda pid: _FAKE_START + pid + 2,
         )
-        assert runner_supports_force_signal(str(tmp_path), 4242) is True
+        assert force_signal_support(str(tmp_path), 4242) == "yes"
 
     def test_marker_without_a_start_time_fails_closed(self, tmp_path):
         """A host that could not read its own start time gets no forced path."""
         (tmp_path / RUN_CAPS_FILE).write_text(f"pid=4242\n{FORCE_SIGNAL_CAP}\n")
-        assert runner_supports_force_signal(str(tmp_path), 4242) is False
+        assert force_signal_support(str(tmp_path), 4242) != "yes"
 
     def test_declare_omits_an_unreadable_start_time(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "app.restart_manager._runner_start_time", lambda pid: None)
         declare_runner_caps(str(tmp_path), 4242)
         assert "start=" not in (tmp_path / RUN_CAPS_FILE).read_text()
-        assert runner_supports_force_signal(str(tmp_path), 4242) is False
+        assert force_signal_support(str(tmp_path), 4242) != "yes"
 
     def test_unparseable_start_time_fails_closed(self, tmp_path):
         (tmp_path / RUN_CAPS_FILE).write_text(
             f"pid=4242\nstart=not-a-number\n{FORCE_SIGNAL_CAP}\n")
-        assert runner_supports_force_signal(str(tmp_path), 4242) is False
+        assert force_signal_support(str(tmp_path), 4242) != "yes"
 
     def test_live_start_time_unreadable_fails_closed(self, tmp_path, monkeypatch):
         declare_runner_caps(str(tmp_path), 4242)
         monkeypatch.setattr(
             "app.restart_manager._runner_start_time", lambda pid: None)
-        assert runner_supports_force_signal(str(tmp_path), 4242) is False
+        assert force_signal_support(str(tmp_path), 4242) != "yes"
+
+    def test_support_is_no_when_nothing_vouches_for_the_process(self, tmp_path):
+        """Absent or foreign marker: the caller must degrade to polite."""
+        assert force_signal_support(str(tmp_path), 4242) == "no"
+        declare_runner_caps(str(tmp_path), 111)
+        assert force_signal_support(str(tmp_path), 4242) == "no"
+
+    def test_support_is_unknown_when_identity_cannot_be_confirmed(
+            self, tmp_path, monkeypatch):
+        """Capable runner, unverifiable host — keep the marker fallback."""
+        (tmp_path / RUN_CAPS_FILE).write_text(f"pid=4242\n{FORCE_SIGNAL_CAP}\n")
+        assert force_signal_support(str(tmp_path), 4242) == "unknown"
+
+        declare_runner_caps(str(tmp_path), 4242)
+        monkeypatch.setattr(
+            "app.restart_manager._runner_start_time", lambda pid: None)
+        assert force_signal_support(str(tmp_path), 4242) == "unknown"
+
+    def test_support_is_unknown_when_the_marker_cannot_be_read(self, tmp_path):
+        declare_runner_caps(str(tmp_path), 4242)
+        with patch("builtins.open", side_effect=PermissionError("EACCES")):
+            assert force_signal_support(str(tmp_path), 4242) == "unknown"
+
+    def test_a_failing_publish_does_not_crash_runner_startup(self, tmp_path):
+        """The caps marker is optional — ENOSPC must not crash-loop startup."""
+        with patch("app.utils.atomic_write", side_effect=OSError(28, "ENOSPC")), \
+             patch("app.run_log.log") as mock_log:
+            declare_runner_caps(str(tmp_path), 4242)  # must not raise
+        assert mock_log.call_args[0][0] == "error"
+        assert force_signal_support(str(tmp_path), 4242) != "yes"
 
 
 class TestRestartHandler:
@@ -292,10 +352,13 @@ class TestRestartHandler:
 
         mock_kill.assert_not_called()
         assert "polite restart" in result
-        # The polite markers still land, so the old runner restarts after the
-        # mission it is on — the behaviour it does understand.
+        # The reply promises a polite restart, so the markers on disk must ask
+        # for one: a runner that *does* poll the force line would otherwise
+        # kill the mission the operator was told would be allowed to finish.
         assert (tmp_path / RESTART_RUN_FILE).exists()
         assert (tmp_path / RESTART_BRIDGE_FILE).exists()
+        assert is_force_restart(str(tmp_path), target="run") is False
+        assert is_force_restart(str(tmp_path), target="bridge") is False
 
     def test_force_does_not_signal_a_stale_caps_marker(self, tmp_path):
         """Caps left by a crashed newer runner must not vouch for this PID."""
@@ -305,9 +368,33 @@ class TestRestartHandler:
         with patch("app.pid_manager.check_pidfile", return_value=4242), \
              patch("app.pid_manager._cmdline_matches", return_value=True), \
              patch("os.kill") as mock_kill:
-            handle(self._ctx(tmp_path, "--force"))
+            result = handle(self._ctx(tmp_path, "--force"))
 
         mock_kill.assert_not_called()
+        assert "polite restart" in result
+        assert is_force_restart(str(tmp_path), target="run") is False
+
+    def test_unverifiable_caps_keep_the_forced_marker_without_signalling(
+            self, tmp_path):
+        """A capable runner on a host with no readable start time.
+
+        ``declare_runner_caps`` publishes no ``start=`` there, so the identity
+        cannot be confirmed and the signal is withheld — but the runner does
+        poll the force line, so the forced marker must stay, and the reply must
+        describe that fallback instead of promising a polite restart.
+        """
+        from skills.core.restart.handler import handle
+
+        (tmp_path / RUN_CAPS_FILE).write_text(f"pid=4242\n{FORCE_SIGNAL_CAP}\n")
+        with patch("app.pid_manager.check_pidfile", return_value=4242), \
+             patch("app.pid_manager._cmdline_matches", return_value=True), \
+             patch("os.kill") as mock_kill:
+            result = handle(self._ctx(tmp_path, "--force"))
+
+        mock_kill.assert_not_called()
+        assert "polite restart" not in result
+        assert "could not be verified" in result
+        assert is_force_restart(str(tmp_path), target="run") is True
 
     def test_force_without_running_runner_still_writes_marker(self, tmp_path):
         from skills.core.restart.handler import handle
@@ -532,7 +619,12 @@ class TestForcedMarkerFallback:
 
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
         monkeypatch.setattr(run, "MISSION_POLL_INTERVAL", 0.2)
-        run._sig.task_running = False
+        # Via monkeypatch: ``_sig`` is a module-level singleton shared with
+        # every other test touching app.run, so a bare assignment (and the
+        # killed handle this leaves on claude_proc) would make the suite
+        # order-dependent.
+        monkeypatch.setattr(run._sig, "task_running", False)
+        monkeypatch.setattr(run._sig, "claude_proc", None)
         request_restart(str(tmp_path), force=True)
 
         stdout_f = str(tmp_path / "out.txt")
@@ -554,7 +646,12 @@ class TestForcedMarkerFallback:
 
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
         monkeypatch.setattr(run, "MISSION_POLL_INTERVAL", 0.2)
-        run._sig.task_running = False
+        # Via monkeypatch: ``_sig`` is a module-level singleton shared with
+        # every other test touching app.run, so a bare assignment (and the
+        # killed handle this leaves on claude_proc) would make the suite
+        # order-dependent.
+        monkeypatch.setattr(run._sig, "task_running", False)
+        monkeypatch.setattr(run._sig, "claude_proc", None)
         request_restart(str(tmp_path))
 
         exit_code = run.run_claude_task(
@@ -808,7 +905,12 @@ class TestForcedRestartKillAttribution:
 
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
         monkeypatch.setattr(run, "MISSION_POLL_INTERVAL", 0.2)
-        run._sig.task_running = False
+        # Via monkeypatch: ``_sig`` is a module-level singleton shared with
+        # every other test touching app.run, so a bare assignment (and the
+        # killed handle this leaves on claude_proc) would make the suite
+        # order-dependent.
+        monkeypatch.setattr(run._sig, "task_running", False)
+        monkeypatch.setattr(run._sig, "claude_proc", None)
 
         recorded = {}
         real_launch = mission_scope.launch_scoped

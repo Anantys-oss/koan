@@ -2032,7 +2032,12 @@ eventually stop re-queueing it.
 
 Right after an update, the agent loop may still be running the older code while
 it finishes its current mission. Forcing it then is unsafe, so Kōan detects that
-case and falls back to a polite restart, telling you that in the reply.
+case and falls back to a polite restart, telling you that in the reply. On a host
+where Kōan cannot confirm which process the loop is (no way to read process start
+times, for instance) it withholds the kill signal but still files the forced
+request; the reply says so, because that fallback is weaker — it interrupts a
+normal mission within ~30 s, but a skill mission (`/review`, `/fix`,
+`/implement`) runs to the end and restarts after it.
 
 <details>
 <summary>Use cases</summary>

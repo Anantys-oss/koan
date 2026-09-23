@@ -630,12 +630,23 @@ def run_claude_task(
                 # On a successful launch ownership stays with cleanup(), which
                 # the wait loop's finally invokes.
                 if not launched:
-                    if cleanup is not None:
-                        with suppress_logged(
-                            log, "debug", "Spawn cleanup failed", Exception,
-                        ):
-                            cleanup()
-                    cli_lock.release()
+                    try:
+                        if cleanup is not None:
+                            # OSError only, at warning: this deletes the
+                            # mission prompt temp file (0600, full prompt
+                            # inside) that no reap or stray sweep covers, so a
+                            # recurring failure must be visible; and a
+                            # programming error in cleanup() must not be
+                            # swallowed as a filesystem hiccup.
+                            with suppress_logged(
+                                log, "warning", "Spawn cleanup failed", OSError,
+                            ):
+                                cleanup()
+                    finally:
+                        # Narrowing the suppression above means cleanup() can
+                        # now raise through — the lock release still cannot be
+                        # skipped, or the next mission polls it forever.
+                        cli_lock.release()
 
             # Record the live provider PID so status consumers can report
             # observed runtime state instead of an inferred timestamp (#2086).

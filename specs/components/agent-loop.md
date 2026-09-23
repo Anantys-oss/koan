@@ -397,9 +397,14 @@ heuristic:
   unwind does run) or in recovery.
   Two mechanisms drive it, and both are load-bearing: (1) SIGUSR2, handled by
   `_on_sigusr2`, installed in `main_loop`; (2) the `force` line in `.koan-restart-run`,
-  re-read every `MISSION_POLL_INTERVAL` inside the mission wait loop as the fallback
-  for a lost signal, filtered by `_runner_start_time` so a marker from a previous
-  incarnation cannot force a restart. Across the window between spawning the CLI
+  re-read every `MISSION_POLL_INTERVAL` inside `run_claude_task`'s mission wait loop
+  as the fallback for a lost signal, filtered by `_runner_start_time` so a marker
+  from a previous incarnation cannot force a restart. The marker fallback is
+  strictly weaker than the signal and MUST NOT be described as equivalent: it covers
+  only that wait loop. `_run_skill_mission` blocks on its child's stdout with no poll
+  tick, so a skill-dispatch mission (`/review`, `/fix`, `/implement`) is not killed
+  by the marker — it restarts once the mission ends. Every operator-facing reply that
+  reports a withheld signal MUST say so rather than promise a kill. Across the window between spawning the CLI
   subprocess and publishing it on `_sig.claude_proc`, `_sigusr2_deferred` records the
   request and replays it on exit instead of acting on it — otherwise a forced restart
   in that window would kill nothing and orphan the just-spawned session. This applies
@@ -431,20 +436,28 @@ heuristic:
   runs, and the provider subprocess — spawned `start_new_session=True`, hence outside
   the runner's process group — survives as an orphan mutating the worktree while the
   relaunched runner starts the next mission in the same repo. A PID/cmdline check
-  (`pid_manager.signal_process`) cannot detect this, because the stale runner *is*
+  (`pid_manager.signal_daemon`) cannot detect this, because the stale runner *is*
   `run.py`. The runner therefore publishes `.koan-run-caps` (its PID, that process's
   start time, and a `sigusr2` line) immediately after installing the handler and
   clears it in `main_loop`'s exit `finally`; the `/restart` skill signals only when
-  `runner_supports_force_signal` matches that marker to the live process, and
-  otherwise degrades to the polite restart and reports the degradation. **The marker
+  `force_signal_support` matches that marker to the live process (`"yes"`), and
+  otherwise withholds the signal and reports the degradation. **The marker
   identifies a process, not a PID** — `main_loop`'s `finally` cannot run for a
   SIGKILLed or OOM-killed runner, so the file outlives it; the recorded start time
   (same `_process_start_time` source, same 30 s tolerance as `mission_scope`'s
   `pid-<n>` records) is what stops a corpse's marker from vouching for a later runner
   that reused the PID — including a rollback to an image with no handler, which is
-  exactly the case the gate exists to prevent. Every uncertainty fails closed: no
-  start time in the body, an unreadable live start time, or an unparseable value all
-  mean "not supported". This is not hypothetical: `/update` re-execs the bridge
+  exactly the case the gate exists to prevent. Every uncertainty fails closed for the
+  *signal*, but the two negative outcomes are distinct and the skill MUST resolve them
+  **before** writing the markers, so the restart request on disk matches the reply:
+  `"no"` (no marker, or one naming another process/incarnation) means a runner that
+  probably has no forced-marker poll either, so the request is rewritten as a
+  **polite** one; `"unknown"` (unreadable caps file, no start time in the body, an
+  unreadable live start time, an unparseable value) means a capable runner on a host
+  that cannot prove identity, so the forced marker stays and only the signal is
+  withheld. Writing a forced marker and then reporting a polite restart is a
+  contract violation: the runner would kill a mission the operator was told would be
+  allowed to finish. This is not hypothetical: `/update` re-execs the bridge
   at once but lets the runner finish its mission (`CYCLE_FILE` → exit 42), so a new
   bridge routinely drives a pre-upgrade runner. Any future runner-directed signal
   whose default disposition is lethal MUST be gated the same way.
