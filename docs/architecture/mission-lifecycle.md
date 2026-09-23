@@ -136,6 +136,12 @@ rest only PASS/WARN/SKIP. Both mean the mission stopped short of its own
 outcome, so a single failure is already a strong, unambiguous signal, and
 requiring two would make the re-queue unreachable.
 
+`check_pr_created` FAILs only when `gh` positively answered that the branch has
+no pull request. When the check itself could not run — expired auth, a timeout,
+`gh` missing, or a project with no GitHub remote — it stays a WARN reading
+`PR check inconclusive: <ErrorType>`, so an infrastructure problem never
+re-queues a mission whose PR may well exist.
+
 - The re-queue is restricted to **code missions** (`_is_code_mission()`): an
   empty branch is the *expected* outcome for an analysis / no-code mission, so
   those complete normally regardless of `check_diff_coherence`. This avoids
