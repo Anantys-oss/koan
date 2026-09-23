@@ -61,7 +61,7 @@ class VerifyResult:
 CODE_MISSION_KEYWORDS = {
     "implement", "fix", "add", "create", "build", "refactor",
     "extract", "migrate", "update", "replace", "remove", "delete",
-    "port", "rewrite", "optimize", "improve",
+    "port", "rewrite", "optimize", "improve", "deliver",
 }
 
 # Missions that should produce tests
@@ -199,6 +199,21 @@ def check_test_coverage(project_path: str, mission_title: str) -> Check:
     )
 
 
+def _gh_says_no_pr(exc: Exception) -> bool:
+    """True only when `gh` positively answered "no pull request for this branch".
+
+    `run_gh` raises ``RuntimeError`` for every non-zero exit, so the message is
+    the only thing that separates a real answer from an auth failure, a
+    timeout, a missing binary or a non-GitHub remote. ``SSOAuthRequired`` is a
+    ``RuntimeError`` subclass and never qualifies.
+    """
+    from app.github import SSOAuthRequired
+
+    if isinstance(exc, SSOAuthRequired) or not isinstance(exc, RuntimeError):
+        return False
+    return "no pull requests found" in str(exc).lower()
+
+
 def check_pr_created(project_path: str, mission_title: str) -> Check:
     """Verify that a draft PR was created for code-changing missions.
 
@@ -239,8 +254,28 @@ def check_pr_created(project_path: str, mission_title: str) -> Check:
             f"PR #{pr_num} exists but state is {state}"
         )
     except Exception as e:
-        # No PR or gh not available
+        # No PR, or the check could not run at all.
         print(f"[verifier] PR check failed: {e}", file=sys.stderr)
+        if not _gh_says_no_pr(e):
+            # Expired auth, a timeout, a missing `gh`, a project with no GitHub
+            # remote: the check is inconclusive, not a verdict. Never re-queue
+            # on it — a PR may well exist.
+            return Check(
+                "pr_created", CheckStatus.WARN,
+                f"PR check inconclusive: {type(e).__name__}"
+            )
+        if _is_code_mission(mission_title):
+            # A code mission that reached a feature branch and left no PR
+            # behind did not finish: the work exists but nobody is told about
+            # it. As a WARN this completed as a success and went out silently,
+            # with the commits stranded on the branch. FAIL routes it into the
+            # verify re-queue, which is capped and tags the reason.
+            return Check(
+                "pr_created", CheckStatus.FAIL,
+                "No PR found for current branch"
+            )
+        # Anything else on a feature branch (a rebase, a chore) may legitimately
+        # end without one.
         return Check(
             "pr_created", CheckStatus.WARN,
             "No PR found for current branch"
