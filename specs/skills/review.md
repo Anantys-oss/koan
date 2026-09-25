@@ -263,6 +263,15 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   `…/pulls/{n}/comments` posts. Cap with `max_comments`. Re-runs stay
   idempotent (existing anchors skipped). If the batch create fails (e.g. line
   not in diff), fall back to individual inline posts without failing the run.
+- **Idempotency is a precondition, not a best effort:** if the existing-anchor
+  listing itself fails, inline posting is **skipped** for that run rather than
+  posting an unverified (potentially wholly duplicate) comment set; the next
+  `/review` posts it once the listing succeeds.
+- **A failed create is not proof of non-creation:** the POST is not idempotent
+  and is retried on transport timeouts, so before falling back to individual
+  posts the run re-lists the PR's inline comments. Comments confirmed landed
+  count as posted (and the verdict is treated as already applied) instead of
+  being re-posted.
 - **Verdict may ride the batch:** When a formal verdict is submitted in the
   same run (`review_verdict.approved`) and there is at least one new inline
   comment to post, the verdict `event` (`APPROVE` / `REQUEST_CHANGES`, or
