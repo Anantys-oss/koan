@@ -3178,12 +3178,14 @@ def _format_inline_finding_body(item: dict) -> str:
     return "\n".join(lines).strip()
 
 
-def _fetch_existing_inline_anchors(owner: str, repo: str, pr_number: str) -> set:
-    """Return {(path, line, first_body_line)} of existing PR inline comments.
+def _fetch_existing_inline_anchors_checked(
+    owner: str, repo: str, pr_number: str,
+) -> tuple:
+    """Return ({(path, line, first_body_line)}, ok) for existing inline comments.
 
-    Used to make re-runs idempotent: a finding whose anchor + first body line
-    already exists is skipped instead of posting a duplicate. Best-effort —
-    returns an empty set on any failure (treats every finding as new).
+    ``ok`` is False when the listing could not be performed, so callers can
+    distinguish "no comments yet" from "we do not know" — the batch path must
+    not submit a whole duplicate review on a swallowed fetch error.
     """
     try:
         raw = run_gh(
@@ -3193,7 +3195,7 @@ def _fetch_existing_inline_anchors(owner: str, repo: str, pr_number: str) -> set
         data = json.loads(raw) if raw else []
     except Exception as e:
         log("review", f"Could not fetch existing inline comments on PR #{pr_number}: {e}")
-        return set()
+        return set(), False
 
     anchors = set()
     for c in data if isinstance(data, list) else []:
@@ -3203,6 +3205,17 @@ def _fetch_existing_inline_anchors(owner: str, repo: str, pr_number: str) -> set
         first_line = body.split("\n", 1)[0] if body else ""
         if path and line:
             anchors.add((path, int(line), first_line))
+    return anchors, True
+
+
+def _fetch_existing_inline_anchors(owner: str, repo: str, pr_number: str) -> set:
+    """Return {(path, line, first_body_line)} of existing PR inline comments.
+
+    Used to make re-runs idempotent: a finding whose anchor + first body line
+    already exists is skipped instead of posting a duplicate. Best-effort —
+    returns an empty set on any failure (treats every finding as new).
+    """
+    anchors, _ok = _fetch_existing_inline_anchors_checked(owner, repo, pr_number)
     return anchors
 
 
@@ -3320,6 +3333,7 @@ def _delete_pending_reviews(owner: str, repo: str, pr_number: str) -> None:
         raw = api(
             f"repos/{owner}/{repo}/pulls/{pr_number}/reviews",
             method="GET",
+            extra_args=["--paginate"],
         )
         reviews = json.loads(raw) if raw else []
     except Exception as e:
@@ -3449,7 +3463,20 @@ def _maybe_post_inline_comments(
     if not findings:
         return (0, 0, False)
 
-    existing = _fetch_existing_inline_anchors(owner, repo, pr_number)
+    existing, anchors_ok = _fetch_existing_inline_anchors_checked(
+        owner, repo, pr_number,
+    )
+    if not anchors_ok:
+        # We could not tell which findings are already anchored. Posting now
+        # would duplicate the whole comment set (a full extra review in the
+        # batch path), breaking the documented re-run idempotency guarantee.
+        # Skip this run; the next /review re-posts once the listing works.
+        log(
+            "review",
+            f"Skipping inline comments on PR #{pr_number}: could not verify "
+            f"existing anchors (idempotency check unavailable)",
+        )
+        return (0, 0, False)
     payloads, attempted = _build_review_comment_payloads(
         findings,
         existing_anchors=existing,
@@ -3467,6 +3494,26 @@ def _maybe_post_inline_comments(
     )
     if ok:
         return (n, attempted, True)
+
+    # createReview raising is not proof the review was not created: run_gh
+    # retries on timeout, so a stalled-but-accepted POST can land server-side.
+    # Confirm against the PR before falling back, otherwise we duplicate the
+    # comment set and report "0 of N posted" while N are visibly on the PR.
+    landed, recheck_ok = _fetch_existing_inline_anchors_checked(
+        owner, repo, pr_number,
+    )
+    if recheck_ok:
+        confirmed = sum(
+            1 for p in payloads
+            if (p["path"], p["line"], p["body"].split("\n", 1)[0]) in landed
+        )
+        if confirmed:
+            log(
+                "review",
+                f"Batch review reported failure but {confirmed} comment(s) "
+                f"landed on PR #{pr_number} — skipping fallback",
+            )
+            return (confirmed, attempted, True)
 
     # Fallback: individual posts (existing best-effort path).
     posted, att2 = _post_inline_finding_comments(
