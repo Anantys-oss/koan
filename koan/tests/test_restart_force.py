@@ -24,6 +24,7 @@ from app.restart_manager import (
     RUN_CAPS_FILE,
     clear_runner_caps,
     declare_runner_caps,
+    ensure_runner_caps,
     force_signal_support,
     is_force_restart,
     request_restart,
@@ -43,6 +44,14 @@ def fake_process_start_times(monkeypatch):
     monkeypatch.setattr(
         "app.restart_manager._runner_start_time", lambda pid: _FAKE_START + pid,
     )
+
+
+@pytest.fixture(autouse=True)
+def reset_caps_publish_state(monkeypatch):
+    """Keep the caps-publish retry globals from leaking between tests."""
+    from app import restart_manager
+    monkeypatch.setattr(restart_manager, "_caps_publish_failed", False)
+    monkeypatch.setattr(restart_manager, "_caps_republish_attempted_at", None)
 
 
 @pytest.fixture
@@ -302,6 +311,37 @@ class TestRunnerCaps:
         assert mock_log.call_args[0][0] == "error"
         assert force_signal_support(str(tmp_path), 4242) != "yes"
 
+    def test_a_failed_publish_is_retried_from_the_main_loop(self, tmp_path):
+        """Otherwise the capability stays invisible for the whole incarnation.
+
+        A missing marker is indistinguishable from a pre-upgrade runner, so
+        every later ``/restart --force`` would be downgraded to polite and
+        misdiagnosed in the reply.
+        """
+        with patch("app.utils.atomic_write", side_effect=OSError(28, "ENOSPC")):
+            declare_runner_caps(str(tmp_path), 4242)
+        assert force_signal_support(str(tmp_path), 4242) == "no"
+
+        ensure_runner_caps(str(tmp_path), 4242)
+
+        assert force_signal_support(str(tmp_path), 4242) == "yes"
+
+    def test_retry_is_a_noop_once_the_marker_is_published(self, tmp_path):
+        declare_runner_caps(str(tmp_path), 4242)
+        with patch("app.utils.atomic_write") as mock_write:
+            ensure_runner_caps(str(tmp_path), 4242)
+        mock_write.assert_not_called()
+
+    def test_retry_is_throttled_while_the_write_keeps_failing(self, tmp_path):
+        """The main loop iterates ~1/min; the mount does not heal in seconds."""
+        with patch("app.utils.atomic_write", side_effect=OSError(28, "ENOSPC")):
+            declare_runner_caps(str(tmp_path), 4242)
+            with patch("app.utils.atomic_write",
+                       side_effect=OSError(28, "ENOSPC")) as mock_write:
+                ensure_runner_caps(str(tmp_path), 4242)
+                ensure_runner_caps(str(tmp_path), 4242)
+        assert mock_write.call_count == 1
+
 
 class TestRestartHandler:
     def _ctx(self, tmp_path, args=""):
@@ -480,6 +520,60 @@ class TestRunnerSigusr2:
             run._on_sigusr2(signal.SIGUSR2, None)
 
         assert any(c[0][0] == "warn" for c in mock_log.call_args_list)
+
+    def test_errors_when_the_kill_does_not_land(self, monkeypatch):
+        """A survivor of SIGKILL outlives the re-exec — it must be reported.
+
+        ``kill_process_group`` degrades quietly (a child wedged in
+        uninterruptible I/O, or ``killpg`` raising), so without an explicit
+        re-check the operator gets a success reply while the provider session
+        keeps burning quota and mutating the worktree.
+        """
+        from app import run
+
+        class SurvivingProc:
+            pid = 4242
+
+            def poll(self):
+                return None
+
+        monkeypatch.setattr(run._sig, "claude_proc", SurvivingProc())
+        monkeypatch.setattr(run._sig, "task_running", True)
+        monkeypatch.setattr(run, "_kill_process_group", lambda p: None)
+
+        with patch("app.run.log") as mock_log, pytest.raises(SystemExit) as exc:
+            run._on_sigusr2(signal.SIGUSR2, None)
+
+        assert exc.value.code == RESTART_EXIT_CODE
+        errors = [c for c in mock_log.call_args_list if c[0][0] == "error"]
+        assert errors, "a surviving mission subprocess was not reported"
+        assert "4242" in errors[0][0][1]
+
+    def test_no_error_when_the_kill_lands(self, monkeypatch):
+        from app import run
+
+        class DyingProc:
+            pid = 4242
+
+            def __init__(self):
+                self._alive = True
+
+            def poll(self):
+                return None if self._alive else -9
+
+        proc = DyingProc()
+        monkeypatch.setattr(run._sig, "claude_proc", proc)
+        monkeypatch.setattr(run._sig, "task_running", True)
+
+        def _kill(p):
+            p._alive = False
+
+        monkeypatch.setattr(run, "_kill_process_group", _kill)
+
+        with patch("app.run.log") as mock_log, pytest.raises(SystemExit):
+            run._on_sigusr2(signal.SIGUSR2, None)
+
+        assert not [c for c in mock_log.call_args_list if c[0][0] == "error"]
 
     def test_signal_is_deferred_until_the_subprocess_is_published(
             self, monkeypatch):

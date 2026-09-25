@@ -395,6 +395,12 @@ heuristic:
   after `run_claude_task` returns is therefore NOT reached on this path; anything that
   must happen on a forced restart belongs in a `finally` (which the `SystemExit`
   unwind does run) or in recovery.
+  The kill MUST be verified before the exit. `kill_process_group` degrades quietly —
+  a child wedged in uninterruptible I/O survives SIGKILL, and a failing `killpg`
+  is swallowed — so `_force_restart_now` re-checks `proc.poll()` and logs an error
+  naming the surviving PID. Exiting silently there produces exactly the orphaned
+  provider session the capability gate below exists to prevent, while the operator
+  has already been told the mission was killed.
   Two mechanisms drive it, and both are load-bearing: (1) SIGUSR2, handled by
   `_on_sigusr2`, installed in `main_loop`; (2) the `force` line in `.koan-restart-run`,
   re-read every `MISSION_POLL_INTERVAL` inside `run_claude_task`'s mission wait loop
@@ -439,7 +445,10 @@ heuristic:
   (`pid_manager.signal_daemon`) cannot detect this, because the stale runner *is*
   `run.py`. The runner therefore publishes `.koan-run-caps` (its PID, that process's
   start time, and a `sigusr2` line) immediately after installing the handler and
-  clears it in `main_loop`'s exit `finally`; the `/restart` skill signals only when
+  clears it in `main_loop`'s exit `finally` — and, when that publish fails, retries it
+  from the main loop (`ensure_runner_caps`, throttled), because an absent marker is
+  read as a pre-upgrade runner and would downgrade every later `/restart --force` for
+  the rest of the incarnation; the `/restart` skill signals only when
   `force_signal_support` matches that marker to the live process (`"yes"`), and
   otherwise withholds the signal and reports the degradation. **The marker
   identifies a process, not a PID** — `main_loop`'s `finally` cannot run for a

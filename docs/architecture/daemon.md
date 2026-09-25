@@ -180,7 +180,11 @@ and a `sigusr2` line) right after installing the handler and removes it on exit;
 start time matters because a runner that is SIGKILLed or OOM-killed never gets to
 remove the file: without it, a later runner that happened to reuse the PID —
 including one rolled back to a version with no handler — would be vouched for by
-the dead one's marker.
+the dead one's marker. If that write fails (a full or read-only KOAN_ROOT mount),
+the runner remembers it and re-attempts the publish from its main loop, at most
+once every 5 minutes — otherwise the absent marker would be read as a
+pre-upgrade runner and downgrade every later `/restart --force` for the rest of
+that incarnation.
 
 The capability is resolved **before** the markers are written, so what lands on
 disk always matches the reply. When nothing vouches for the live process at all

@@ -342,13 +342,18 @@ def popen_cli(
                 raise
 
             def cleanup():
-                # try/finally, not a plain sequence: the release is the one
-                # step that must never be skipped. An EIO on close() would
-                # otherwise strand the flock, and the next mission's
-                # acquire_provider_lock polls LOCK_NB against it forever.
+                # Nested try/finally, not a plain sequence: neither later step
+                # may be skipped by an earlier failure. An EIO on close() would
+                # otherwise strand the flock — the next mission's
+                # acquire_provider_lock then polls LOCK_NB against it forever —
+                # and leave the 0600 prompt file (the full mission prompt)
+                # behind in koan_tmp_dir(), which no mission-TMPDIR reap or
+                # stray sweep covers.
                 try:
-                    stdin_file.close()
-                    _cleanup_prompt_file(prompt_path)
+                    try:
+                        stdin_file.close()
+                    finally:
+                        _cleanup_prompt_file(prompt_path)
                 finally:
                     cli_lock.release()
 

@@ -560,6 +560,48 @@ class TestPopenCli:
         # (that flag records the acquisition, not the current hold).
         assert cli_lock._fh is None, "a failing cleanup stranded the provider lock"
 
+    def test_a_failing_close_still_removes_the_prompt_file(
+        self, tmp_path, monkeypatch
+    ):
+        """An EIO on close() must not leave the mission prompt on disk.
+
+        The 0600 temp file holds the full prompt and sits in ``koan_tmp_dir()``,
+        which no mission-TMPDIR reap or stray sweep covers — only this cleanup
+        removes it.
+        """
+        from app import utils
+        from app.cli_exec import acquire_provider_lock
+
+        monkeypatch.setattr(utils, "_koan_tmp_dir_cache", None)
+        monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path))
+        provider = ClaudeProvider()
+
+        cli_lock = acquire_provider_lock(provider)
+        real_open = open
+        broken = MagicMock()
+        broken.close.side_effect = OSError("EIO")
+
+        def fake_open(path, *args, **kwargs):
+            if str(path).startswith(str(tmp_path)) and str(path).endswith(".md"):
+                return broken
+            return real_open(path, *args, **kwargs)
+
+        with patch("builtins.open", side_effect=fake_open), \
+             patch("app.cli_exec.subprocess.Popen", return_value=MagicMock()):
+            _proc, cleanup = popen_cli(
+                ["claude", "-p", "secret prompt"],
+                provider=provider,
+                cli_lock=cli_lock,
+            )
+
+        with pytest.raises(OSError):
+            cleanup()
+
+        assert not list(tmp_path.glob("koan-prompt-*.md")), (
+            "a failing close() left the mission prompt file behind"
+        )
+        assert cli_lock._fh is None, "a failing cleanup stranded the provider lock"
+
 
 class TestProviderInvocationLock:
     """Degraded-state behaviour of _ProviderInvocationLock."""

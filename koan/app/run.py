@@ -45,6 +45,7 @@ from app.restart_manager import (
     clear_restart,
     clear_runner_caps,
     declare_runner_caps,
+    ensure_runner_caps,
     is_force_restart,
     RESTART_EXIT_CODE,
     RESTART_RUN_FILE,
@@ -368,6 +369,20 @@ def _force_restart_now(reason: str):
         # mission would be mislabelled and then refused both retry paths.
         _last_mission_aborted = True
         _kill_process_group(proc)
+        if proc.poll() is None:
+            # kill_process_group degrades quietly when SIGKILL does not land
+            # (child wedged in uninterruptible I/O on a hung worktree mount,
+            # or killpg itself failing). The provider session runs in its own
+            # session (start_new_session=True), so it survives the re-exec and
+            # keeps burning quota and mutating the worktree the relaunched
+            # runner is about to use. Say so loudly — the operator saw a
+            # success reply.
+            log(
+                "error",
+                f"Forced restart could not kill mission subprocess {proc.pid} "
+                "— it may survive the restart and keep editing the worktree; "
+                "kill it manually",
+            )
     elif _sig.task_running:
         # A mission is in flight but its subprocess is not published yet (or
         # already gone). Say so — a survivor would keep burning quota and
@@ -1634,6 +1649,12 @@ def main_loop():
                 log("koan", "Restart requested. Exiting for re-launch...")
                 clear_restart(koan_root, target="run")
                 sys.exit(RESTART_EXIT_CODE)
+
+            # --- Runner capability marker (retry only) ---
+            # No-op unless the startup publish failed; without it every
+            # /restart --force is downgraded to a polite restart and reported
+            # as a pre-upgrade runner for the rest of this incarnation.
+            ensure_runner_caps(koan_root, os.getpid())
 
             # --- Memory watchdog (#2232) ---
             # All knobs are frozen at startup in _build_memory_monitor() — a

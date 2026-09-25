@@ -101,6 +101,21 @@ CAPS_START_TOLERANCE = 30.0
 _force_read_error_logged_at: Optional[float] = None
 FORCE_READ_ERROR_LOG_INTERVAL = 300.0
 
+# Whether the last caps publish failed (runner-process state). A failed publish
+# is indistinguishable from "no marker" to the bridge, which then downgrades
+# every /restart --force on a fully capable runner to a polite restart and tells
+# the operator it "predates forced restart" — a wrong diagnosis. The runner
+# therefore remembers the failure and re-attempts the write from its main loop
+# (:func:`ensure_runner_caps`), so a transient ENOSPC/EDQUOT self-heals instead
+# of disabling the capability for the whole incarnation.
+_caps_publish_failed = False
+
+# Retry cadence for that re-attempt. The main loop iterates about once a minute
+# and the failure mode (a full or read-only mount) does not clear in seconds, so
+# a per-iteration retry would mostly repeat its own error log.
+CAPS_REPUBLISH_INTERVAL = 300.0
+_caps_republish_attempted_at: Optional[float] = None
+
 # Files written by request_restart() — the two live per-consumer markers only.
 _WRITE_TARGETS = (RESTART_BRIDGE_FILE, RESTART_RUN_FILE)
 
@@ -234,8 +249,11 @@ def declare_runner_caps(koan_root: str, pid: int) -> None:
     capability advertisement whose absence has a defined degradation, whereas
     an escaping ``OSError`` (ENOSPC/EDQUOT on the KOAN_ROOT mount) would
     propagate out of ``main_loop`` and turn a missing marker into a startup
-    crash-loop.
+    crash-loop. It is also *remembered*, so :func:`ensure_runner_caps` can
+    re-attempt it from the main loop rather than leaving the capability
+    permanently invisible (and misreported as a pre-upgrade runner).
     """
+    global _caps_publish_failed
     from app.utils import atomic_write
 
     body = f"pid={pid}\n"
@@ -253,7 +271,37 @@ def declare_runner_caps(koan_root: str, pid: int) -> None:
         atomic_write(Path(koan_root) / RUN_CAPS_FILE, body + f"{FORCE_SIGNAL_CAP}\n")
     except OSError as exc:
         from app.run_log import log
-        log("error", f"Could not publish runner caps marker: {exc}")
+        log(
+            "error",
+            f"Could not publish runner caps marker: {exc} — /restart --force "
+            "falls back to a polite restart until the write succeeds",
+        )
+        _caps_publish_failed = True
+        return
+    _caps_publish_failed = False
+
+
+def ensure_runner_caps(koan_root: str, pid: int) -> None:
+    """Re-attempt a failed caps publish. No-op once one has succeeded.
+
+    Called from the runner's main loop so a transient write failure (a full or
+    momentarily read-only KOAN_ROOT mount) does not silently disable
+    ``/restart --force`` for the rest of the incarnation: without the marker,
+    :func:`force_signal_support` returns ``"no"`` and the operator is told the
+    runner predates forced restart, which is simply wrong.
+    """
+    global _caps_republish_attempted_at
+    if not _caps_publish_failed:
+        return
+    now = time.monotonic()
+    last = _caps_republish_attempted_at
+    if last is not None and now - last < CAPS_REPUBLISH_INTERVAL:
+        return
+    _caps_republish_attempted_at = now
+    declare_runner_caps(koan_root, pid)
+    if not _caps_publish_failed:
+        from app.run_log import log
+        log("koan", "Runner caps marker published on retry — /restart --force is live")
 
 
 def clear_runner_caps(koan_root: str) -> None:
