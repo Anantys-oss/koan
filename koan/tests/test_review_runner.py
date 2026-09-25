@@ -2143,7 +2143,7 @@ class TestRunReview:
         mock_gh.assert_called_once()  # post comment
         assert mock_notify.call_count >= 2
 
-    @patch("app.review_runner._maybe_post_inline_comments", return_value=(0, 0))
+    @patch("app.review_runner._maybe_post_inline_comments", return_value=(0, 0, False))
     @patch("app.review_runner._submit_review_verdict", return_value=True)
     @patch("app.review_runner._fetch_pr_head_oid", return_value="ffffffffff")
     @patch(
@@ -7265,6 +7265,95 @@ class TestReviewVerdictInRunReview:
         mock_verdict.assert_not_called()
 
 
+class TestBatchVerdictRideInRunReview:
+    """run_review: batch createReview carries the verdict — no double-submit."""
+
+    @patch(
+        "app.review_runner.get_review_inline_comments_config",
+        return_value={"enabled": True, "max_comments": 25},
+    )
+    @patch(
+        "app.review_runner.get_review_verdict_config",
+        return_value={
+            "approved": True, "body_enabled": True, "include_blockers": True,
+        },
+    )
+    @patch("app.review_runner._is_review_requested", return_value=False)
+    @patch("app.review_runner._submit_review_verdict")
+    @patch("app.review_runner._submit_batch_review", return_value=(True, 1))
+    @patch(
+        "app.review_runner._fetch_existing_inline_anchors_checked",
+        return_value=(set(), True),
+    )
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc"])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_batch_success_skips_separate_verdict(
+        self, mock_fetch, mock_claude, mock_gh, _repliable,
+        _shas, _anchors, mock_batch, mock_verdict, _mock_req,
+        _mock_cfg, _inline_cfg, pr_context, review_skill_dir,
+    ):
+        """When batch createReview carries the event, do not POST a second verdict."""
+        mock_fetch.return_value = pr_context
+        # Findings required so the batch path has comments to submit.
+        mock_claude.return_value = (json.dumps(VALID_REVIEW_JSON), "")
+
+        success, summary, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(), skill_dir=review_skill_dir,
+        )
+        assert success is True
+        mock_batch.assert_called_once()
+        assert mock_batch.call_args.kwargs["event"] == "REQUEST_CHANGES"
+        mock_verdict.assert_not_called()
+        assert "REQUEST_CHANGES" in summary
+
+    @patch(
+        "app.review_runner.get_review_inline_comments_config",
+        return_value={"enabled": True, "max_comments": 25},
+    )
+    @patch(
+        "app.review_runner.get_review_verdict_config",
+        return_value={
+            "approved": True, "body_enabled": True, "include_blockers": True,
+        },
+    )
+    @patch("app.review_runner._is_review_requested", return_value=False)
+    @patch("app.review_runner._submit_review_verdict", return_value=True)
+    @patch("app.review_runner._post_inline_finding_comments", return_value=(1, 1))
+    @patch("app.review_runner._submit_batch_review", return_value=(False, 0))
+    @patch(
+        "app.review_runner._fetch_existing_inline_anchors_checked",
+        return_value=(set(), True),
+    )
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc"])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_batch_failure_submits_separate_verdict_once(
+        self, mock_fetch, mock_claude, mock_gh, _repliable,
+        _shas, _anchors, mock_batch, mock_indiv, mock_verdict, _mock_req,
+        _mock_cfg, _inline_cfg, pr_context, review_skill_dir,
+    ):
+        """Batch failure falls back to individual posts + one separate verdict."""
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(VALID_REVIEW_JSON), "")
+
+        success, summary, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(), skill_dir=review_skill_dir,
+        )
+        assert success is True
+        mock_batch.assert_called_once()
+        mock_indiv.assert_called_once()
+        mock_verdict.assert_called_once()
+        assert mock_verdict.call_args.kwargs["approve"] is False
+        assert "REQUEST_CHANGES" in summary
+
+
 class TestResolveVerdictConfig:
     """_resolve_verdict_config merges global + project-level overrides."""
 
@@ -7984,29 +8073,350 @@ class TestMaybePostInlineComments:
         review_data = {"file_comments": [_inline_finding(line=3)]}
         cfg = {"enabled": False, "max_comments": 25}
         with patch("app.review_runner.get_review_inline_comments_config", return_value=cfg), \
-             patch("app.review_runner._post_inline_finding_comments") as mock_post:
-            assert _maybe_post_inline_comments("o", "r", "42", review_data, "abc123") == (0, 0)
+             patch("app.review_runner._post_inline_finding_comments") as mock_post, \
+             patch("app.review_runner._submit_batch_review") as mock_batch:
+            assert _maybe_post_inline_comments(
+                "o", "r", "42", review_data, "abc123") == (0, 0, False)
         mock_post.assert_not_called()
+        mock_batch.assert_not_called()
 
-    def test_invokes_poster_when_enabled(self):
+    def test_invokes_batch_when_enabled(self):
         from app.review_runner import _maybe_post_inline_comments
         review_data = {"file_comments": [_inline_finding(line=3)]}
         cfg = {"enabled": True, "max_comments": 25}
         with patch("app.review_runner.get_review_inline_comments_config", return_value=cfg), \
-             patch("app.review_runner._post_inline_finding_comments", return_value=(1, 1)) as mock_post:
-            assert _maybe_post_inline_comments("o", "r", "42", review_data, "abc123") == (1, 1)
-        mock_post.assert_called_once()
-        assert mock_post.call_args[0][4] == "abc123"
+             patch("app.review_runner._fetch_existing_inline_anchors_checked",
+                   return_value=(set(), True)), \
+             patch("app.review_runner._submit_batch_review", return_value=(True, 1)) as mock_batch, \
+             patch("app.review_runner._post_inline_finding_comments") as mock_post:
+            assert _maybe_post_inline_comments(
+                "o", "r", "42", review_data, "abc123") == (1, 1, True)
+        mock_batch.assert_called_once()
+        mock_post.assert_not_called()
 
     def test_noop_when_no_findings(self):
         from app.review_runner import _maybe_post_inline_comments
         cfg = {"enabled": True, "max_comments": 25}
         with patch("app.review_runner.get_review_inline_comments_config", return_value=cfg), \
-             patch("app.review_runner._post_inline_finding_comments") as mock_post:
-            assert _maybe_post_inline_comments("o", "r", "42", None, "abc123") == (0, 0)
+             patch("app.review_runner._post_inline_finding_comments") as mock_post, \
+             patch("app.review_runner._submit_batch_review") as mock_batch:
             assert _maybe_post_inline_comments(
-                "o", "r", "42", {"file_comments": []}, "abc123") == (0, 0)
+                "o", "r", "42", None, "abc123") == (0, 0, False)
+            assert _maybe_post_inline_comments(
+                "o", "r", "42", {"file_comments": []}, "abc123") == (0, 0, False)
         mock_post.assert_not_called()
+        mock_batch.assert_not_called()
+
+
+class TestBuildReviewCommentPayloads:
+    def test_skips_unresolvable_and_respects_max(self):
+        from app.review_runner import _build_review_comment_payloads
+        findings = [
+            _inline_finding(line=0),  # unresolvable
+            _inline_finding(line=10),
+            {**_inline_finding(line=20), "line_end": 25},
+            _inline_finding(line=30),
+        ]
+        existing = set()  # no prior anchors
+        payloads, attempted = _build_review_comment_payloads(
+            findings, existing_anchors=existing, max_comments=2,
+        )
+        assert attempted == 2
+        assert len(payloads) == 2
+        assert payloads[0]["path"] == "a.py"
+        assert payloads[0]["line"] == 10
+        assert payloads[0]["side"] == "RIGHT"
+        assert "start_line" not in payloads[0]
+        assert payloads[1]["line"] == 25
+        assert payloads[1]["start_line"] == 20
+        assert payloads[1]["start_side"] == "RIGHT"
+        assert "🔴" in payloads[0]["body"] or "Blocking" in payloads[0]["body"]
+
+    def test_skips_existing_anchors(self):
+        from app.review_runner import (
+            _build_review_comment_payloads,
+            _format_inline_finding_body,
+        )
+        from app.github import sanitize_github_comment
+        f = _inline_finding(line=10)
+        body = sanitize_github_comment(_format_inline_finding_body(f))
+        first = body.split("\n", 1)[0]
+        existing = {("a.py", 10, first)}
+        payloads, attempted = _build_review_comment_payloads(
+            [f], existing_anchors=existing, max_comments=25,
+        )
+        assert payloads == []
+        assert attempted == 0
+
+
+def _batch_review_posts(mock_run_gh):
+    """Decode createReview payloads POSTed through a mocked ``run_gh``."""
+    return [
+        json.loads(c.kwargs["stdin_data"])
+        for c in mock_run_gh.call_args_list
+        if "POST" in c.args
+    ]
+
+
+class TestSubmitBatchReview:
+    @patch("app.review_runner.run_gh")
+    def test_posts_create_review_with_comments_and_event(self, mock_run_gh):
+        from app.review_runner import _submit_batch_review
+        mock_run_gh.return_value = '{"id": 1}'
+        comments = [{"path": "a.py", "line": 10, "side": "RIGHT", "body": "x"}]
+        ok, n = _submit_batch_review(
+            "o", "r", "42",
+            head_sha="abc123",
+            comments=comments,
+            event="REQUEST_CHANGES",
+            body="> [!CAUTION]\n> Critical issues found.",
+        )
+        assert ok is True
+        assert n == 1
+        posts = _batch_review_posts(mock_run_gh)
+        assert len(posts) == 1
+        call = mock_run_gh.call_args_list[0]
+        assert call.args[1] == "repos/o/r/pulls/42/reviews"
+        payload = posts[0]
+        assert payload["commit_id"] == "abc123"
+        assert payload["event"] == "REQUEST_CHANGES"
+        assert payload["comments"] == comments
+        assert "CAUTION" in payload["body"]
+
+    @patch("app.review_runner.run_gh")
+    def test_does_not_touch_existing_reviews(self, mock_run_gh):
+        """A human PENDING draft must never be listed or deleted."""
+        from app.review_runner import _submit_batch_review
+        mock_run_gh.return_value = '{"id": 1}'
+        _submit_batch_review(
+            "o", "r", "42",
+            head_sha="abc",
+            comments=[{"path": "a.py", "line": 1, "side": "RIGHT", "body": "n"}],
+            event="COMMENT",
+            body="b",
+        )
+        methods = [
+            a for c in mock_run_gh.call_args_list for a in c.args
+        ]
+        assert "DELETE" not in methods
+        assert "GET" not in methods
+        # Exactly one gh invocation: the createReview POST.
+        assert mock_run_gh.call_count == 1
+
+    @patch("app.review_runner.run_gh")
+    def test_self_review_retries_as_comment(self, mock_run_gh):
+        from app.review_runner import _submit_batch_review
+        self_err = RuntimeError(
+            'HTTP 422 Can not approve your own pull request'
+        )
+        # First POST fails as a self-review, second POST succeeds.
+        mock_run_gh.side_effect = [self_err, '{"id": 2}']
+        ok, n = _submit_batch_review(
+            "o", "r", "42",
+            head_sha="abc",
+            comments=[{"path": "a.py", "line": 1, "side": "RIGHT", "body": "n"}],
+            event="APPROVE",
+            body="ok",
+        )
+        assert ok is True
+        assert n == 1
+        posts = _batch_review_posts(mock_run_gh)
+        assert len(posts) == 2
+        assert posts[1]["event"] == "COMMENT"
+
+    @patch("app.review_runner.run_gh", side_effect=RuntimeError("422 path not in diff"))
+    def test_returns_false_on_hard_failure(self, _mock_run_gh):
+        from app.review_runner import _submit_batch_review
+        ok, n = _submit_batch_review(
+            "o", "r", "42", head_sha="abc",
+            comments=[{"path": "a.py", "line": 99, "side": "RIGHT", "body": "x"}],
+            event="COMMENT", body="",
+        )
+        assert ok is False
+        assert n == 0
+
+    @patch("app.review_runner.run_gh")
+    def test_empty_body_gets_fallback_for_comment_event(self, mock_run_gh):
+        """GitHub requires body for COMMENT; empty input gets a minimal fallback."""
+        from app.review_runner import _submit_batch_review
+        mock_run_gh.return_value = '{"id": 1}'
+        ok, n = _submit_batch_review(
+            "o", "r", "42",
+            head_sha="abc",
+            comments=[{"path": "a.py", "line": 1, "side": "RIGHT", "body": "n"}],
+            event="COMMENT",
+            body="",
+        )
+        assert ok is True
+        assert n == 1
+        posts = _batch_review_posts(mock_run_gh)
+        assert len(posts) == 1
+        assert posts[0]["event"] == "COMMENT"
+        assert posts[0].get("body")  # non-empty fallback
+
+    @patch("app.review_runner.run_gh")
+    def test_empty_body_gets_fallback_for_request_changes(self, mock_run_gh):
+        """GitHub requires body for REQUEST_CHANGES when body_enabled is off."""
+        from app.review_runner import _submit_batch_review
+        mock_run_gh.return_value = '{"id": 1}'
+        ok, _ = _submit_batch_review(
+            "o", "r", "42",
+            head_sha="abc",
+            comments=[{"path": "a.py", "line": 1, "side": "RIGHT", "body": "n"}],
+            event="REQUEST_CHANGES",
+            body="",
+        )
+        assert ok is True
+        payload = _batch_review_posts(mock_run_gh)[0]
+        assert payload["event"] == "REQUEST_CHANGES"
+        assert "Blocking" in payload["body"]
+
+    @patch("app.review_runner.run_gh", side_effect=OSError("connection reset"))
+    def test_oserror_returns_false_not_raises(self, _mock_run_gh):
+        """Transient gh failures must return (False, 0) so fallback can run."""
+        from app.review_runner import _submit_batch_review
+        ok, n = _submit_batch_review(
+            "o", "r", "42", head_sha="abc",
+            comments=[{"path": "a.py", "line": 1, "side": "RIGHT", "body": "n"}],
+            event="COMMENT", body="",
+        )
+        assert ok is False
+        assert n == 0
+
+    @patch(
+        "app.review_runner.run_gh",
+        side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=30),
+    )
+    def test_timeout_returns_false_not_raises(self, _mock_run_gh):
+        """TimeoutExpired must not abort the rest of the review pipeline."""
+        from app.review_runner import _submit_batch_review
+        ok, n = _submit_batch_review(
+            "o", "r", "42", head_sha="abc",
+            comments=[{"path": "a.py", "line": 1, "side": "RIGHT", "body": "n"}],
+            event="COMMENT", body="",
+        )
+        assert ok is False
+        assert n == 0
+
+    @patch("app.review_runner.run_gh")
+    def test_self_review_approve_empty_body_injects_on_comment_retry(self, mock_run_gh):
+        """APPROVE with empty body: self-PR retry as COMMENT needs a body."""
+        from app.review_runner import _submit_batch_review
+        self_err = RuntimeError(
+            "HTTP 422 Can not approve your own pull request"
+        )
+        # First POST fails as a self-review, second POST succeeds.
+        mock_run_gh.side_effect = [self_err, '{"id": 3}']
+        ok, n = _submit_batch_review(
+            "o", "r", "42",
+            head_sha="abc",
+            comments=[{"path": "a.py", "line": 1, "side": "RIGHT", "body": "n"}],
+            event="APPROVE",
+            body="",
+        )
+        assert ok is True
+        assert n == 1
+        first, second = _batch_review_posts(mock_run_gh)
+        assert first["event"] == "APPROVE"
+        assert "body" not in first  # APPROVE may omit body
+        assert second["event"] == "COMMENT"
+        assert second.get("body")  # non-empty — GitHub requires it for COMMENT
+
+    def test_timeout_does_not_repost_the_review(self):
+        """createReview is not idempotent — a timing-out POST hits the wire once.
+
+        Patched at ``app.github.subprocess.run`` (and ``app.retry.time.sleep``)
+        on purpose: the retry budget is what this asserts, so mocking above
+        ``retry_with_backoff`` would test nothing.  A duplicate review means
+        two notifications and 2xN inline threads the author cannot bulk-delete.
+        """
+        import app.github as gh_mod
+        from app.review_runner import _submit_batch_review
+        invocations = []
+
+        def fake_run(cmd, **kwargs):
+            invocations.append(cmd)
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=30)
+
+        with patch.object(gh_mod.subprocess, "run", side_effect=fake_run), \
+             patch("app.retry.time.sleep") as mock_sleep:
+            ok, n = _submit_batch_review(
+                "o", "r", "42",
+                head_sha="abc",
+                comments=[{"path": "a.py", "line": 1, "side": "RIGHT", "body": "n"}],
+                event="COMMENT",
+                body="b",
+            )
+        assert (ok, n) == (False, 0)
+        assert len(invocations) == 1
+        mock_sleep.assert_not_called()
+
+
+class TestMaybePostInlineCommentsBatch:
+    def test_batch_success_skips_individual(self):
+        from app.review_runner import _maybe_post_inline_comments
+        review_data = {"file_comments": [_inline_finding(line=3)]}
+        cfg = {"enabled": True, "max_comments": 25}
+        with patch("app.review_runner.get_review_inline_comments_config", return_value=cfg), \
+             patch("app.review_runner._fetch_existing_inline_anchors_checked",
+                   return_value=(set(), True)), \
+             patch("app.review_runner._submit_batch_review", return_value=(True, 1)) as mock_batch, \
+             patch("app.review_runner._post_inline_finding_comments") as mock_indiv:
+            posted, attempted, batch_ok = _maybe_post_inline_comments(
+                "o", "r", "42", review_data, "abc123",
+                event="COMMENT", body="",
+            )
+        assert (posted, attempted, batch_ok) == (1, 1, True)
+        mock_batch.assert_called_once()
+        mock_indiv.assert_not_called()
+
+    def test_batch_failure_falls_back_to_individual(self):
+        from app.review_runner import _maybe_post_inline_comments
+        review_data = {"file_comments": [_inline_finding(line=3)]}
+        cfg = {"enabled": True, "max_comments": 25}
+        with patch("app.review_runner.get_review_inline_comments_config", return_value=cfg), \
+             patch("app.review_runner._fetch_existing_inline_anchors_checked",
+                   return_value=(set(), True)), \
+             patch("app.review_runner._submit_batch_review", return_value=(False, 0)), \
+             patch("app.review_runner._post_inline_finding_comments", return_value=(1, 1)) as mock_indiv:
+            posted, attempted, batch_ok = _maybe_post_inline_comments(
+                "o", "r", "42", review_data, "abc123",
+                event="REQUEST_CHANGES", body="blockers",
+            )
+        assert batch_ok is False
+        assert (posted, attempted) == (1, 1)
+        mock_indiv.assert_called_once()
+
+    def test_skips_everything_when_anchor_check_unavailable(self):
+        """An unverifiable anchor listing must post nothing — batch or individual.
+
+        Submitting blind would duplicate the whole comment set on the PR.
+        """
+        from app.review_runner import _maybe_post_inline_comments
+        review_data = {"file_comments": [_inline_finding(line=3)]}
+        cfg = {"enabled": True, "max_comments": 25}
+        with patch("app.review_runner.get_review_inline_comments_config", return_value=cfg), \
+             patch("app.review_runner._fetch_existing_inline_anchors_checked",
+                   return_value=(set(), False)), \
+             patch("app.review_runner._submit_batch_review") as mock_batch, \
+             patch("app.review_runner._post_inline_finding_comments") as mock_indiv:
+            result = _maybe_post_inline_comments(
+                "o", "r", "42", review_data, "abc123",
+                event="REQUEST_CHANGES", body="blockers",
+            )
+        assert result == (0, 0, False)
+        mock_batch.assert_not_called()
+        mock_indiv.assert_not_called()
+
+    def test_disabled_unchanged(self):
+        from app.review_runner import _maybe_post_inline_comments
+        cfg = {"enabled": False, "max_comments": 25}
+        with patch("app.review_runner.get_review_inline_comments_config", return_value=cfg), \
+             patch("app.review_runner._submit_batch_review") as mock_batch:
+            assert _maybe_post_inline_comments(
+                "o", "r", "42", {"file_comments": [_inline_finding()]}, "abc",
+            ) == (0, 0, False)
+        mock_batch.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
