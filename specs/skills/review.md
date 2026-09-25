@@ -4,7 +4,7 @@ title: "Skill Spec — review"
 description: "Documents the `/review` skill that queues a code-review mission on PRs/issues, posting findings as a comment with severity-driven LGTM logic, batched opt-in inline review submission, and re-review comment handling, covered by the eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-09-11
+updated: 2026-09-25
 ---
 
 # Skill Spec — `review`
@@ -262,16 +262,30 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   (`POST …/pulls/{n}/reviews` with a `comments` array), not as N separate
   `…/pulls/{n}/comments` posts. Cap with `max_comments`. Re-runs stay
   idempotent (existing anchors skipped). If the batch create fails (e.g. line
-  not in diff), fall back to individual inline posts without failing the run.
+  not in diff, or a human draft review already holds the one-pending-review
+  slot and GitHub answers 422), fall back to individual inline posts without
+  failing the run — that path POSTs to `…/pulls/{n}/comments` and is unaffected
+  by a pending review.
 - **Idempotency is a precondition, not a best effort:** if the existing-anchor
   listing itself fails, inline posting is **skipped** for that run rather than
   posting an unverified (potentially wholly duplicate) comment set; the next
   `/review` posts it once the listing succeeds.
-- **A failed create is not proof of non-creation:** the POST is not idempotent
-  and is retried on transport timeouts, so before falling back to individual
-  posts the run re-lists the PR's inline comments. Comments confirmed landed
-  count as posted (and the verdict is treated as already applied) instead of
-  being re-posted.
+- **The review POST carries no retry budget:** `createReview` is not
+  idempotent, so it is sent with `max_attempts=1`. A stalled-but-accepted POST
+  that got re-sent would publish a second complete review — two notifications
+  and 2×N inline threads the author cannot bulk-delete — which costs far more
+  than one failed attempt that degrades to the fallback.
+- **A failed create is still not proof of non-creation:** a client-side timeout
+  can leave the review created server-side, so before falling back to
+  individual posts the run re-lists the PR's inline comments. Comments
+  confirmed landed count as posted (and the verdict is treated as already
+  applied) instead of being re-posted.
+- **Kōan never deletes a review it did not create.** It has no cleanup pass
+  over pre-existing reviews: every review Kōan POSTs carries an `event`, so it
+  can never leave a PENDING review of its own behind, and any PENDING review on
+  the PR is therefore unsubmitted human draft content. Deleting one is
+  irreversible destruction of human work and is forbidden by "the agent
+  proposes, the human decides".
 - **Verdict may ride the batch:** When a formal verdict is submitted in the
   same run (`review_verdict.approved`) and there is at least one new inline
   comment to post, the verdict `event` (`APPROVE` / `REQUEST_CHANGES`, or

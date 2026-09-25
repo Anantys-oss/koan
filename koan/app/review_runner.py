@@ -34,7 +34,7 @@ from app.claude_step import resolve_pr_location
 from app.config import get_review_bot_triage_config, get_review_compressor_token_budget, get_review_history_config, get_review_inline_comments_config, get_review_max_diff_chars, get_review_reply_config, get_review_uncompressed_max_diff_chars, get_review_verdict_config, is_review_compressor_enabled
 from app.run_log import log
 from app.diff_compressor import compress_diff
-from app.github import api, run_gh, sanitize_github_comment, find_bot_comment
+from app.github import run_gh, sanitize_github_comment, find_bot_comment
 from app.github_url_parser import ISSUE_URL_PATTERN
 from app.project_koan import get_review_always_check
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt
@@ -3323,41 +3323,21 @@ def _build_review_comment_payloads(
     return payloads, attempted
 
 
-def _delete_pending_reviews(owner: str, repo: str, pr_number: str) -> None:
-    """Best-effort: delete the caller's PENDING reviews so createReview can proceed.
+def _post_review_once(endpoint: str, payload: dict) -> None:
+    """POST a createReview payload exactly once, with no retry.
 
-    GitHub allows only one pending review per user per PR. A crashed prior
-    run can leave a PENDING review that blocks a new createReview.
+    ``createReview`` is not idempotent. Under ``run_gh``'s default budget a
+    POST that GitHub accepts but whose response stalls past the timeout is
+    re-sent, publishing a second complete review — duplicate notifications
+    plus 2xN inline threads the author cannot bulk-delete. One failed attempt
+    is far cheaper: the caller rechecks which comments actually landed before
+    falling back to individual posts.
     """
-    try:
-        raw = api(
-            f"repos/{owner}/{repo}/pulls/{pr_number}/reviews",
-            method="GET",
-            extra_args=["--paginate"],
-        )
-        reviews = json.loads(raw) if raw else []
-    except Exception as e:
-        log(
-            "review",
-            f"Could not list reviews for pending cleanup on PR #{pr_number}: {e}",
-        )
-        return
-    if not isinstance(reviews, list):
-        return
-    for rev in reviews:
-        if not isinstance(rev, dict) or rev.get("state") != "PENDING":
-            continue
-        rid = rev.get("id")
-        if not rid:
-            continue
-        try:
-            api(
-                f"repos/{owner}/{repo}/pulls/{pr_number}/reviews/{rid}",
-                method="DELETE",
-            )
-            log("review", f"Deleted PENDING review {rid} on PR #{pr_number}")
-        except Exception as e:
-            log("review", f"Failed to delete PENDING review {rid}: {e}")
+    run_gh(
+        "api", endpoint, "-X", "POST", "--input", "-",
+        stdin_data=json.dumps(payload),
+        max_attempts=1,
+    )
 
 
 def _submit_batch_review(
@@ -3380,11 +3360,15 @@ def _submit_batch_review(
     ``_submit_review_verdict`` and supply a minimal fallback so the batch
     path does not 422-and-silently-fallback on the common verdict-disabled
     COMMENT case.
+
+    A PENDING review already on the PR (a human draft — Kōan never creates
+    one, it always sends an ``event``) makes createReview return 422. That
+    falls through to the caller's individual-comment fallback, which POSTs to
+    ``…/pulls/{n}/comments`` and is unaffected by a pending review. Kōan never
+    deletes a review it did not create.
     """
     if not head_sha or not comments:
         return False, 0
-
-    _delete_pending_reviews(owner, repo, pr_number)
 
     # GitHub: body required for COMMENT / REQUEST_CHANGES events.
     review_body = body
@@ -3404,11 +3388,11 @@ def _submit_batch_review(
         payload["body"] = review_body
 
     endpoint = f"repos/{owner}/{repo}/pulls/{pr_number}/reviews"
-    # Catch broadly: api()/run_gh() re-raise OSError and TimeoutExpired after
-    # retries (not only RuntimeError). Returning (False, 0) lets the caller
-    # fall back to individual posts instead of aborting the review pipeline.
+    # Catch broadly: run_gh() raises OSError and TimeoutExpired as well as
+    # RuntimeError. Returning (False, 0) lets the caller fall back to
+    # individual posts instead of aborting the review pipeline.
     try:
-        api(endpoint, method="POST", input_data=json.dumps(payload), raw_body=True)
+        _post_review_once(endpoint, payload)
         log(
             "review",
             f"Submitted batch review ({event}) with {len(comments)} "
@@ -3423,12 +3407,7 @@ def _submit_batch_review(
                 # omit body (body_enabled:false); inject before the retry.
                 if not payload.get("body"):
                     payload["body"] = "Review comments attached."
-                api(
-                    endpoint,
-                    method="POST",
-                    input_data=json.dumps(payload),
-                    raw_body=True,
-                )
+                _post_review_once(endpoint, payload)
                 log(
                     "review",
                     f"Posted batch {event} as COMMENT on own PR #{pr_number}",
@@ -3495,8 +3474,8 @@ def _maybe_post_inline_comments(
     if ok:
         return (n, attempted, True)
 
-    # createReview raising is not proof the review was not created: run_gh
-    # retries on timeout, so a stalled-but-accepted POST can land server-side.
+    # createReview raising is not proof the review was not created: a POST
+    # that times out client-side may still have been accepted server-side.
     # Confirm against the PR before falling back, otherwise we duplicate the
     # comment set and report "0 of N posted" while N are visibly on the PR.
     landed, recheck_ok = _fetch_existing_inline_anchors_checked(

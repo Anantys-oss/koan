@@ -8149,11 +8149,20 @@ class TestBuildReviewCommentPayloads:
         assert attempted == 0
 
 
+def _batch_review_posts(mock_run_gh):
+    """Decode createReview payloads POSTed through a mocked ``run_gh``."""
+    return [
+        json.loads(c.kwargs["stdin_data"])
+        for c in mock_run_gh.call_args_list
+        if "POST" in c.args
+    ]
+
+
 class TestSubmitBatchReview:
-    @patch("app.review_runner.api")
-    def test_posts_create_review_with_comments_and_event(self, mock_api):
+    @patch("app.review_runner.run_gh")
+    def test_posts_create_review_with_comments_and_event(self, mock_run_gh):
         from app.review_runner import _submit_batch_review
-        mock_api.return_value = '{"id": 1}'
+        mock_run_gh.return_value = '{"id": 1}'
         comments = [{"path": "a.py", "line": 10, "side": "RIGHT", "body": "x"}]
         ok, n = _submit_batch_review(
             "o", "r", "42",
@@ -8164,33 +8173,44 @@ class TestSubmitBatchReview:
         )
         assert ok is True
         assert n == 1
-        # One GET (pending cleanup) + one POST (createReview)
-        assert mock_api.call_count >= 1
-        post_calls = [
-            c for c in mock_api.call_args_list
-            if (c.kwargs.get("method") == "POST"
-                or (len(c.args) > 1 and c.args[1] == "POST")
-                or c.kwargs.get("raw_body") is True)
-        ]
-        assert len(post_calls) == 1
-        call = post_calls[0]
-        assert call.args[0] == "repos/o/r/pulls/42/reviews"
-        assert call.kwargs.get("method") == "POST" or "POST" in call.args
-        assert call.kwargs["raw_body"] is True
-        payload = json.loads(call.kwargs["input_data"])
+        posts = _batch_review_posts(mock_run_gh)
+        assert len(posts) == 1
+        call = mock_run_gh.call_args_list[0]
+        assert call.args[1] == "repos/o/r/pulls/42/reviews"
+        payload = posts[0]
         assert payload["commit_id"] == "abc123"
         assert payload["event"] == "REQUEST_CHANGES"
         assert payload["comments"] == comments
         assert "CAUTION" in payload["body"]
 
-    @patch("app.review_runner.api")
-    def test_self_review_retries_as_comment(self, mock_api):
+    @patch("app.review_runner.run_gh")
+    def test_does_not_touch_existing_reviews(self, mock_run_gh):
+        """A human PENDING draft must never be listed or deleted."""
+        from app.review_runner import _submit_batch_review
+        mock_run_gh.return_value = '{"id": 1}'
+        _submit_batch_review(
+            "o", "r", "42",
+            head_sha="abc",
+            comments=[{"path": "a.py", "line": 1, "side": "RIGHT", "body": "n"}],
+            event="COMMENT",
+            body="b",
+        )
+        methods = [
+            a for c in mock_run_gh.call_args_list for a in c.args
+        ]
+        assert "DELETE" not in methods
+        assert "GET" not in methods
+        # Exactly one gh invocation: the createReview POST.
+        assert mock_run_gh.call_count == 1
+
+    @patch("app.review_runner.run_gh")
+    def test_self_review_retries_as_comment(self, mock_run_gh):
         from app.review_runner import _submit_batch_review
         self_err = RuntimeError(
             'HTTP 422 Can not approve your own pull request'
         )
-        # pending list GET, first POST fails, second POST succeeds
-        mock_api.side_effect = ["[]", self_err, '{"id": 2}']
+        # First POST fails as a self-review, second POST succeeds.
+        mock_run_gh.side_effect = [self_err, '{"id": 2}']
         ok, n = _submit_batch_review(
             "o", "r", "42",
             head_sha="abc",
@@ -8200,16 +8220,12 @@ class TestSubmitBatchReview:
         )
         assert ok is True
         assert n == 1
-        post_calls = [
-            c for c in mock_api.call_args_list
-            if c.kwargs.get("raw_body") is True
-        ]
-        assert len(post_calls) == 2
-        second = json.loads(post_calls[1].kwargs["input_data"])
-        assert second["event"] == "COMMENT"
+        posts = _batch_review_posts(mock_run_gh)
+        assert len(posts) == 2
+        assert posts[1]["event"] == "COMMENT"
 
-    @patch("app.review_runner.api", side_effect=RuntimeError("422 path not in diff"))
-    def test_returns_false_on_hard_failure(self, _mock_api):
+    @patch("app.review_runner.run_gh", side_effect=RuntimeError("422 path not in diff"))
+    def test_returns_false_on_hard_failure(self, _mock_run_gh):
         from app.review_runner import _submit_batch_review
         ok, n = _submit_batch_review(
             "o", "r", "42", head_sha="abc",
@@ -8219,11 +8235,11 @@ class TestSubmitBatchReview:
         assert ok is False
         assert n == 0
 
-    @patch("app.review_runner.api")
-    def test_empty_body_gets_fallback_for_comment_event(self, mock_api):
+    @patch("app.review_runner.run_gh")
+    def test_empty_body_gets_fallback_for_comment_event(self, mock_run_gh):
         """GitHub requires body for COMMENT; empty input gets a minimal fallback."""
         from app.review_runner import _submit_batch_review
-        mock_api.return_value = '{"id": 1}'
+        mock_run_gh.return_value = '{"id": 1}'
         ok, n = _submit_batch_review(
             "o", "r", "42",
             head_sha="abc",
@@ -8233,20 +8249,16 @@ class TestSubmitBatchReview:
         )
         assert ok is True
         assert n == 1
-        post_calls = [
-            c for c in mock_api.call_args_list
-            if c.kwargs.get("raw_body") is True
-        ]
-        assert len(post_calls) == 1
-        payload = json.loads(post_calls[0].kwargs["input_data"])
-        assert payload["event"] == "COMMENT"
-        assert payload.get("body")  # non-empty fallback
+        posts = _batch_review_posts(mock_run_gh)
+        assert len(posts) == 1
+        assert posts[0]["event"] == "COMMENT"
+        assert posts[0].get("body")  # non-empty fallback
 
-    @patch("app.review_runner.api")
-    def test_empty_body_gets_fallback_for_request_changes(self, mock_api):
+    @patch("app.review_runner.run_gh")
+    def test_empty_body_gets_fallback_for_request_changes(self, mock_run_gh):
         """GitHub requires body for REQUEST_CHANGES when body_enabled is off."""
         from app.review_runner import _submit_batch_review
-        mock_api.return_value = '{"id": 1}'
+        mock_run_gh.return_value = '{"id": 1}'
         ok, _ = _submit_batch_review(
             "o", "r", "42",
             head_sha="abc",
@@ -8255,16 +8267,12 @@ class TestSubmitBatchReview:
             body="",
         )
         assert ok is True
-        post_calls = [
-            c for c in mock_api.call_args_list
-            if c.kwargs.get("raw_body") is True
-        ]
-        payload = json.loads(post_calls[0].kwargs["input_data"])
+        payload = _batch_review_posts(mock_run_gh)[0]
         assert payload["event"] == "REQUEST_CHANGES"
         assert "Blocking" in payload["body"]
 
-    @patch("app.review_runner.api", side_effect=OSError("connection reset"))
-    def test_oserror_returns_false_not_raises(self, _mock_api):
+    @patch("app.review_runner.run_gh", side_effect=OSError("connection reset"))
+    def test_oserror_returns_false_not_raises(self, _mock_run_gh):
         """Transient gh failures must return (False, 0) so fallback can run."""
         from app.review_runner import _submit_batch_review
         ok, n = _submit_batch_review(
@@ -8276,10 +8284,10 @@ class TestSubmitBatchReview:
         assert n == 0
 
     @patch(
-        "app.review_runner.api",
+        "app.review_runner.run_gh",
         side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=30),
     )
-    def test_timeout_returns_false_not_raises(self, _mock_api):
+    def test_timeout_returns_false_not_raises(self, _mock_run_gh):
         """TimeoutExpired must not abort the rest of the review pipeline."""
         from app.review_runner import _submit_batch_review
         ok, n = _submit_batch_review(
@@ -8290,15 +8298,15 @@ class TestSubmitBatchReview:
         assert ok is False
         assert n == 0
 
-    @patch("app.review_runner.api")
-    def test_self_review_approve_empty_body_injects_on_comment_retry(self, mock_api):
+    @patch("app.review_runner.run_gh")
+    def test_self_review_approve_empty_body_injects_on_comment_retry(self, mock_run_gh):
         """APPROVE with empty body: self-PR retry as COMMENT needs a body."""
         from app.review_runner import _submit_batch_review
         self_err = RuntimeError(
             "HTTP 422 Can not approve your own pull request"
         )
-        # pending list GET, first POST fails, second POST succeeds
-        mock_api.side_effect = ["[]", self_err, '{"id": 3}']
+        # First POST fails as a self-review, second POST succeeds.
+        mock_run_gh.side_effect = [self_err, '{"id": 3}']
         ok, n = _submit_batch_review(
             "o", "r", "42",
             head_sha="abc",
@@ -8308,17 +8316,40 @@ class TestSubmitBatchReview:
         )
         assert ok is True
         assert n == 1
-        post_calls = [
-            c for c in mock_api.call_args_list
-            if c.kwargs.get("raw_body") is True
-        ]
-        assert len(post_calls) == 2
-        first = json.loads(post_calls[0].kwargs["input_data"])
-        second = json.loads(post_calls[1].kwargs["input_data"])
+        first, second = _batch_review_posts(mock_run_gh)
         assert first["event"] == "APPROVE"
         assert "body" not in first  # APPROVE may omit body
         assert second["event"] == "COMMENT"
         assert second.get("body")  # non-empty — GitHub requires it for COMMENT
+
+    def test_timeout_does_not_repost_the_review(self):
+        """createReview is not idempotent — a timing-out POST hits the wire once.
+
+        Patched at ``app.github.subprocess.run`` (and ``app.retry.time.sleep``)
+        on purpose: the retry budget is what this asserts, so mocking above
+        ``retry_with_backoff`` would test nothing.  A duplicate review means
+        two notifications and 2xN inline threads the author cannot bulk-delete.
+        """
+        import app.github as gh_mod
+        from app.review_runner import _submit_batch_review
+        invocations = []
+
+        def fake_run(cmd, **kwargs):
+            invocations.append(cmd)
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=30)
+
+        with patch.object(gh_mod.subprocess, "run", side_effect=fake_run), \
+             patch("app.retry.time.sleep") as mock_sleep:
+            ok, n = _submit_batch_review(
+                "o", "r", "42",
+                head_sha="abc",
+                comments=[{"path": "a.py", "line": 1, "side": "RIGHT", "body": "n"}],
+                event="COMMENT",
+                body="b",
+            )
+        assert (ok, n) == (False, 0)
+        assert len(invocations) == 1
+        mock_sleep.assert_not_called()
 
 
 class TestMaybePostInlineCommentsBatch:
