@@ -7281,7 +7281,10 @@ class TestBatchVerdictRideInRunReview:
     @patch("app.review_runner._is_review_requested", return_value=False)
     @patch("app.review_runner._submit_review_verdict")
     @patch("app.review_runner._submit_batch_review", return_value=(True, 1))
-    @patch("app.review_runner._fetch_existing_inline_anchors", return_value=set())
+    @patch(
+        "app.review_runner._fetch_existing_inline_anchors_checked",
+        return_value=(set(), True),
+    )
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc"])
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
@@ -7321,7 +7324,10 @@ class TestBatchVerdictRideInRunReview:
     @patch("app.review_runner._submit_review_verdict", return_value=True)
     @patch("app.review_runner._post_inline_finding_comments", return_value=(1, 1))
     @patch("app.review_runner._submit_batch_review", return_value=(False, 0))
-    @patch("app.review_runner._fetch_existing_inline_anchors", return_value=set())
+    @patch(
+        "app.review_runner._fetch_existing_inline_anchors_checked",
+        return_value=(set(), True),
+    )
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc"])
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
@@ -8079,7 +8085,8 @@ class TestMaybePostInlineComments:
         review_data = {"file_comments": [_inline_finding(line=3)]}
         cfg = {"enabled": True, "max_comments": 25}
         with patch("app.review_runner.get_review_inline_comments_config", return_value=cfg), \
-             patch("app.review_runner._fetch_existing_inline_anchors", return_value=set()), \
+             patch("app.review_runner._fetch_existing_inline_anchors_checked",
+                   return_value=(set(), True)), \
              patch("app.review_runner._submit_batch_review", return_value=(True, 1)) as mock_batch, \
              patch("app.review_runner._post_inline_finding_comments") as mock_post:
             assert _maybe_post_inline_comments(
@@ -8320,7 +8327,8 @@ class TestMaybePostInlineCommentsBatch:
         review_data = {"file_comments": [_inline_finding(line=3)]}
         cfg = {"enabled": True, "max_comments": 25}
         with patch("app.review_runner.get_review_inline_comments_config", return_value=cfg), \
-             patch("app.review_runner._fetch_existing_inline_anchors", return_value=set()), \
+             patch("app.review_runner._fetch_existing_inline_anchors_checked",
+                   return_value=(set(), True)), \
              patch("app.review_runner._submit_batch_review", return_value=(True, 1)) as mock_batch, \
              patch("app.review_runner._post_inline_finding_comments") as mock_indiv:
             posted, attempted, batch_ok = _maybe_post_inline_comments(
@@ -8336,7 +8344,8 @@ class TestMaybePostInlineCommentsBatch:
         review_data = {"file_comments": [_inline_finding(line=3)]}
         cfg = {"enabled": True, "max_comments": 25}
         with patch("app.review_runner.get_review_inline_comments_config", return_value=cfg), \
-             patch("app.review_runner._fetch_existing_inline_anchors", return_value=set()), \
+             patch("app.review_runner._fetch_existing_inline_anchors_checked",
+                   return_value=(set(), True)), \
              patch("app.review_runner._submit_batch_review", return_value=(False, 0)), \
              patch("app.review_runner._post_inline_finding_comments", return_value=(1, 1)) as mock_indiv:
             posted, attempted, batch_ok = _maybe_post_inline_comments(
@@ -8346,6 +8355,27 @@ class TestMaybePostInlineCommentsBatch:
         assert batch_ok is False
         assert (posted, attempted) == (1, 1)
         mock_indiv.assert_called_once()
+
+    def test_skips_everything_when_anchor_check_unavailable(self):
+        """An unverifiable anchor listing must post nothing — batch or individual.
+
+        Submitting blind would duplicate the whole comment set on the PR.
+        """
+        from app.review_runner import _maybe_post_inline_comments
+        review_data = {"file_comments": [_inline_finding(line=3)]}
+        cfg = {"enabled": True, "max_comments": 25}
+        with patch("app.review_runner.get_review_inline_comments_config", return_value=cfg), \
+             patch("app.review_runner._fetch_existing_inline_anchors_checked",
+                   return_value=(set(), False)), \
+             patch("app.review_runner._submit_batch_review") as mock_batch, \
+             patch("app.review_runner._post_inline_finding_comments") as mock_indiv:
+            result = _maybe_post_inline_comments(
+                "o", "r", "42", review_data, "abc123",
+                event="REQUEST_CHANGES", body="blockers",
+            )
+        assert result == (0, 0, False)
+        mock_batch.assert_not_called()
+        mock_indiv.assert_not_called()
 
     def test_disabled_unchanged(self):
         from app.review_runner import _maybe_post_inline_comments
