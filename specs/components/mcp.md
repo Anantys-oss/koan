@@ -49,6 +49,14 @@ annotations, configuration gates, and transport lifecycle.
   no pidfile exists rather than becoming a reported start followed by a silent
   exit. Binding is two syscalls, so it does not consume the verify timeout the
   pidfile opens for the SDK import and spec parse that follow.
+- The daemon is launched as a **module** (`python -m app.mcp`), never by script
+  path. CPython puts a script's own directory at `sys.path[0]`, ahead of
+  `PYTHONPATH` and the stdlib, so under a script launch any module in
+  `app/mcp/` shadows the stdlib package of the same name for the whole
+  process. A module launch leaves `sys.path[0]` at `koan/`, which removes the
+  hazard at its source rather than one filename at a time. The transport module
+  is additionally named `http_transport.py`, so an operator's hand-written unit
+  that uses the script form still boots.
 - The pidfile therefore proves the process exists, not that it serves. The
   daemon publishes a separate readiness marker (`.koan-ready-mcp`) from the
   point past which nothing in startup can still fail, and the process manager

@@ -272,16 +272,26 @@ MCP_READY_TIMEOUT = 20.0
 
 def _launch_python_process(
     koan_root: Path, script_name: str, process_name: str, verify_timeout: float,
-    extra_env: dict = None,
+    extra_env: dict = None, module_mode: bool = False,
 ) -> tuple:
     """Launch a Python process in the background and verify startup.
-    
+
     Args:
         koan_root: Root path of the Kōan installation.
-        script_name: Python script filename (e.g., "app/run.py").
+        script_name: Python script filename (e.g., "app/run.py") or, when
+            ``module_mode`` is set, a module name (e.g., "app.mcp").
         process_name: Process type identifier ("run" or "awake").
         verify_timeout: Seconds to wait for PID file verification.
-    
+        module_mode: Launch via ``python -m <script_name>`` instead of by
+            script path. Additive and off by default, so the argv for
+            ``run``/``awake``/``dashboard``/``api`` stays byte-identical.
+            CPython puts a *script's* own directory at ``sys.path[0]``, ahead
+            of ``PYTHONPATH`` and the stdlib, so any module in that directory
+            named after a stdlib top-level package shadows it for the whole
+            process. A module launch leaves ``sys.path[0]`` at the working
+            directory (``koan/``) and removes the hazard at its source rather
+            than one filename at a time.
+
     Returns:
         (success: bool, message: str)
     """
@@ -303,8 +313,9 @@ def _launch_python_process(
 
     log_fh = _open_log_file(koan_root, process_name)
     try:
+        argv = [python, "-m", script_name] if module_mode else [python, script_name]
         subprocess.Popen(
-            [python, script_name],
+            argv,
             cwd=str(koan_dir),
             env=env,
             stdin=subprocess.DEVNULL,
@@ -516,7 +527,7 @@ def start_mcp(
     ready.unlink(missing_ok=True)
 
     ok, msg = _launch_python_process(
-        koan_root, "app/mcp/__main__.py", "mcp", verify_timeout,
+        koan_root, "app.mcp", "mcp", verify_timeout, module_mode=True,
     )
     if not ok:
         return ok, msg

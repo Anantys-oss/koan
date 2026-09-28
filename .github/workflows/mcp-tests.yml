@@ -15,6 +15,9 @@ on:
       - 'koan/app/api/auth.py'
       # get_mcp_* decides which transport and tools the entrypoint selects.
       - 'koan/app/config.py'
+      # start_mcp() picks the launch form; tests_mcp/test_pid_manager.py is the
+      # only place that spawns real interpreters to prove it still boots.
+      - 'koan/app/pid_manager.py'
       # API_COMMAND_NAMES feeds the koan_missions_create command enum: a change
       # to the catalog, to api_exposed parsing, or to an exposed SKILL.md can
       # empty or reshape that enum without touching koan/app/mcp/.
