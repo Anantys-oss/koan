@@ -50,13 +50,39 @@ Alternatively set `api.token` in `config.yaml`, but environment variable takes p
 make api          # standalone foreground server
 make start        # includes API when api.enabled: true
 make stop         # stops all managed processes including API
-make status       # shows API PID when running
+make status       # process status — no API line, see below
 ```
 
 `make start` exits non-zero when the API fails to start, the same as for the
 other managed processes. Before the MCP server landed it only reported the
 failure and still exited 0, so a supervisor or CI script that treats a non-zero
 exit as a failed boot now sees API startup problems it used to ignore.
+
+Under `pid_manager`, `make start`, `make stop` and `make restart` all report an
+`api:` line. `make status` does not — `format_status_all()` has no API branch,
+so the API is the one managed process it never lists. It is started and managed
+all the same; confirm it with `ss -tlnp | grep 8420` or `tail -3 logs/api.log`.
+
+### systemd hosts need a third unit
+
+`api.enabled: true` tells **Kōan's own process manager** (`pid_manager`, the
+default) to include the API among the processes it starts. A host running under
+`KOAN_SERVICE_MANAGER=systemd` or `systemd-user` does not use that manager — its
+units invoke entrypoints directly — and `koan/systemd/install-service.sh`
+installs only `koan.service` and `koan-awake.service`. **There, the config flag
+alone does nothing**: no listener appears and nothing warns you.
+
+Write a third unit with `ExecStart=<venv>/bin/python app/api/server.py`, copying
+`koan.service`'s `User=`/`Group=`/`Environment=`/`EnvironmentFile=` lines, and
+add `Wants=koan-api.service` to `koan.service`'s `[Unit]` so a restart of the
+parent brings it back — `PartOf=` propagates stop and restart, never start.
+
+Carry `User=` and `Group=` over on a **system-scope** unit: without them systemd
+runs the API as root while the agent loop runs as the installer's unprivileged
+user. Omit both in a `systemd --user` unit: the only value systemd accepts there
+is the account the user manager already runs as. The MCP page walks through
+every step, and its fourth unit is the same shape:
+[systemd hosts need their own unit](mcp-server.md#systemd-hosts-need-their-own-unit).
 
 ---
 

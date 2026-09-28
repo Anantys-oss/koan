@@ -56,6 +56,17 @@ Both are `Restart=on-failure` with `RestartSec=10` and `WantedBy=default.target`
 so they start when the user manager comes up. `koan.service` `Requires`/`BindsTo`
 `koan-awake.service`, so the bridge and loop start and stop together.
 
+**Two units is the whole install.** The optional REST API and MCP HTTP daemon are
+started by Kōan's own process manager, which a systemd host does not use, so
+enabling either in `instance/config.yaml` has no effect here until you write its
+unit by hand. See [REST API](../operations/rest-api.md) and
+[MCP Server](../operations/mcp-server.md#systemd-hosts-need-their-own-unit) — the
+latter also covers the `Wants=` line the parent needs, without which a restart of
+`koan.service` stops those daemons and never starts them again. Its
+[`systemd --user` hosts](../operations/mcp-server.md#systemd---user-hosts)
+subsection has the `systemctl --user` commands and the `WantedBy=default.target`
+/ no-`User=` differences that apply here.
+
 ### Linger (boot persistence)
 
 A user manager normally exists only while you have an active login session. To

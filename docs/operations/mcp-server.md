@@ -77,6 +77,12 @@ mcp:
 Install the optional runtime once with `make mcp-setup`, then `make start`.
 The endpoint is `http://127.0.0.1:8421/mcp`.
 
+`make start` is enough only when Kōan runs under **its own process manager**
+(`pid_manager`, the default). There, `mcp` is in `PROCESS_NAMES`, `start_mcp()`
+is gated on `mcp.enabled` plus `transport: http`, and `make stop`, `make status`
+and `make logs` all know about it. On a **systemd host the config flag alone
+does nothing** — see [systemd hosts need their own unit](#systemd-hosts-need-their-own-unit).
+
 Every HTTP request requires the same token as the REST API:
 
 ```http
@@ -130,6 +136,245 @@ on the first request after the file is writable again.
 the JSON contains the bearer token, so do not paste it into a tracked file or
 attach it to an issue.
 
+## Connecting a client
+
+Once the server is running, pointing a client at it is two commands. Nothing
+below needs a Kōan checkout, a Python environment, or an SSH tunnel on the
+client machine — only network reach to the bind address.
+
+Read the token off the host rather than copying it around. It is the same
+`KOAN_API_TOKEN` the REST API uses:
+
+```bash
+TOKEN=$(ssh <bot-host> 'sed -n "s/^KOAN_API_TOKEN=//p" /path/to/koan/.env')
+```
+
+### Claude Code
+
+```bash
+claude mcp add --scope user --transport http <server-name> http://<bot-host>:8421/mcp \
+  --header "Authorization: Bearer $TOKEN"
+```
+
+`<server-name>` is yours to choose. It labels the connection and prefixes the
+tool names in the client, so a machine talking to two Kōan hosts can register
+both without collision — `my_bot` and `staging_bot` rather than `koan` twice.
+`--scope user` registers it for every project; drop it to scope the server to
+the current directory.
+
+Restart the client — MCP servers are only read at startup — then confirm:
+
+```console
+$ claude mcp list
+<server-name>: http://<bot-host>:8421/mcp (HTTP) - ✔ Connected
+```
+
+`serverInfo.name` is always `koan`, because it names the product rather than
+the deployment. To tell two hosts apart, call `koan_projects_list` and compare
+the repositories each one manages.
+
+### Any other MCP client
+
+`make mcp-config` prints a ready-made block for the configured transport. In
+HTTP mode it contains the bearer token, so redirect it to the client's config
+rather than pasting it into a ticket or a tracked file. The shape is:
+
+```json
+{
+  "mcpServers": {
+    "<server-name>": {
+      "type": "http",
+      "url": "http://<bot-host>:8421/mcp",
+      "headers": { "Authorization": "Bearer <KOAN_API_TOKEN>" }
+    }
+  }
+}
+```
+
+### Before handing the endpoint to someone else
+
+The bearer token is a full-privilege credential, not a read key. Say so
+explicitly when sharing an endpoint:
+
+- **It reaches administrative routes.** The same token authenticates
+  `/v1/shutdown`, `/v1/restart` and `/v1/config` on the REST API.
+- **`exec_operation` is not fenced off.** It can invoke any `operation_id` in
+  `koan/openapi.yaml`, including those routes. It carries a destructive hint so
+  clients prompt first, but that is a client-side courtesy, not a server-side
+  restriction.
+- **A client config file holds the token in cleartext.** Claude Code writes it
+  to `~/.claude.json`; other clients vary. Treat that file as a secret.
+- **Plain HTTP puts the token on the wire in the clear.** Acceptable on a
+  trusted network; beyond one, put it behind the TLS proxy below.
+
+Rotating means changing `KOAN_API_TOKEN` on the host, restarting the REST API
+and the MCP daemon, **and** updating every client config that carries the old
+value — there is no server-side revocation.
+
+## systemd hosts need their own unit
+
+`KOAN_SERVICE_MANAGER=systemd` (or `systemd-user`) bypasses Kōan's process
+manager entirely: the units invoke entrypoints directly, so `PROCESS_NAMES` and
+`start_mcp()` are never consulted. Both installers — `koan/systemd/install-service.sh` for system scope and
+`koan/systemd/install-user-service.sh` for `systemd --user` — install
+**two** units, `koan.service` and `koan-awake.service`, and neither the REST API
+nor MCP is among them. Setting `mcp.transport: http` on such a host is silently
+inert: nothing listens on 8421 and nothing warns you.
+
+| Unit | `ExecStart` | Installed by |
+|---|---|---|
+| `koan-awake.service` | `app/awake.py` | the installer |
+| `koan.service` | `app/run.py` | the installer |
+| `koan-api.service` | `app/api/server.py` | **write it yourself** |
+| `koan-mcp.service` | `-m app.mcp` | **write it yourself** |
+
+Everything below shows the **system-scope** form first. `systemd --user` hosts
+need the same two hand-written units (`koan-api.service`, `koan-mcp.service`)
+with three differences — see
+[`systemd --user` hosts](#systemd---user-hosts) at the end of this section.
+
+Copy `koan.service`'s `User=`, `Group=`, `Environment=` and `EnvironmentFile=`
+lines verbatim, so the unit runs as the same account and inherits `KOAN_ROOT`,
+`PYTHONPATH`, the pinned `PATH` and `SSH_AUTH_SOCK`.
+
+`User=`/`Group=` are **not optional on a system-scope unit**. Omit them and
+systemd runs MCP as root while the agent loop runs as the installer's
+unprivileged user — a needlessly wide privilege boundary for a network listener,
+and a source of root-owned PID, log and state files inside an otherwise
+user-owned installation. `install-service.sh` sets both on `koan.service` and
+`koan-awake.service`; the API and MCP units must match. Read the values off the
+installed unit rather than guessing:
+
+```bash
+systemctl cat koan.service | grep -E '^(User|Group)='
+```
+
+Leave both out of a `systemd --user` unit: the only value systemd accepts there
+is the account the user manager already runs as, so they buy you nothing.
+
+```ini
+# /etc/systemd/system/koan-mcp.service — system scope
+[Unit]
+Description=Kōan MCP HTTP
+After=network.target koan.service koan-api.service
+PartOf=koan.service
+
+[Service]
+Type=simple
+User=<same as koan.service>
+Group=<same as koan.service>
+WorkingDirectory=/path/to/koan/koan
+EnvironmentFile=/path/to/koan/.env
+Environment=KOAN_ROOT=/path/to/koan
+Environment=PYTHONPATH=/path/to/koan/koan
+Environment=PATH=<same as koan.service>
+Environment=SSH_AUTH_SOCK=/path/to/koan/.ssh-agent-sock
+ExecStart=/path/to/koan/.venv/bin/python -m app.mcp
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/path/to/koan/logs/mcp-stdout.log
+StandardError=append:/path/to/koan/logs/mcp-stdout.log
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### `ExecStart` must be `-m app.mcp`, not the script path
+
+Python puts a **script's own directory** at `sys.path[0]`, ahead of
+`PYTHONPATH` and the stdlib. Launching the entrypoint by path therefore puts
+`koan/app/mcp/` first, where any module named after a stdlib top-level package
+shadows it for the whole process — the failure mode that an earlier
+`app/mcp/http.py` produced, breaking Starlette's `import http.cookies`:
+
+```text
+File ".../starlette/responses.py", line 4, in <module>
+    import http.cookies
+ModuleNotFoundError: No module named 'http.cookies'; 'http' is not a package
+```
+
+Run it as a module instead. Then `sys.path[0]` is the working directory
+(`koan/`), `http` resolves to the stdlib, and `app.mcp.*` still resolves inside
+the package. Kōan's own process manager uses that form (`start_mcp()` spawns
+`python -m app.mcp`), so a hand-written unit should match it. The transport
+module is also named `http_transport.py` rather than `http.py`, which keeps the
+script form working today — but naming discipline is one rename away from
+lapsing, and the module launch is not.
+
+### `PartOf=` alone will lose the daemon
+
+`PartOf=` propagates **stop and restart, never start**. So when `koan.service`
+crashes and systemd restarts it, `koan-api` and `koan-mcp` are stopped with it
+and nothing brings them back — the daemon returns healthy while its API and MCP
+listeners stay dead. Declare them on the parent:
+
+```ini
+# koan.service, [Unit]
+Requires=koan-awake.service
+Wants=koan-api.service
+Wants=koan-mcp.service
+BindsTo=koan-awake.service
+```
+
+`Wants=`, not `Requires=` — a broken API or MCP listener must never stop the
+agent loop from starting.
+
+Put those lines in a **drop-in**, not in `koan.service` itself — both installers
+rewrite that file wholesale from their template, so an edit in place vanishes on
+the next `make install-service` / `make install-user-service` and the daemons go
+back to never restarting:
+
+```bash
+# system scope
+sudo install -d /etc/systemd/system/koan.service.d
+# systemd --user
+install -d ~/.config/systemd/user/koan.service.d
+```
+
+Name the file `10-koan-extras.conf` and give it just the `[Unit]` header and the
+two `Wants=` lines. Drop-ins are merged on top of the unit and are left alone by
+both installers.
+
+### Enable it — system scope
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now koan-api koan-mcp
+systemctl list-dependencies koan.service | head -6
+ss -lntp | grep 8421
+```
+
+### `systemd --user` hosts
+
+`install-user-service.sh` writes to `~/.config/systemd/user`, so the plain
+`systemctl` above cannot see these units at all — every call needs `--user`.
+Three differences from the system unit:
+
+- **Drop `User=` and `Group=`.** The user manager already runs as you.
+- **`WantedBy=default.target`, not `multi-user.target`.** `multi-user.target`
+  is a system target; a user unit wanting it never gets pulled in.
+- **Unit path is `~/.config/systemd/user/`,** not `/etc/systemd/system/`. No
+  `sudo` anywhere.
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now koan-api koan-mcp
+systemctl --user list-dependencies koan.service | head -6
+ss -lntp | grep 8421
+```
+
+Run those from a real login session. From `sudo -niu <user>` the user bus is
+not wired up, so export it first — the same prefix the Makefile uses:
+
+```bash
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
+```
+
+Lingering must be on (`loginctl show-user "$(id -un)"` → `Linger=yes`) or
+`/run/user/<uid>` disappears with your session and the daemons stop with it.
+See [Running as a systemd --user Service](../setup/systemd-user.md).
+
 ## TLS and reverse proxy
 
 Kōan does not terminate TLS or apply public-network rate limits. Keep
@@ -164,6 +409,36 @@ add TLS, rate limiting, or firewall rules.
 
 Rotate `KOAN_API_TOKEN` as one credential for both hops, then restart the REST
 API and MCP daemon so the outbound MCP REST client uses the new value.
+
+## Reaching a remote host without TLS: stdio over SSH
+
+MCP framing is line-delimited JSON-RPC over stdio, so it survives an SSH pipe
+unchanged. That gives a third option between "loopback only" and "terminate TLS
+in nginx", and it is the right one for a trusted-network or development host:
+**the bearer token never leaves the machine running Kōan.**
+
+```bash
+claude mcp add --transport stdio koan -- \
+  ssh -T user@host \
+  'cd /path/to/koan && KOAN_ROOT=/path/to/koan exec .venv/bin/python bin/koan-mcp'
+```
+
+Three things this depends on:
+
+- **`ssh -T`.** A pseudo-terminal would corrupt the JSON-RPC framing.
+- **Setting `KOAN_ROOT` explicitly.** `app.utils` refuses to boot when that
+  variable is missing. Without it `bin/koan-mcp` dies on import with
+  `KOAN_ROOT environment variable is not set`, so the client reports a
+  connected-but-dead server. Nothing else needs exporting: a non-interactive
+  SSH command inherits none of the unit's environment, but the entrypoint
+  reads `$KOAN_ROOT/.env` itself before it resolves the token.
+- **Keeping the remote command as one argv element.** Splitting it fails in a
+  confusing place, well after the client reports the server as connected.
+
+Probing it by hand needs `initialize`, `notifications/initialized` and
+`tools/list` written in that order, from something that holds stdin open until
+the reply arrives — a bare `printf | ssh` closes stdin first and returns only
+the `initialize` reply, which looks like a broken server.
 
 ## Optional dependency
 
