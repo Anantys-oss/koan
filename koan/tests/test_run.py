@@ -1431,6 +1431,36 @@ class TestRunClaudeTask:
         # Reaped in the finally — including the file the child left behind.
         assert not Path(reported).exists()
 
+    @pytest.mark.parametrize("provider_name, expected", [
+        ("claude", "1|3000000|3000000"),
+        ("codex", "||"),
+    ])
+    def test_claude_env_disables_background_tasks(
+        self, tmp_path, provider_name, expected,
+    ):
+        """Claude missions run with background tasks off and a raised Bash
+        timeout, so a long command blocks instead of being auto-backgrounded
+        and orphaned (#2249). Other providers get neither."""
+        from app.run import run_claude_task, _sig
+        _sig.task_running = False
+
+        stdout_f = str(tmp_path / "out.txt")
+        stderr_f = str(tmp_path / "err.txt")
+
+        with patch("app.config.get_cli_provider_name", return_value=provider_name), \
+             patch("app.config.get_bash_foreground_timeout_ms", return_value=3_000_000):
+            exit_code = run_claude_task(
+                cmd=["sh", "-c", 'printf "%s|%s|%s" '
+                     '"$CLAUDE_CODE_DISABLE_BACKGROUND_TASKS" '
+                     '"$BASH_DEFAULT_TIMEOUT_MS" "$BASH_MAX_TIMEOUT_MS"'],
+                stdout_file=stdout_f,
+                stderr_file=stderr_f,
+                cwd=str(tmp_path),
+            )
+
+        assert exit_code == 0
+        assert Path(stdout_f).read_text() == expected
+
     def test_resets_signal_state(self, tmp_path):
         from app.run import run_claude_task, _sig
 

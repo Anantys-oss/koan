@@ -361,14 +361,20 @@ def run_claude_task(
     # Give the agent enough foreground headroom to BLOCK on a long-but-bounded
     # command rather than backgrounding it (backgrounded children are orphaned
     # when the one-shot session ends — see the cli-execution-model prompt).
-    # BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS are Claude-CLI-specific, so
-    # only inject them for the Claude provider (inert but noise for others).
+    # These env vars are Claude-CLI-specific, so only inject them for the
+    # Claude provider (inert but noise for others).
     mission_env = dict(os.environ)
     _provider_name = getattr(provider, "name", "") or get_cli_provider_name()
-    _bash_ms = get_bash_foreground_timeout_ms()
-    if _bash_ms > 0 and _provider_name == "claude":
-        mission_env["BASH_DEFAULT_TIMEOUT_MS"] = str(_bash_ms)
-        mission_env["BASH_MAX_TIMEOUT_MS"] = str(_bash_ms)
+    if _provider_name == "claude":
+        # Without this the CLI auto-moves a foreground command that outlives
+        # the Bash timeout into the background; the model then ends its turn
+        # waiting for a notification that never comes, the CLI exits 0, and
+        # the mission is finalized Done without the result (#2249).
+        mission_env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] = "1"
+        _bash_ms = get_bash_foreground_timeout_ms()
+        if _bash_ms > 0:
+            mission_env["BASH_DEFAULT_TIMEOUT_MS"] = str(_bash_ms)
+            mission_env["BASH_MAX_TIMEOUT_MS"] = str(_bash_ms)
 
     # Per-mission TMPDIR: everything the agent creates via mktemp/$TMPDIR is
     # reaped in the outer finally below; crash leftovers are swept at startup
