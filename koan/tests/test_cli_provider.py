@@ -1218,6 +1218,7 @@ class TestEffortSupport:
         assert p.build_effort_args("high") == ["--effort", "high"]
         assert p.build_effort_args("low") == ["--effort", "low"]
         assert p.build_effort_args("medium") == ["--effort", "medium"]
+        assert p.build_effort_args("xhigh") == ["--effort", "xhigh"]
         assert p.build_effort_args("max") == ["--effort", "max"]
 
     def test_claude_provider_empty_effort(self):

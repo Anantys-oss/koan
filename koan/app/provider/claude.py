@@ -199,7 +199,7 @@ class ClaudeProvider(CLIProvider):
         return []
 
     # Valid effort levels for Claude Code CLI --effort flag.
-    _EFFORT_LEVELS = {"low", "medium", "high", "max"}
+    _EFFORT_LEVELS = {"low", "medium", "high", "xhigh", "max"}
 
     def build_effort_args(self, effort: str = "") -> List[str]:
         if effort and effort in self._EFFORT_LEVELS:

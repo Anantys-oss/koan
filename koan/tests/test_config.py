@@ -1878,6 +1878,39 @@ class TestGetEffortForMode:
             assert get_effort_for_mode("deep") == "high"
 
 
+class TestGetReviewEffort:
+    def test_unset_keeps_provider_default(self):
+        from app.config import get_review_effort
+        with _mock_config({}):
+            assert get_review_effort() == ""
+
+    def test_configured_level(self):
+        from app.config import get_review_effort
+        with _mock_config({"review_effort": "xhigh"}):
+            assert get_review_effort() == "xhigh"
+
+    def test_level_is_normalized(self):
+        from app.config import get_review_effort
+        with _mock_config({"review_effort": "  XHigh "}):
+            assert get_review_effort() == "xhigh"
+
+    def test_invalid_level_ignored(self):
+        from app.config import get_review_effort
+        with _mock_config({"review_effort": "turbo"}):
+            assert get_review_effort() == ""
+
+    def test_non_string_ignored(self):
+        from app.config import get_review_effort
+        with _mock_config({"review_effort": 3}):
+            assert get_review_effort() == ""
+
+    def test_effort_section_does_not_leak_into_reviews(self):
+        """The effort: section governs agent-loop missions, not /review."""
+        from app.config import get_review_effort
+        with _mock_config({"effort": {"review": "low"}}):
+            assert get_review_effort() == ""
+
+
 # --- get_effort (per-mission-type) ---
 
 

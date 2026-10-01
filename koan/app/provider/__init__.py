@@ -1745,6 +1745,7 @@ def run_command_streaming(
     mcp_configs: Optional[List[str]] = None,
     project_context: bool = True,
     idle_timeout: Optional[int] = None,
+    effort: str = "",
 ) -> str:
     """Build and run a CLI command, streaming progress to stdout in real time.
 
@@ -1773,6 +1774,11 @@ def run_command_streaming(
     and skills loaded from ``project_path``. Pass it whenever *project_path* is
     untrusted — a reviewed branch can carry a ``.claude/settings.json`` that
     defines hooks, which is code execution on this host.
+
+    ``effort`` pins the provider's reasoning-effort flag for this call. The
+    default ``""`` omits the flag, leaving the provider's own default — the
+    historical behavior for every caller on this path. Each provider validates
+    the level and drops an unknown one.
 
     ``idle_timeout`` bounds **inactivity**, and is the only bound that reaches
     the read loop. ``timeout`` is applied by the ``proc.wait()`` *after* stdout
@@ -1811,6 +1817,7 @@ def run_command_streaming(
         provider=provider,
         read_only=model_key in READ_ONLY_ROLES,
         project_context=project_context,
+        effort=effort,
     )
     last_message_path: Optional[str] = None
     if provider.supports_last_message_file():

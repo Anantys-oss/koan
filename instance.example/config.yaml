@@ -664,6 +664,14 @@ models:
 #   autonomous: low      # keep background autonomous work cheap
 #   freetext: medium
 
+# Reasoning effort for /review (optional).
+# The effort: section above never reaches the review path — /review is
+# skill-dispatched before the agent loop builds a mission — so review depth
+# has its own key. It covers every review call: main pass, reflect, error
+# hunter, bot triage. Per-project overrides in projects.yaml are honored.
+# Omit or set to "" to keep the provider's own default.
+# review_effort: xhigh   # low | medium | high | xhigh | max
+
 # Per-role CLI provider (optional) — parallel to `models:`.
 # Pick a DIFFERENT provider (and optionally a custom binary) for each mission
 # role. Each value is a flavor (claude/codex/copilot/cline/ollama-launch) or

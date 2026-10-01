@@ -2732,6 +2732,35 @@ class TestRunClaudeReview:
         assert kwargs["project_context"] is False
 
     @patch("app.cli_provider.run_command_streaming")
+    @patch("app.config.get_review_effort", return_value="xhigh")
+    @patch("app.config.get_model_config", return_value={"review_mode": "review-model", "mission": "mission-model"})
+    @patch("app.config.get_skill_max_turns", return_value=200)
+    def test_configured_effort_reaches_the_provider(
+        self, mock_max_turns, mock_models, mock_effort, mock_run,
+    ):
+        """review_effort pins the depth of the review pass."""
+        from app.review_runner import _run_claude_review
+
+        mock_run.return_value = "review text"
+        _run_claude_review("prompt", "/tmp/project", project_name="nocrm")
+        assert mock_run.call_args.kwargs["effort"] == "xhigh"
+        # Per-project overrides are honored, so the project must be passed on.
+        mock_effort.assert_called_once_with("nocrm")
+
+    @patch("app.cli_provider.run_command_streaming")
+    @patch("app.config.get_review_effort", return_value="")
+    @patch("app.config.get_model_config", return_value={"review_mode": "review-model", "mission": "mission-model"})
+    @patch("app.config.get_skill_max_turns", return_value=200)
+    def test_unset_effort_keeps_provider_default(
+        self, mock_max_turns, mock_models, mock_effort, mock_run,
+    ):
+        from app.review_runner import _run_claude_review
+
+        mock_run.return_value = "review text"
+        _run_claude_review("prompt", "/tmp/project")
+        assert mock_run.call_args.kwargs["effort"] == ""
+
+    @patch("app.cli_provider.run_command_streaming")
     @patch("app.config.get_model_config", return_value={"review_mode": "review-model", "mission": "mission-model"})
     @patch("app.config.get_skill_max_turns", return_value=200)
     def test_failure_returns_error_detail(

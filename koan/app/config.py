@@ -1845,7 +1845,7 @@ _DEFAULT_EFFORT_MAP = {
 }
 
 # Valid effort levels (matches Claude CLI --effort flag).
-_VALID_EFFORT_LEVELS = {"low", "medium", "high", "max", ""}
+_VALID_EFFORT_LEVELS = {"low", "medium", "high", "xhigh", "max", ""}
 
 
 def _resolve_effort_dict(
@@ -2694,6 +2694,50 @@ def get_review_reflect_config() -> dict:
     except (TypeError, ValueError):
         threshold = defaults["threshold"]
     return {"threshold": max(0, min(10, threshold))}
+
+
+def get_review_effort(project_name: str = "") -> str:
+    """Reasoning effort for the review path.
+
+    The ``effort:`` section only reaches missions built by the main agent
+    loop; ``/review`` runs in its own runner, so review depth was not
+    configurable at all. This key covers every review call — main pass,
+    reflect, error hunter, bot triage.
+
+    Config key: review_effort (string)
+      - A level the provider accepts (``low``/``medium``/``high``/
+        ``xhigh``/``max``).
+      - ``""`` (the default) omits the flag and keeps the provider default.
+
+    Per-project overrides are honored, so one repo can review deeper than
+    the rest.
+
+    Returns:
+        The configured level, or ``""`` when unset or invalid.
+    """
+    level = _load_config().get("review_effort", "")
+
+    if project_name:
+        overrides = _load_project_overrides(project_name)
+
+        if "review_effort" in overrides:
+            level = overrides["review_effort"]
+
+    if not isinstance(level, str):
+        return ""
+
+    level = level.strip().lower()
+
+    if level not in _VALID_EFFORT_LEVELS:
+        print(
+            f"[config] review_effort: unknown level {level!r} "
+            f"(valid: {', '.join(sorted(x for x in _VALID_EFFORT_LEVELS if x))}); "
+            "ignoring",
+            file=sys.stderr,
+        )
+        return ""
+
+    return level
 
 
 def get_review_consistency_config(project_name: str = "") -> dict:
