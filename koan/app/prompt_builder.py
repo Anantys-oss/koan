@@ -328,12 +328,12 @@ def _get_koan_md_section(project_path: str) -> str:
     """
     if not project_path:
         return ""
-    from app.project_koan import log_context_load, read_general_koan_md
+    from app.project_koan import read_general_koan_md, record_context_load
     content = read_general_koan_md(project_path)
     if not content:
         return ""
 
-    log_context_load("KOAN.md", content)
+    record_context_load("KOAN.md", content)
 
     from app.prompts import load_prompt
     return load_prompt("koan-md", KOAN_MD_CONTENT=content)
@@ -355,8 +355,8 @@ def _log_claude_md_detected(project_path: str) -> None:
         if not claude_md.is_file():
             return
         content = claude_md.read_text(errors="replace")
-        from app.project_koan import log_context_load
-        log_context_load("CLAUDE.md (auto-loaded by CLI)", content)
+        from app.project_koan import record_context_load
+        record_context_load("CLAUDE.md (auto-loaded by CLI)", content)
     except Exception as e:
         logger.debug("CLAUDE.md detection failed for %s: %s", project_path, e)
 
@@ -964,6 +964,10 @@ def build_agent_prompt(
     # Append language preference (overrides soul.md default)
     prompt += _get_language_section()
 
+    # One consolidated steering summary right before the CLI call.
+    from app.project_koan import flush_context_summary
+    flush_context_summary()
+
     return prompt
 
 
@@ -1059,6 +1063,11 @@ def build_agent_prompt_parts(
     sys_parts.append(_get_merge_policy(project_name))
     sys_parts.append(_get_submit_pr_section(project_path))
 
+    # Surface the project's CLAUDE.md for `make logs` (detection-only; the CLI
+    # auto-loads it via cwd — koan never injects it). Recorded before KOAN.md so
+    # the summary order matches build_agent_prompt's.
+    _log_claude_md_detected(host_project_path or project_path)
+
     # Project-local koan-only instructions (KOAN.md). Read from the HOST path
     # (host_project_path) because in devcontainer mode project_path is the
     # container-side workspace, while the file lives on the host disk.
@@ -1110,6 +1119,10 @@ def build_agent_prompt_parts(
         sys_parts.append(security)
 
     system_prompt = "\n\n".join(part for part in sys_parts if part)
+
+    # One consolidated steering summary right before the CLI call.
+    from app.project_koan import flush_context_summary
+    flush_context_summary()
 
     return system_prompt, user_prompt
 
