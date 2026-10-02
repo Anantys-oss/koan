@@ -156,7 +156,8 @@ skill_timeout: 7200
 # backgrounding it (backgrounded children are orphaned when the one-shot session
 # ends, so the mission is finalized Done without the promised result). Clamped
 # below mission_timeout (a 120s reporting buffer is reserved). Set to 0 to keep
-# the Claude CLI's built-in Bash default (~2 min).
+# the Claude CLI's built-in Bash default (~2 min). Background Bash tasks stay
+# disabled either way, so with 0 a command past ~2 min is killed, not backgrounded.
 # Default: unset = mission_timeout - 120 (3480s with the default 60-min budget).
 # bash_foreground_timeout: 1800
 

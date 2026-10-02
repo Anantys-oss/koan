@@ -187,7 +187,8 @@ Consequences and safeguards:
   (`mission_timeout` minus a 120s reporting buffer — ~58 min by default), so a
   20+ minute test suite fits one foreground call. An explicit value is clamped
   below that ceiling. Set `bash_foreground_timeout: 0` to keep the CLI's
-  built-in default.
+  built-in default (~2 min). Background tasks stay disabled either way, so with
+  `0` a command past that limit is killed rather than backgrounded.
 - **Not a `max_turns` issue.** Default missions pass no `--max-turns` flag; and a
   genuine turn-cap hit surfaces as `subtype: "error_max_turns"`, which
   `check_json_success()` treats as failure — not the clean "Done" this class of

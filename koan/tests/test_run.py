@@ -1431,24 +1431,32 @@ class TestRunClaudeTask:
         # Reaped in the finally — including the file the child left behind.
         assert not Path(reported).exists()
 
-    @pytest.mark.parametrize("provider_name, expected", [
-        ("claude", "1|3000000|3000000"),
-        ("codex", "||"),
+    @pytest.mark.parametrize("provider_name, bash_ms, expected", [
+        ("claude", 3_000_000, "1|3000000|3000000"),
+        # bash_foreground_timeout: 0 keeps the CLI's Bash default but still
+        # disables background tasks.
+        ("claude", 0, "1||"),
+        ("codex", 3_000_000, "||"),
     ])
     def test_claude_env_disables_background_tasks(
-        self, tmp_path, provider_name, expected,
+        self, tmp_path, monkeypatch, provider_name, bash_ms, expected,
     ):
         """Claude missions run with background tasks off and a raised Bash
         timeout, so a long command blocks instead of being auto-backgrounded
         and orphaned (#2249). Other providers get neither."""
         from app.run import run_claude_task, _sig
         _sig.task_running = False
+        # The child inherits os.environ — scrub vars a parent Kōan mission
+        # would have exported, so the absence assertions hold there too.
+        for var in ("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS",
+                    "BASH_DEFAULT_TIMEOUT_MS", "BASH_MAX_TIMEOUT_MS"):
+            monkeypatch.delenv(var, raising=False)
 
         stdout_f = str(tmp_path / "out.txt")
         stderr_f = str(tmp_path / "err.txt")
 
         with patch("app.config.get_cli_provider_name", return_value=provider_name), \
-             patch("app.config.get_bash_foreground_timeout_ms", return_value=3_000_000):
+             patch("app.config.get_bash_foreground_timeout_ms", return_value=bash_ms):
             exit_code = run_claude_task(
                 cmd=["sh", "-c", 'printf "%s|%s|%s" '
                      '"$CLAUDE_CODE_DISABLE_BACKGROUND_TASKS" '
