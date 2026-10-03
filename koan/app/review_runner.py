@@ -3506,31 +3506,42 @@ def _maybe_post_inline_comments(
     landed, recheck_ok = _fetch_existing_inline_anchors_checked(
         owner, repo, pr_number,
     )
-    fallback_anchors = existing
-    already_landed = 0
-    if recheck_ok:
-        confirmed = sum(
-            1 for p in payloads
-            if (p["path"], p["line"], p["body"].split("\n", 1)[0]) in landed
+    if not recheck_ok:
+        # Same rule as the pre-flight check: idempotency is a precondition, not
+        # a best effort. Here it binds harder — the batch POST may have been
+        # accepted server-side, so posting individually could leave 2xN threads
+        # the author cannot bulk-delete. Skip; the next /review resolves it.
+        log(
+            "review",
+            f"Batch review failed on PR #{pr_number} and the landed-comment "
+            f"recheck is unavailable — skipping fallback to avoid duplicating "
+            f"a possibly-accepted review",
         )
-        if confirmed >= len(payloads):
-            log(
-                "review",
-                f"Batch review reported failure but all {confirmed} comment(s) "
-                f"landed on PR #{pr_number} — skipping fallback",
-            )
-            return (confirmed, attempted, True)
-        if confirmed:
-            # Partial landing: post only the missing ones individually
-            # instead of dropping them and reporting a false full success.
-            log(
-                "review",
-                f"Batch review reported failure with {confirmed} of "
-                f"{len(payloads)} comment(s) landed on PR #{pr_number} — "
-                f"posting the remainder individually",
-            )
-            already_landed = confirmed
-        fallback_anchors = existing | landed
+        return (0, attempted, False)
+
+    confirmed = sum(
+        1 for p in payloads
+        if (p["path"], p["line"], p["body"].split("\n", 1)[0]) in landed
+    )
+    if confirmed >= len(payloads):
+        log(
+            "review",
+            f"Batch review reported failure but all {confirmed} comment(s) "
+            f"landed on PR #{pr_number} — skipping fallback",
+        )
+        return (confirmed, attempted, True)
+    already_landed = 0
+    if confirmed:
+        # Partial landing: post only the missing ones individually
+        # instead of dropping them and reporting a false full success.
+        log(
+            "review",
+            f"Batch review reported failure with {confirmed} of "
+            f"{len(payloads)} comment(s) landed on PR #{pr_number} — "
+            f"posting the remainder individually",
+        )
+        already_landed = confirmed
+    fallback_anchors = existing | landed
 
     # Fallback: individual posts (existing best-effort path). Reuse the
     # anchors we already know so the fallback cannot duplicate the set.

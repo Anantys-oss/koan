@@ -283,7 +283,9 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   with the confirmed anchors handed to that path so it cannot duplicate them.
   The anchor listing reports "unknown" (not "empty") on an empty or non-array
   payload, so a short-circuited `gh` response can never be read as a PR with
-  no comments.
+  no comments. If that re-listing itself fails, the fallback is **skipped**
+  too — the precondition above binds harder after a failed create, because the
+  review may already be on the PR.
 - **Kōan never deletes a review it did not create.** It has no cleanup pass
   over pre-existing reviews: every review Kōan POSTs carries an `event`, so it
   can never leave a PENDING review of its own behind, and any PENDING review on

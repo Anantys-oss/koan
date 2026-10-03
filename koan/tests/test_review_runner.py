@@ -8482,6 +8482,28 @@ class TestMaybePostInlineCommentsBatch:
         mock_batch.assert_not_called()
         mock_indiv.assert_not_called()
 
+    def test_skips_fallback_when_landed_recheck_unavailable(self):
+        """Unknown recheck after a failed create → post nothing.
+
+        The batch POST may have been accepted server-side; posting individually
+        would leave the author with a duplicate comment set.
+        """
+        from app.review_runner import _maybe_post_inline_comments
+        review_data = {"file_comments": [_inline_finding(line=3)]}
+        cfg = {"enabled": True, "max_comments": 25}
+        cfg_target = "app.review_runner.get_review_inline_comments_config"
+        with patch(cfg_target, return_value=cfg), \
+             patch("app.review_runner._fetch_existing_inline_anchors_checked",
+                   side_effect=[(set(), True), (set(), False)]), \
+             patch("app.review_runner._submit_batch_review", return_value=(False, 0)), \
+             patch("app.review_runner._post_inline_finding_comments") as mock_indiv:
+            result = _maybe_post_inline_comments(
+                "o", "r", "42", review_data, "abc123",
+                event="COMMENT", body="",
+            )
+        assert result == (0, 1, False)
+        mock_indiv.assert_not_called()
+
     def test_partial_landing_posts_remainder_individually(self):
         """Fewer landed than payloads → remainder posted, not silently dropped."""
         from app.review_runner import _maybe_post_inline_comments
