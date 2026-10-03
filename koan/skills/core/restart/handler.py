@@ -76,12 +76,28 @@ _SIGNAL_LOST = (
 def handle(ctx: SkillContext) -> str:
     """Request a restart of both processes."""
     from app.restart_manager import request_restart
+    from app.run_log import log
 
-    force = any(arg in _FORCE_FLAGS for arg in ctx.args.lower().split())
-    if not force:
-        request_restart(str(ctx.koan_root))
-        return "🔄 Restart requested. Both processes will restart shortly."
-    return _force_restart_runner(ctx)
+    args = ctx.args.lower().split()
+    if any(arg in _FORCE_FLAGS for arg in args):
+        return _force_restart_runner(ctx)
+
+    request_restart(str(ctx.koan_root))
+    if args:
+        # A near-miss (`-force`, `--froce`) must not read as a bare /restart:
+        # the operator would believe the in-flight mission was killed while the
+        # wedged runner keeps blocking on it.
+        unknown = " ".join(args)
+        log(
+            "warning",
+            f"Restart: unrecognized argument(s) {unknown!r} — restarting politely",
+        )
+        return (
+            f"🔄 Restart requested, but I did not recognize `{unknown}` — this is a "
+            "*polite* restart: the agent loop finishes its current mission first. "
+            "For a forced one, use `/restart --force` (or `-f`)."
+        )
+    return "🔄 Restart requested. Both processes will restart shortly."
 
 
 def _force_restart_runner(ctx: SkillContext) -> str:

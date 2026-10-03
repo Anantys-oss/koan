@@ -105,7 +105,9 @@ FORCE_READ_ERROR_LOG_INTERVAL = 300.0
 # unreadable caps file (EACCES after a uid change, EIO on the mount) degrades
 # every /restart --force to the weaker marker-only fallback, and the reply only
 # says the identity "could not be verified" — never which file or errno. Log the
-# cause so the real fix (permissions, mount) is discoverable.
+# cause so the real fix (permissions, mount) is discoverable. Monotonic, like
+# its sibling above: a backward wall-clock step (NTP) would make `now - last`
+# negative and suppress this line for the rest of the process's life.
 _caps_read_error_logged_at: Optional[float] = None
 
 # Whether the last caps publish failed (runner-process state). A failed publish
@@ -288,17 +290,42 @@ def declare_runner_caps(koan_root: str, pid: int) -> None:
     _caps_publish_failed = False
 
 
+def _caps_marker_vouches_for(koan_root: str, pid: int) -> bool:
+    """Whether the on-disk caps marker currently names *pid* with the cap.
+
+    Cheap presence check for :func:`ensure_runner_caps`, deliberately not
+    :func:`force_signal_support`: this runs in the runner itself, which knows
+    its own identity, so there is nothing to verify against a start time. An
+    unreadable marker counts as vouching — a republish could not fix an EACCES
+    read, and rewriting it every main-loop tick would only add log noise.
+    """
+    try:
+        with open(os.path.join(koan_root, RUN_CAPS_FILE), encoding="utf-8") as fh:
+            lines = {line.strip() for line in fh}
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return f"pid={pid}" in lines and FORCE_SIGNAL_CAP in lines
+
+
 def ensure_runner_caps(koan_root: str, pid: int) -> None:
-    """Re-attempt a failed caps publish. No-op once one has succeeded.
+    """Re-publish the caps marker when it is not (or no longer) on disk.
 
     Called from the runner's main loop so a transient write failure (a full or
     momentarily read-only KOAN_ROOT mount) does not silently disable
     ``/restart --force`` for the rest of the incarnation: without the marker,
     :func:`force_signal_support` returns ``"no"`` and the operator is told the
     runner predates forced restart, which is simply wrong.
+
+    Gated on the marker's *actual* state, not only on the remembered write
+    failure: a marker lost **after** a successful publish — a KOAN_ROOT volume
+    re-mount, an operator cleaning the root, an exiting sibling process's
+    :func:`clear_runner_caps` — produces exactly the same wrong diagnosis, and
+    a flag-only gate would never republish it.
     """
     global _caps_republish_attempted_at
-    if not _caps_publish_failed:
+    if not _caps_publish_failed and _caps_marker_vouches_for(koan_root, pid):
         return
     now = time.monotonic()
     last = _caps_republish_attempted_at
@@ -308,7 +335,7 @@ def ensure_runner_caps(koan_root: str, pid: int) -> None:
     declare_runner_caps(koan_root, pid)
     if not _caps_publish_failed:
         from app.run_log import log
-        log("koan", "Runner caps marker published on retry — /restart --force is live")
+        log("koan", "Runner caps marker re-published — /restart --force is live")
 
 
 def clear_runner_caps(koan_root: str) -> None:
@@ -366,7 +393,7 @@ def force_signal_support(koan_root: str, pid: int) -> str:
         # EACCES/EIO: a capable runner may well have published a marker we
         # simply cannot read. Do not claim it predates forced restart — but do
         # name the errno, or the degraded reply is the only trace of the cause.
-        now = time.time()
+        now = time.monotonic()
         last = _caps_read_error_logged_at
         if last is None or now - last >= FORCE_READ_ERROR_LOG_INTERVAL:
             _caps_read_error_logged_at = now

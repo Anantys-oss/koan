@@ -332,6 +332,63 @@ class TestRunnerCaps:
             ensure_runner_caps(str(tmp_path), 4242)
         mock_write.assert_not_called()
 
+    def test_marker_lost_after_a_successful_publish_is_republished(self, tmp_path):
+        """A volume re-mount or a sibling's clear must not disable the cap.
+
+        Nothing *failed* here, so a flag-only gate would never republish — and
+        every later /restart --force would be downgraded to polite and reported
+        as a pre-upgrade runner.
+        """
+        declare_runner_caps(str(tmp_path), 4242)
+        clear_runner_caps(str(tmp_path))
+        assert force_signal_support(str(tmp_path), 4242) == "no"
+
+        ensure_runner_caps(str(tmp_path), 4242)
+
+        assert force_signal_support(str(tmp_path), 4242) == "yes"
+
+    def test_marker_naming_another_pid_is_republished(self, tmp_path):
+        declare_runner_caps(str(tmp_path), 777)
+
+        ensure_runner_caps(str(tmp_path), 4242)
+
+        assert force_signal_support(str(tmp_path), 4242) == "yes"
+
+    def test_an_unreadable_marker_is_not_rewritten_every_tick(self, tmp_path):
+        """A republish cannot fix an EACCES read — rewriting it is noise only."""
+        declare_runner_caps(str(tmp_path), 4242)
+        with patch("builtins.open", side_effect=PermissionError("EACCES")), \
+             patch("app.utils.atomic_write") as mock_write:
+            ensure_runner_caps(str(tmp_path), 4242)
+        mock_write.assert_not_called()
+
+    def test_caps_read_error_log_survives_a_backward_clock_step(
+            self, tmp_path, monkeypatch):
+        """The throttle must be monotonic: NTP can step wall-clock backwards.
+
+        With ``time.time()`` the second call's ``now - last`` goes negative and
+        the only line naming *why* /restart --force is degraded is suppressed
+        for the rest of the process's life.
+        """
+        from app import restart_manager
+        monkeypatch.setattr(restart_manager, "_caps_read_error_logged_at", None)
+        declare_runner_caps(str(tmp_path), 4242)
+        wall = [1_000_000.0]
+        steady = [500.0]
+        monkeypatch.setattr(restart_manager.time, "time", lambda: wall[0])
+        monkeypatch.setattr(restart_manager.time, "monotonic", lambda: steady[0])
+
+        with patch("builtins.open", side_effect=PermissionError("EACCES")), \
+             patch("app.run_log.log") as mock_log:
+            assert force_signal_support(str(tmp_path), 4242) == "unknown"
+            # NTP steps wall-clock back 10 min while real time moves forward
+            # past the throttle interval.
+            wall[0] -= 600
+            steady[0] += restart_manager.FORCE_READ_ERROR_LOG_INTERVAL + 1
+            assert force_signal_support(str(tmp_path), 4242) == "unknown"
+
+        assert mock_log.call_count == 2
+
     def test_retry_is_throttled_while_the_write_keeps_failing(self, tmp_path):
         """The main loop iterates ~1/min; the mount does not heal in seconds."""
         with patch("app.utils.atomic_write", side_effect=OSError(28, "ENOSPC")):
@@ -364,6 +421,27 @@ class TestRestartHandler:
         mock_kill.assert_not_called()
         assert is_force_restart(str(tmp_path), target="run") is False
         assert "Restart requested" in result
+
+    @pytest.mark.parametrize("args", ["-force", "--froce", "now"])
+    def test_an_unrecognized_argument_is_reported_not_swallowed(
+            self, tmp_path, args):
+        """A near-miss must not read like a bare /restart.
+
+        Otherwise the operator believes the wedged mission was killed while the
+        runner keeps blocking on it.
+        """
+        from skills.core.restart.handler import handle
+
+        declare_runner_caps(str(tmp_path), 4242)
+        with patch("app.pid_manager.check_pidfile", return_value=4242), \
+             patch("app.pid_manager._cmdline_matches", return_value=True), \
+             patch("os.kill") as mock_kill:
+            result = handle(self._ctx(tmp_path, args))
+
+        mock_kill.assert_not_called()
+        assert is_force_restart(str(tmp_path), target="run") is False
+        assert args.lower() in result
+        assert "--force" in result
 
     @pytest.mark.parametrize("args", ["--force", "-f", "force", "  --FORCE  "])
     def test_force_flag_signals_runner_with_sigusr2(self, tmp_path, args):
