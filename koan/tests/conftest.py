@@ -215,6 +215,12 @@ def isolate_env(monkeypatch):
     # Prevent host CLI provider env vars from leaking into tests
     monkeypatch.delenv("CLI_PROVIDER", raising=False)
     monkeypatch.delenv("KOAN_CLI_PROVIDER", raising=False)
+    # log_fmt decides colour from the ambient env, so a host (or an agent-driven
+    # run) that exports either of these flips every formatter assertion from
+    # plain text to ANSI-wrapped. Tests that want colour build their own
+    # ``_Palette(enabled=True)`` or set the flag via monkeypatch.
+    monkeypatch.delenv("KOAN_FORCE_COLOR", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
     # Reset projects_merged module-level cache so parallel workers don't
     # see stale project lists from a prior test's KOAN_ROOT.
     try:
