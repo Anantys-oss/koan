@@ -455,6 +455,32 @@ def _unclaimable_multipart_fragments(comments: List[dict]) -> int:
     )
 
 
+def _multipart_outranks(
+    multipart_score: Tuple[str, int],
+    single_score: Tuple[str, int],
+) -> bool:
+    """Is the assembled group at least as new as this single-part comment?
+
+    A missing ``updated`` is *unknown*, not the oldest possible value: Jira
+    Server/DC and filtering proxies omit it, and reading the empty string as a
+    timestamp would let a superseded group outrank the fresh single-part plan
+    that happens to lack one. When either side is missing it, fall back to the
+    order Jira listed the comments in — the same tie-break the group itself
+    uses.
+    """
+    multipart_updated, multipart_index = multipart_score
+    single_updated, single_index = single_score
+    if multipart_updated and single_updated:
+        return multipart_score >= single_score
+    if multipart_index >= single_index:
+        logger.warning(
+            "Jira omitted comment timestamps — preferring the multipart plan on "
+            "comment order alone",
+        )
+        return True
+    return False
+
+
 def _select_latest_plan(
     body: Optional[str],
     comments: List[dict],
@@ -476,7 +502,7 @@ def _select_latest_plan(
             # rest, and a retirement Jira accepted but never applied would
             # otherwise strand the agent on the superseded parts.
             single_score = (str(comment.get("updated", "")), index)
-            if multipart_plan and multipart_score >= single_score:
+            if multipart_plan and _multipart_outranks(multipart_score, single_score):
                 return multipart_plan
             if multipart_plan:
                 logger.warning(

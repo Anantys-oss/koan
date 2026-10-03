@@ -1581,7 +1581,26 @@ def koan_authorship_check(
             carries_property(comment)
             or jira_comment_authored_by_self(comment) is True
         )
-    return lambda comment: jira_comment_authored_by_self(comment) is not False
+    # Lenient path: "cannot tell" is admissible, but it must not pass in
+    # silence — a listing where neither properties nor `/myself` answer looks
+    # exactly like "every comment is Koan's", so say so once per listing.
+    unresolved_logged = False
+
+    def lenient(comment: dict) -> bool:
+        nonlocal unresolved_logged
+        verdict = jira_comment_authored_by_self(comment)
+        if verdict is None and not unresolved_logged:
+            unresolved_logged = True
+            log.warning(
+                "Jira authorship is unresolvable for a comment with no %s "
+                "property — admitting it on the read-only path. Check the Jira "
+                "account Koan authenticates as and whether the tenant persists "
+                "comment properties.",
+                property_key,
+            )
+        return verdict is not False
+
+    return lenient
 
 
 def _jira_comment_payload(
