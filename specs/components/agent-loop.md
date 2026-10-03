@@ -4,7 +4,7 @@ title: "Component Spec — Agent Loop Pipeline"
 description: "Design contract for the core mission pipeline (iteration manager, mission executor/runner, quota handling, stagnation monitor) that pulls missions, invokes the CLI provider, and finalizes lifecycle state."
 tags: [agent-loop]
 created: 2026-06-27
-updated: 2026-09-03
+updated: 2026-09-30
 ---
 
 # Component Spec — Agent Loop Pipeline
@@ -196,11 +196,22 @@ heuristic:
   post-turn event loop. Deferred re-invocation (background monitors, scheduled
   wake-ups, "report later") is NOT available; such work is dropped and the child
   is killed. Result-bearing work MUST complete before the model ends its turn —
-  enforced at the prompt layer (`_partials/cli-execution-model.md`) and supported
-  by a raised Bash foreground timeout (`get_bash_foreground_timeout_ms()`,
-  injected into the mission subprocess env as `BASH_DEFAULT_TIMEOUT_MS` /
-  `BASH_MAX_TIMEOUT_MS` for the Claude provider only, clamped below
-  `mission_timeout`). `max_turns` is
+  enforced at the prompt layer (`_partials/cli-execution-model.md`) and, for the
+  Claude provider only, at the subprocess-env layer:
+  - **Background Bash tasks are disabled** (`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`).
+    The CLI otherwise auto-moves a foreground command that outlives the Bash
+    timeout into the background; the model then ends its turn "waiting for the
+    notification", the CLI exits `0`, and the mission is finalized Done without
+    the result (#2249, reproduced on CLI 2.1.286). With background tasks off, a
+    command that outlives the timeout is killed and the model sees the failure.
+    The `Monitor` tool is unaffected — the CLI keeps the session alive until a
+    monitor completes, so it is not an orphaning path.
+  - **The Bash foreground timeout follows the mission budget**
+    (`get_bash_foreground_timeout_ms()`, injected as `BASH_DEFAULT_TIMEOUT_MS` /
+    `BASH_MAX_TIMEOUT_MS`). Unset `bash_foreground_timeout` defaults to
+    `mission_timeout` minus a 120s reporting buffer, so any command that fits the
+    mission fits one foreground call; an explicit value is clamped below that
+    ceiling. `max_turns` is
   orthogonal: default missions impose no `--max-turns` cap (`build_mission_command`
   passes `0` unless `complexity_routing` assigns a tier), and a cap-hit is
   classified as failure (`subtype: "error_max_turns"`), not a clean success.

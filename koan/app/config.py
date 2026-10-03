@@ -1586,20 +1586,24 @@ def get_bash_foreground_timeout_ms() -> int:
     keeps a buffer to read the result and write its conclusion before the
     mission watchdog SIGTERMs the process group.
 
-    Config key: bash_foreground_timeout (seconds, default: 900 — 15 min).
+    Config key: bash_foreground_timeout (seconds). Unset defaults to the
+    mission ceiling (``mission_timeout`` minus a 120s buffer; 3600s when the
+    watchdog is disabled) so any command that fits the mission fits one
+    foreground call — a fixed lower default made a 20-min test suite time
+    out and get auto-backgrounded by the CLI (#2249).
     Returns 0 to signal "leave the CLI default" when explicitly disabled.
     """
     config = _load_config()
-    requested_s = _safe_int(config.get("bash_foreground_timeout", 900), 900)
+    mission_s = get_mission_timeout()
+    # Keep a 120s reporting buffer under the mission watchdog; never exceed it.
+    # mission_timeout: 0 disables the watchdog — no ceiling to keep a buffer under.
+    ceiling_s = max(60, mission_s - 120) if mission_s > 0 else None
+    default_s = ceiling_s or 3600
+    requested_s = _safe_int(config.get("bash_foreground_timeout", default_s), default_s)
     if requested_s <= 0:
         return 0
-    mission_s = get_mission_timeout()
-    if mission_s <= 0:
-        # Mission watchdog disabled (unlimited mission time) — no ceiling to
-        # keep a buffer under, so honor the requested value as-is.
+    if ceiling_s is None:
         return requested_s * 1000
-    # Keep a 120s reporting buffer under the mission watchdog; never exceed it.
-    ceiling_s = max(60, mission_s - 120)
     return min(requested_s, ceiling_s) * 1000
 
 

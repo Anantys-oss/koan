@@ -11,13 +11,15 @@ killed, and the mission is marked Done without the result.
 asks you to run something and report its output, the command must finish — and
 you must read its result — **before** you write your conclusion.
 
-**How to wait for long commands.** A single foreground command may run up to the
-Bash tool timeout. For commands that fit within it, run them in the foreground
-and block. For longer ones, run in the background **and poll within the same
-turn** — loop `sleep`-then-check on a completion sentinel until it finishes, then
-read the result. Do **not** background a command and then stop. You have the whole
-mission budget (`mission_timeout`, default **60 minutes**), so blocking or polling
-for many minutes inside one turn is expected.
+**How to wait for long commands.** Run them in the **foreground** and block —
+pass the Bash tool's `timeout` parameter at its maximum for anything that may
+take more than a couple of minutes (a full test suite can take 20+ minutes).
+The Bash foreground timeout is raised to nearly the whole mission budget
+(`mission_timeout`, default **60 minutes**), so blocking for many minutes inside
+one turn is expected. Background Bash tasks are disabled in missions. If a
+command could outlive even that timeout, start it with `&` and **poll within the
+same turn** — loop `sleep`-then-check on a completion sentinel until it finishes,
+then read the result. Do **not** start a command and then stop.
 
 Reuse the redirect-to-file pattern (as with `make test` above) so a large
 command's output doesn't burn tokens — read the file only when you need the detail:

@@ -4,7 +4,7 @@ title: "Daemon Runtime"
 description: "Describes how the Koan daemon is assembled: startup/process management, the bridge's chat/bg worker lanes, the agent loop's modular pieces, runtime modes, parallel sessions, and the bounded-memory model for CLI stdout capture."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-09-02
+updated: 2026-09-30
 ---
 
 # Daemon Runtime
@@ -174,12 +174,21 @@ Consequences and safeguards:
 - **Result-bearing work must complete in-turn.** The agent is instructed (see
   the `cli-execution-model` prompt partial) to block or poll within the turn
   until a command finishes, then read its result before concluding.
+- **No background Bash tasks.** For the Claude provider, Koan sets
+  `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`. Otherwise the CLI auto-moves a
+  foreground command that outlives the Bash timeout into the background; the
+  model ends its turn waiting for a notification, the CLI exits `0`, and the
+  mission is marked Done without the result (#2249). With the flag, an
+  over-long command is killed and the model sees the timeout. The `Monitor`
+  tool still works: the CLI stays alive until a monitor completes.
 - **Foreground headroom.** For the Claude provider, Koan sets
-  `BASH_DEFAULT_TIMEOUT_MS` / `BASH_MAX_TIMEOUT_MS` (from
-  `bash_foreground_timeout`, default 15 min, clamped
-  below `mission_timeout` with a 120s reporting buffer) so a long-but-bounded
-  command can block in the foreground rather than being backgrounded and
-  orphaned. Set `bash_foreground_timeout: 0` to keep the CLI's built-in default.
+  `BASH_DEFAULT_TIMEOUT_MS` / `BASH_MAX_TIMEOUT_MS` from
+  `bash_foreground_timeout`. Unset, it follows the mission budget
+  (`mission_timeout` minus a 120s reporting buffer — ~58 min by default), so a
+  20+ minute test suite fits one foreground call. An explicit value is clamped
+  below that ceiling. Set `bash_foreground_timeout: 0` to keep the CLI's
+  built-in default (~2 min). Background tasks stay disabled either way, so with
+  `0` a command past that limit is killed rather than backgrounded.
 - **Not a `max_turns` issue.** Default missions pass no `--max-turns` flag; and a
   genuine turn-cap hit surfaces as `subtype: "error_max_turns"`, which
   `check_json_success()` treats as failure — not the clean "Done" this class of
