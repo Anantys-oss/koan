@@ -277,9 +277,13 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   than one failed attempt that degrades to the fallback.
 - **A failed create is still not proof of non-creation:** a client-side timeout
   can leave the review created server-side, so before falling back to
-  individual posts the run re-lists the PR's inline comments. Comments
-  confirmed landed count as posted (and the verdict is treated as already
-  applied) instead of being re-posted.
+  individual posts the run re-lists the PR's inline comments. Only a *fully*
+  landed comment set skips the fallback (and treats the verdict as already
+  applied); on a partial landing the missing comments are posted individually,
+  with the confirmed anchors handed to that path so it cannot duplicate them.
+  The anchor listing reports "unknown" (not "empty") on an empty or non-array
+  payload, so a short-circuited `gh` response can never be read as a PR with
+  no comments.
 - **Kōan never deletes a review it did not create.** It has no cleanup pass
   over pre-existing reviews: every review Kōan POSTs carries an `event`, so it
   can never leave a PENDING review of its own behind, and any PENDING review on

@@ -3196,13 +3196,25 @@ def _fetch_existing_inline_anchors_checked(
             "api", f"repos/{owner}/{repo}/pulls/{pr_number}/comments",
             "--paginate",
         )
-        data = json.loads(raw) if raw else []
+        data = json.loads(raw) if raw else None
     except Exception as e:
         log("review", f"Could not fetch existing inline comments on PR #{pr_number}: {e}")
         return set(), False
 
+    if not isinstance(data, list):
+        # Empty output or a non-array payload means the listing did not
+        # actually happen (gh short-circuited / returned an error object).
+        # Reporting ok=True here would be indistinguishable from "no
+        # comments yet" — the exact ambiguity this variant removes.
+        log(
+            "review",
+            f"Unexpected inline-comment listing payload on PR #{pr_number} "
+            f"(not a JSON array) — treating as unknown",
+        )
+        return set(), False
+
     anchors = set()
-    for c in data if isinstance(data, list) else []:
+    for c in data:
         path = c.get("path")
         line = c.get("line") or c.get("original_line")
         body = (c.get("body") or "").strip()
@@ -3230,6 +3242,7 @@ def _post_inline_finding_comments(
     comments: list,
     head_sha: str,
     max_comments: int,
+    existing_anchors: Optional[set] = None,
 ) -> tuple:
     """Post each resolvable finding as a new inline PR review comment.
 
@@ -3238,12 +3251,20 @@ def _post_inline_finding_comments(
     Re-run idempotent: findings already anchored on the PR are skipped.
     Returns (posted, attempted) where attempted counts the new, resolvable
     findings we tried to POST (skipped/duplicate findings are not counted).
+
+    *existing_anchors* lets a caller that already listed the PR's inline
+    comments pass that set in, instead of re-listing through the lossy
+    helper (which returns an empty set on failure and would then duplicate
+    the whole set).
     """
     if not comments or not head_sha or max_comments <= 0:
         return (0, 0)
 
     full_repo = f"{owner}/{repo}"
-    existing = _fetch_existing_inline_anchors(owner, repo, pr_number)
+    existing = (
+        existing_anchors if existing_anchors is not None
+        else _fetch_existing_inline_anchors(owner, repo, pr_number)
+    )
     posted = 0
     attempted = 0
     for item in comments:
@@ -3485,24 +3506,39 @@ def _maybe_post_inline_comments(
     landed, recheck_ok = _fetch_existing_inline_anchors_checked(
         owner, repo, pr_number,
     )
+    fallback_anchors = existing
+    already_landed = 0
     if recheck_ok:
         confirmed = sum(
             1 for p in payloads
             if (p["path"], p["line"], p["body"].split("\n", 1)[0]) in landed
         )
-        if confirmed:
+        if confirmed >= len(payloads):
             log(
                 "review",
-                f"Batch review reported failure but {confirmed} comment(s) "
+                f"Batch review reported failure but all {confirmed} comment(s) "
                 f"landed on PR #{pr_number} — skipping fallback",
             )
             return (confirmed, attempted, True)
+        if confirmed:
+            # Partial landing: post only the missing ones individually
+            # instead of dropping them and reporting a false full success.
+            log(
+                "review",
+                f"Batch review reported failure with {confirmed} of "
+                f"{len(payloads)} comment(s) landed on PR #{pr_number} — "
+                f"posting the remainder individually",
+            )
+            already_landed = confirmed
+        fallback_anchors = existing | landed
 
-    # Fallback: individual posts (existing best-effort path).
+    # Fallback: individual posts (existing best-effort path). Reuse the
+    # anchors we already know so the fallback cannot duplicate the set.
     posted, att2 = _post_inline_finding_comments(
         owner, repo, pr_number, findings, head_sha, cfg["max_comments"],
+        existing_anchors=fallback_anchors,
     )
-    return (posted, max(attempted, att2), False)
+    return (posted + already_landed, max(attempted, att2), False)
 
 
 def _patch_comment_body(
@@ -3922,7 +3958,10 @@ def _submit_review_verdict(
         )
         log("review", f"Submitted {event} verdict on PR #{pr_number}")
         return True
-    except RuntimeError as e:
+    # Catch broadly: run_gh() raises OSError and TimeoutExpired as well as
+    # RuntimeError. A transient fault here must degrade to False (the summary
+    # comment already landed), never abort the review pipeline.
+    except Exception as e:
         # GitHub forbids APPROVE / REQUEST_CHANGES on a PR you authored
         # (HTTP 422). When the bot reviews its own PR, fall back to a COMMENT
         # review so the verdict body still lands in the Reviewers panel
@@ -3938,7 +3977,7 @@ def _submit_review_verdict(
                 )
                 log("review", f"Posted {event} verdict as COMMENT on own PR #{pr_number}")
                 return True
-            except RuntimeError as e2:
+            except Exception as e2:
                 log("review", f"Failed to submit {event} verdict on PR #{pr_number}: {e2}")
                 return False
         log("review", f"Failed to submit {event} verdict on PR #{pr_number}: {e}")

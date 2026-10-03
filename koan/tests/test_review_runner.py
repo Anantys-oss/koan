@@ -7138,6 +7138,14 @@ class TestSubmitReviewVerdict:
         flat_args = " ".join(mock_gh.call_args[0])
         assert "Blocking issues found" in flat_args
 
+    @patch("app.review_runner.run_gh", side_effect=OSError("broken pipe"))
+    def test_non_runtime_error_returns_false(self, _mock_gh):
+        """run_gh raises OSError/TimeoutExpired too — must degrade, not raise."""
+        from app.review_runner import _submit_review_verdict
+        assert _submit_review_verdict(
+            "owner", "repo", "42", approve=True, head_sha="abc",
+        ) is False
+
 
 class TestReviewVerdictInRunReview:
     """Integration: run_review submits verdict after posting comment."""
@@ -8012,6 +8020,15 @@ def _inline_finding(line=10, sev="critical"):
             "severity": sev, "title": "T", "comment": "C", "code_snippet": ""}
 
 
+def _landed_anchor(line, sev="critical", path="a.py"):
+    """Anchor tuple as the batch path computes it, for landed-recheck tests."""
+    from app.review_runner import _format_inline_finding_body, sanitize_github_comment
+    body = sanitize_github_comment(
+        _format_inline_finding_body(_inline_finding(line=line, sev=sev))
+    )
+    return (path, line, body.split("\n", 1)[0])
+
+
 class TestInlinePoster:
     def test_posts_with_commit_path_line_side(self):
         from app.review_runner import _post_inline_finding_comments
@@ -8381,6 +8398,34 @@ class TestSubmitBatchReview:
         mock_sleep.assert_not_called()
 
 
+class TestFetchExistingInlineAnchorsChecked:
+    def test_array_payload_is_ok(self):
+        from app.review_runner import _fetch_existing_inline_anchors_checked
+        payload = '[{"path": "a.py", "line": 3, "body": "x"}]'
+        with patch("app.review_runner.run_gh", return_value=payload):
+            anchors, ok = _fetch_existing_inline_anchors_checked("o", "r", "42")
+        assert ok is True
+        assert anchors == {("a.py", 3, "x")}
+
+    def test_empty_output_is_not_ok(self):
+        from app.review_runner import _fetch_existing_inline_anchors_checked
+        with patch("app.review_runner.run_gh", return_value=""):
+            result = _fetch_existing_inline_anchors_checked("o", "r", "42")
+        assert result == (set(), False)
+
+    def test_non_array_payload_is_not_ok(self):
+        from app.review_runner import _fetch_existing_inline_anchors_checked
+        with patch("app.review_runner.run_gh", return_value='{"message": "x"}'):
+            result = _fetch_existing_inline_anchors_checked("o", "r", "42")
+        assert result == (set(), False)
+
+    def test_empty_array_is_ok(self):
+        from app.review_runner import _fetch_existing_inline_anchors_checked
+        with patch("app.review_runner.run_gh", return_value="[]"):
+            result = _fetch_existing_inline_anchors_checked("o", "r", "42")
+        assert result == (set(), True)
+
+
 class TestMaybePostInlineCommentsBatch:
     def test_batch_success_skips_individual(self):
         from app.review_runner import _maybe_post_inline_comments
@@ -8436,6 +8481,69 @@ class TestMaybePostInlineCommentsBatch:
         assert result == (0, 0, False)
         mock_batch.assert_not_called()
         mock_indiv.assert_not_called()
+
+    def test_partial_landing_posts_remainder_individually(self):
+        """Fewer landed than payloads → remainder posted, not silently dropped."""
+        from app.review_runner import _maybe_post_inline_comments
+        findings = [_inline_finding(line=3), _inline_finding(line=7)]
+        review_data = {"file_comments": findings}
+        cfg = {"enabled": True, "max_comments": 25}
+        landed = {_landed_anchor(3)}
+        cfg_target = "app.review_runner.get_review_inline_comments_config"
+        with patch(cfg_target, return_value=cfg), \
+             patch("app.review_runner._fetch_existing_inline_anchors_checked",
+                   side_effect=[(set(), True), (landed, True)]), \
+             patch("app.review_runner._submit_batch_review", return_value=(False, 0)), \
+             patch("app.review_runner._post_inline_finding_comments",
+                   return_value=(1, 1)) as mock_indiv:
+            posted, attempted, batch_ok = _maybe_post_inline_comments(
+                "o", "r", "42", review_data, "abc123",
+                event="COMMENT", body="",
+            )
+        mock_indiv.assert_called_once()
+        # Already-landed anchors are handed to the fallback so it skips them.
+        assert landed <= mock_indiv.call_args.kwargs["existing_anchors"]
+        assert batch_ok is False
+        assert posted == 2
+
+    def test_full_landing_skips_fallback(self):
+        from app.review_runner import _maybe_post_inline_comments
+        review_data = {"file_comments": [_inline_finding(line=3)]}
+        cfg = {"enabled": True, "max_comments": 25}
+        landed = {_landed_anchor(3)}
+        cfg_target = "app.review_runner.get_review_inline_comments_config"
+        with patch(cfg_target, return_value=cfg), \
+             patch("app.review_runner._fetch_existing_inline_anchors_checked",
+                   side_effect=[(set(), True), (landed, True)]), \
+             patch("app.review_runner._submit_batch_review", return_value=(False, 0)), \
+             patch("app.review_runner._post_inline_finding_comments") as mock_indiv:
+            result = _maybe_post_inline_comments(
+                "o", "r", "42", review_data, "abc123",
+                event="COMMENT", body="",
+            )
+        assert result == (1, 1, True)
+        mock_indiv.assert_not_called()
+
+    def test_fallback_reuses_fetched_anchors(self):
+        """Fallback must not re-list through the lossy helper."""
+        from app.review_runner import _maybe_post_inline_comments
+        review_data = {"file_comments": [_inline_finding(line=3)]}
+        cfg = {"enabled": True, "max_comments": 25}
+        existing = {("a.py", 99, "other")}
+        cfg_target = "app.review_runner.get_review_inline_comments_config"
+        with patch(cfg_target, return_value=cfg), \
+             patch("app.review_runner._fetch_existing_inline_anchors_checked",
+                   return_value=(existing, True)), \
+             patch("app.review_runner._submit_batch_review", return_value=(False, 0)), \
+             patch("app.review_runner._fetch_existing_inline_anchors") as mock_lossy, \
+             patch("app.review_runner._post_inline_finding_comments",
+                   return_value=(1, 1)) as mock_indiv:
+            _maybe_post_inline_comments(
+                "o", "r", "42", review_data, "abc123",
+                event="COMMENT", body="",
+            )
+        mock_lossy.assert_not_called()
+        assert existing <= mock_indiv.call_args.kwargs["existing_anchors"]
 
     def test_disabled_unchanged(self):
         from app.review_runner import _maybe_post_inline_comments
