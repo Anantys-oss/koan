@@ -551,6 +551,31 @@ class TestValidateOptimizationsNested:
         warnings = validate_config({"effort": {"review": 5}})
         assert any("effort.review" in path for path, msg in warnings)
 
+    def test_effort_accepts_xhigh(self):
+        assert validate_config({"effort": "xhigh"}) == []
+        assert validate_config({"effort": {"freetext": "xhigh"}}) == []
+
+    def test_effort_warning_lists_xhigh(self):
+        warnings = validate_config({"effort": "turbo"})
+        assert any("xhigh" in msg for _, msg in warnings)
+
+    def test_review_effort_recognized(self):
+        # The key the example config ships must not be reported as a typo.
+        assert validate_config({"review_effort": "xhigh"}) == []
+
+    def test_review_effort_empty_is_allowed(self):
+        assert validate_config({"review_effort": ""}) == []
+
+    def test_review_effort_invalid_level_warns(self):
+        warnings = validate_config({"review_effort": "turbo"})
+        assert any(path == "review_effort" and "invalid effort" in msg
+                   for path, msg in warnings)
+
+    def test_review_effort_non_string_warns(self):
+        warnings = validate_config({"review_effort": 5})
+        assert any(path == "review_effort" and "should be str" in msg
+                   for path, msg in warnings)
+
 
 # ---------------------------------------------------------------------------
 # validate_and_warn

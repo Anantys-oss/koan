@@ -2710,34 +2710,53 @@ def get_review_effort(project_name: str = "") -> str:
       - ``""`` (the default) omits the flag and keeps the provider default.
 
     Per-project overrides are honored, so one repo can review deeper than
-    the rest.
+    the rest. An invalid override is ignored and the global value applies,
+    the way an invalid ``effort:`` pin falls through.
 
     Returns:
         The configured level, or ``""`` when unset or invalid.
     """
-    level = _load_config().get("review_effort", "")
-
     if project_name:
         overrides = _load_project_overrides(project_name)
 
-        if "review_effort" in overrides:
-            level = overrides["review_effort"]
+        # A bare `review_effort:` (YAML null) counts as unset.
+        if overrides.get("review_effort") is not None:
+            level = _normalize_review_effort(
+                overrides["review_effort"], f"projects.yaml ({project_name})",
+            )
 
-    if not isinstance(level, str):
-        return ""
+            if level is not None:
+                return level
 
-    level = level.strip().lower()
+    level = _normalize_review_effort(
+        _load_config().get("review_effort", ""), "config.yaml",
+    )
 
-    if level not in _VALID_EFFORT_LEVELS:
-        print(
-            f"[config] review_effort: unknown level {level!r} "
-            f"(valid: {', '.join(sorted(x for x in _VALID_EFFORT_LEVELS if x))}); "
-            "ignoring",
-            file=sys.stderr,
-        )
+    if level is None:
         return ""
 
     return level
+
+
+def _normalize_review_effort(value: object, source: str) -> Optional[str]:
+    """Return a valid review_effort level, or None (with a warning) when invalid."""
+    if value is None:
+        return ""
+
+    if isinstance(value, str):
+        level = value.strip().lower()
+
+        if level in _VALID_EFFORT_LEVELS:
+            return level
+
+    valid = ", ".join(sorted(x for x in _VALID_EFFORT_LEVELS if x))
+    print(
+        f"[config] review_effort in {source}: invalid level {value!r} "
+        f"(valid: {valid}); ignoring",
+        file=sys.stderr,
+    )
+
+    return None
 
 
 def get_review_consistency_config(project_name: str = "") -> dict:

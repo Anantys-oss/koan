@@ -23,6 +23,12 @@ from app.run_log import log
 # is accepted and only its value (an effort level) is checked.
 _INLINE_VALIDATED_NESTED_KEYS = {"effort", "models"}
 
+# Shown in effort-level warnings; derived so a new level needs no edit here.
+_EFFORT_LEVELS_LABEL = "/".join(
+    level for level in ("low", "medium", "high", "xhigh", "max")
+    if level in _VALID_EFFORT_LEVELS
+)
+
 # Role keys allowed under models.default / models.{provider} / legacy flat models.
 _MODEL_ROLE_KEYS = frozenset({
     "mission", "chat", "lightweight", "fallback", "review_mode", "reflect",
@@ -105,6 +111,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "review_ignore": _NESTED,
     "review_draft_skip": _NESTED,
     "review_pause_label": "str",
+    "review_effort": "str",
     "automation_rules": _NESTED,
     "effort": _NESTED,
     "thinking": _NESTED,
@@ -538,7 +545,7 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
                             warnings.append((
                                 key,
                                 f"'effort' invalid effort '{value}' "
-                                f"(expected low/medium/high/max)",
+                                f"(expected {_EFFORT_LEVELS_LABEL})",
                             ))
                     continue
                 warnings.append((key, f"'{key}' should be a mapping, got {type(value).__name__}"))
@@ -546,7 +553,7 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
             # effort: keys are mission types (plan/review/implement/…) plus
             # legacy budget modes (deep/wait) — an open set that grows as new
             # skills land. Accept any key; validate the VALUE is a real effort
-            # level (low/medium/high/max, or "" to disable the flag).
+            # level (see _VALID_EFFORT_LEVELS, or "" to disable the flag).
             if key == "effort":
                 for sub_key, sub_value in value.items():
                     path = f"effort.{sub_key}"
@@ -555,7 +562,7 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
                     if not isinstance(sub_value, str):
                         warnings.append((
                             path,
-                            f"'{path}' should be one of low/medium/high/max, "
+                            f"'{path}' should be one of {_EFFORT_LEVELS_LABEL}, "
                             f"got {type(sub_value).__name__}",
                         ))
                         continue
@@ -564,7 +571,7 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
                         warnings.append((
                             path,
                             f"'{path}' invalid effort '{sub_value}' "
-                            f"(expected low/medium/high/max)",
+                            f"(expected {_EFFORT_LEVELS_LABEL})",
                         ))
                 continue
             # models: open nested set — models.default / models.{provider} maps
@@ -602,6 +609,15 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
                 warnings.append((
                     key,
                     f"'{key}' should be {exp_label}, got {type(value).__name__}",
+                ))
+                continue
+            # A typo'd review_effort level silently drops the flag at runtime,
+            # so warn here the way the effort: section does.
+            if key == "review_effort" and value.strip().lower() not in _VALID_EFFORT_LEVELS:
+                warnings.append((
+                    key,
+                    f"'review_effort' invalid effort '{value}' "
+                    f"(expected {_EFFORT_LEVELS_LABEL})",
                 ))
 
     # Semantic check: reject an unknown mcp.transport value so a typo fails
