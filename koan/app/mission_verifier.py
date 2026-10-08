@@ -214,7 +214,9 @@ def _gh_says_no_pr(exc: Exception) -> bool:
     return "no pull requests found" in str(exc).lower()
 
 
-def check_pr_created(project_path: str, mission_title: str) -> Check:
+def check_pr_created(
+    project_path: str, mission_title: str, branch_prefix: str = "koan/"
+) -> Check:
     """Verify that a draft PR was created for code-changing missions.
 
     Uses `gh pr view` to check for an existing PR on the current branch.
@@ -264,22 +266,20 @@ def check_pr_created(project_path: str, mission_title: str) -> Check:
                 "pr_created", CheckStatus.WARN,
                 f"PR check inconclusive: {type(e).__name__}"
             )
-        if _is_code_mission(mission_title):
-            # A code mission that reached a feature branch and left no PR
-            # behind did not finish: the work exists but nobody is told about
-            # it. As a WARN this completed as a success and went out silently,
-            # with the commits stranded on the branch. FAIL routes it into the
-            # verify re-queue, which is capped and tags the reason.
-            return Check(
-                "pr_created", CheckStatus.FAIL,
-                "No PR found for current branch"
-            )
-        # Anything else on a feature branch (a rebase, a chore) may legitimately
-        # end without one.
-        return Check(
-            "pr_created", CheckStatus.WARN,
-            "No PR found for current branch"
+        # A code mission on a Kōan-created branch that left no PR behind did
+        # not finish: the work exists but nobody is told about it. As a WARN it
+        # completed as a success and went out silently, with the commits
+        # stranded on the branch. FAIL routes it into the verify re-queue,
+        # which is capped and tags the reason. Anything else — a rebase, a
+        # chore, or a branch Kōan did not create (a base branch not named
+        # main/master, so the SKIP above missed it) — may legitimately end
+        # without a PR, and keeps the WARN. Same precondition as
+        # `check_diff_coherence`.
+        is_koan_code_branch = (
+            _is_code_mission(mission_title) and branch.startswith(branch_prefix)
         )
+        status = CheckStatus.FAIL if is_koan_code_branch else CheckStatus.WARN
+        return Check("pr_created", status, "No PR found for current branch")
 
 
 def check_commit_quality(project_path: str) -> Check:
@@ -438,7 +438,7 @@ def verify_mission(
     check_fns = [
         lambda: check_diff_coherence(project_path, branch_prefix),
         lambda: check_test_coverage(project_path, mission_title),
-        lambda: check_pr_created(project_path, mission_title),
+        lambda: check_pr_created(project_path, mission_title, branch_prefix),
         lambda: check_commit_quality(project_path),
         lambda: check_mission_alignment(project_path, mission_title),
     ]

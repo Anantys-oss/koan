@@ -41,9 +41,8 @@ class TestMissionTypeClassification:
         assert _is_code_mission("fix broken login flow")
         assert _is_code_mission("add pagination to API")
         assert _is_code_mission("refactor database layer")
-        # A delivery command drives a whole implementation, so it owes a PR
-        # like any other code mission.
-        assert _is_code_mission("/deliver https://tracker.example/browse/PROJ-1")
+        # A delivery-style implementation mission owes a PR like any other.
+        assert _is_code_mission("deliver the new export endpoint")
 
     def test_analysis_mission_keywords(self):
         assert _is_analysis_mission("audit security of auth module")
@@ -240,6 +239,29 @@ class TestCheckPrCreated:
         mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
         result = check_pr_created("/project", "rebase onto the base branch")
         assert result.status == CheckStatus.WARN
+
+    @patch("app.mission_verifier.run_git")
+    @patch("app.github.run_gh")
+    def test_warn_on_base_branch_not_named_main(self, mock_gh, mock_git):
+        """A base branch Kōan did not create must not FAIL for want of a PR."""
+        mock_git.return_value = (0, "develop", "")
+        mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
+        result = check_pr_created("/project", "implement login")
+        assert result.status == CheckStatus.WARN
+
+    @patch("app.mission_verifier.run_git")
+    @patch("app.github.run_gh")
+    def test_fail_respects_configured_branch_prefix(self, mock_gh, mock_git):
+        """A custom prefix branch still FAILs; an unrelated one only WARNs."""
+        mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
+        mock_git.return_value = (0, "bot/my-branch", "")
+        assert check_pr_created(
+            "/project", "implement login", "bot/"
+        ).status == CheckStatus.FAIL
+        mock_git.return_value = (0, "feature/hand-made", "")
+        assert check_pr_created(
+            "/project", "implement login", "bot/"
+        ).status == CheckStatus.WARN
 
     @patch("app.mission_verifier.run_git")
     @patch("app.github.run_gh")

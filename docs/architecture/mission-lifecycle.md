@@ -131,16 +131,19 @@ After a mission exits successfully, the RARV Verify phase
 mission back to **Pending** with a `[verify-failed: <summary>]` context tag
 instead of completing it. On a successful (exit 0) mission two checks can
 FAIL: `check_diff_coherence` (an empty branch) and `check_pr_created` (a code
-mission that produced commits on a feature branch but no pull request) — the
-rest only PASS/WARN/SKIP. Both mean the mission stopped short of its own
-outcome, so a single failure is already a strong, unambiguous signal, and
-requiring two would make the re-queue unreachable.
+mission that produced commits on a `<branch_prefix>*` branch but no pull
+request) — the rest only PASS/WARN/SKIP. Both mean the mission stopped short of
+its own outcome, so a single failure is already a strong, unambiguous signal,
+and requiring two would make the re-queue unreachable.
 
 `check_pr_created` FAILs only when `gh` positively answered that the branch has
 no pull request. When the check itself could not run — expired auth, a timeout,
 `gh` missing, or a project with no GitHub remote — it stays a WARN reading
 `PR check inconclusive: <ErrorType>`, so an infrastructure problem never
-re-queues a mission whose PR may well exist.
+re-queues a mission whose PR may well exist. The FAIL also requires the branch
+to start with the configured `branch_prefix`, the same precondition
+`check_diff_coherence` applies: a branch Kōan did not create — including a base
+branch not named `main`/`master` — keeps the WARN.
 
 - The re-queue is restricted to **code missions** (`_is_code_mission()`): an
   empty branch is the *expected* outcome for an analysis / no-code mission, so
