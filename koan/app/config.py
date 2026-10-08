@@ -1849,7 +1849,7 @@ _DEFAULT_EFFORT_MAP = {
 }
 
 # Valid effort levels (matches Claude CLI --effort flag).
-_VALID_EFFORT_LEVELS = {"low", "medium", "high", "max", ""}
+_VALID_EFFORT_LEVELS = {"low", "medium", "high", "xhigh", "max", ""}
 
 
 def _resolve_effort_dict(
@@ -2698,6 +2698,69 @@ def get_review_reflect_config() -> dict:
     except (TypeError, ValueError):
         threshold = defaults["threshold"]
     return {"threshold": max(0, min(10, threshold))}
+
+
+def get_review_effort(project_name: str = "") -> str:
+    """Reasoning effort for the review path.
+
+    The ``effort:`` section only reaches missions built by the main agent
+    loop; ``/review`` runs in its own runner, so review depth was not
+    configurable at all. This key covers every review call — main pass,
+    reflect, error hunter, bot triage.
+
+    Config key: review_effort (string)
+      - A level the provider accepts (``low``/``medium``/``high``/
+        ``xhigh``/``max``).
+      - ``""`` (the default) omits the flag and keeps the provider default.
+
+    Per-project overrides are honored, so one repo can review deeper than
+    the rest. An invalid override is ignored and the global value applies,
+    the way an invalid ``effort:`` pin falls through.
+
+    Returns:
+        The configured level, or ``""`` when unset or invalid.
+    """
+    if project_name:
+        overrides = _load_project_overrides(project_name)
+
+        # A bare `review_effort:` (YAML null) counts as unset.
+        if overrides.get("review_effort") is not None:
+            level = _normalize_review_effort(
+                overrides["review_effort"], f"projects.yaml ({project_name})",
+            )
+
+            if level is not None:
+                return level
+
+    level = _normalize_review_effort(
+        _load_config().get("review_effort", ""), "config.yaml",
+    )
+
+    if level is None:
+        return ""
+
+    return level
+
+
+def _normalize_review_effort(value: object, source: str) -> Optional[str]:
+    """Return a valid review_effort level, or None (with a warning) when invalid."""
+    if value is None:
+        return ""
+
+    if isinstance(value, str):
+        level = value.strip().lower()
+
+        if level in _VALID_EFFORT_LEVELS:
+            return level
+
+    valid = ", ".join(sorted(x for x in _VALID_EFFORT_LEVELS if x))
+    print(
+        f"[config] review_effort in {source}: invalid level {value!r} "
+        f"(valid: {valid}); ignoring",
+        file=sys.stderr,
+    )
+
+    return None
 
 
 def get_review_consistency_config(project_name: str = "") -> dict:

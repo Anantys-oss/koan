@@ -1098,7 +1098,7 @@ def _run_claude_review(
         failure), error is the failure reason (empty on success).
     """
     from app.cli_provider import run_command_streaming
-    from app.config import get_skill_max_turns
+    from app.config import get_review_effort, get_skill_max_turns
 
     prompt = _with_language_directive(prompt)
     idle_timeout = _review_stall_timeout()
@@ -1137,6 +1137,10 @@ def _run_claude_review(
             # and then goes silent must fail *this pass* rather than let the
             # outer skill-runner watchdog SIGKILL the whole review.
             idle_timeout=idle_timeout,
+            # The effort: section never reaches this runner — /review is
+            # dispatched before the agent loop builds a mission — so review
+            # depth gets its own key. Empty keeps the provider default.
+            effort=get_review_effort(project_name),
         )
         return output, ""
     except RuntimeError as e:
