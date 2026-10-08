@@ -3,7 +3,7 @@ version: 2
 updates:
   - package-ecosystem: pip
     # Python deps: koan/requirements*.txt carry the (unpinned >=) ranges.
-    directory: "/"
+    directory: "/koan"
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
