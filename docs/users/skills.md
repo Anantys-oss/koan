@@ -111,8 +111,11 @@ code location, in addition to the bucketed summary comment (which is unchanged).
 When enabled, Kōan submits those inline findings as **one** GitHub pull-request
 review (single notification for the comment set), and attaches the formal
 APPROVE / REQUEST_CHANGES verdict to that same review when verdicts are on.
-If the batch API call fails (e.g. a line is not part of the diff), it falls back
-to posting comments individually. Cap volume with
+If GitHub rejects the batch API call (e.g. a line is not part of the diff), it
+falls back to posting comments individually; if the call fails in a way that
+leaves the outcome in doubt (a network timeout or server error), Kōan posts
+nothing rather than risk a duplicate review, and the next `/review` resolves
+it. Cap volume with
 `review_inline_comments.max_comments` (default 25). Re-running `/review` is
 idempotent (already-anchored findings are skipped); multi-line findings anchor
 to their full range; if all posts fail, you are notified. Disabled by default.
