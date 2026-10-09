@@ -10,6 +10,9 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from app.review_runner import (
+    EVENT_APPLIED,
+    EVENT_NOT_APPLIED,
+    EVENT_UNKNOWN,
     build_review_prompt,
     fetch_repliable_comments,
     run_review,
@@ -2143,7 +2146,8 @@ class TestRunReview:
         mock_gh.assert_called_once()  # post comment
         assert mock_notify.call_count >= 2
 
-    @patch("app.review_runner._maybe_post_inline_comments", return_value=(0, 0, False))
+    @patch("app.review_runner._maybe_post_inline_comments",
+           return_value=(0, 0, "not_applied"))
     @patch("app.review_runner._submit_review_verdict", return_value=True)
     @patch("app.review_runner._fetch_pr_head_oid", return_value="ffffffffff")
     @patch(
@@ -7390,6 +7394,47 @@ class TestBatchVerdictRideInRunReview:
         assert mock_verdict.call_args.kwargs["approve"] is False
         assert "REQUEST_CHANGES" in summary
 
+    @patch(
+        "app.review_runner.get_review_inline_comments_config",
+        return_value={"enabled": True, "max_comments": 25},
+    )
+    @patch(
+        "app.review_runner.get_review_verdict_config",
+        return_value={
+            "approved": True, "body_enabled": True, "include_blockers": True,
+        },
+    )
+    @patch("app.review_runner._is_review_requested", return_value=False)
+    @patch("app.review_runner._submit_review_verdict")
+    @patch("app.review_runner._post_inline_finding_comments")
+    @patch("app.review_runner._submit_batch_review", return_value=(False, 0))
+    @patch(
+        "app.review_runner._fetch_existing_inline_anchors_checked",
+        side_effect=[(set(), True), (set(), False)],
+    )
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc"])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_unknown_batch_outcome_skips_separate_verdict(
+        self, mock_fetch, mock_claude, mock_gh, _repliable,
+        _shas, _anchors, mock_batch, mock_indiv, mock_verdict, _mock_req,
+        _mock_cfg, _inline_cfg, pr_context, review_skill_dir,
+    ):
+        """Unknown batch outcome → no second verdict POST (no double review)."""
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(VALID_REVIEW_JSON), "")
+
+        success, _summary, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(), skill_dir=review_skill_dir,
+        )
+        assert success is True
+        mock_batch.assert_called_once()
+        mock_indiv.assert_not_called()
+        mock_verdict.assert_not_called()
+
 
 class TestResolveVerdictConfig:
     """_resolve_verdict_config merges global + project-level overrides."""
@@ -8122,7 +8167,7 @@ class TestMaybePostInlineComments:
              patch("app.review_runner._post_inline_finding_comments") as mock_post, \
              patch("app.review_runner._submit_batch_review") as mock_batch:
             assert _maybe_post_inline_comments(
-                "o", "r", "42", review_data, "abc123") == (0, 0, False)
+                "o", "r", "42", review_data, "abc123") == (0, 0, EVENT_NOT_APPLIED)
         mock_post.assert_not_called()
         mock_batch.assert_not_called()
 
@@ -8136,7 +8181,7 @@ class TestMaybePostInlineComments:
              patch("app.review_runner._submit_batch_review", return_value=(True, 1)) as mock_batch, \
              patch("app.review_runner._post_inline_finding_comments") as mock_post:
             assert _maybe_post_inline_comments(
-                "o", "r", "42", review_data, "abc123") == (1, 1, True)
+                "o", "r", "42", review_data, "abc123") == (1, 1, EVENT_APPLIED)
         mock_batch.assert_called_once()
         mock_post.assert_not_called()
 
@@ -8147,9 +8192,10 @@ class TestMaybePostInlineComments:
              patch("app.review_runner._post_inline_finding_comments") as mock_post, \
              patch("app.review_runner._submit_batch_review") as mock_batch:
             assert _maybe_post_inline_comments(
-                "o", "r", "42", None, "abc123") == (0, 0, False)
+                "o", "r", "42", None, "abc123") == (0, 0, EVENT_NOT_APPLIED)
             assert _maybe_post_inline_comments(
-                "o", "r", "42", {"file_comments": []}, "abc123") == (0, 0, False)
+                "o", "r", "42", {"file_comments": []}, "abc123"
+            ) == (0, 0, EVENT_NOT_APPLIED)
         mock_post.assert_not_called()
         mock_batch.assert_not_called()
 
@@ -8177,6 +8223,20 @@ class TestBuildReviewCommentPayloads:
         assert payloads[1]["start_line"] == 20
         assert payloads[1]["start_side"] == "RIGHT"
         assert "🔴" in payloads[0]["body"] or "Blocking" in payloads[0]["body"]
+
+    def test_logs_when_all_findings_unresolvable(self):
+        """A total filter-out must be visible, not a silent no-op."""
+        from app.review_runner import _build_review_comment_payloads
+        findings = [_inline_finding(line=0), _inline_finding(line=0)]
+        with patch("app.review_runner.log") as mock_log:
+            payloads, attempted = _build_review_comment_payloads(
+                findings, existing_anchors=set(), max_comments=25,
+            )
+        assert (payloads, attempted) == ([], 0)
+        assert any(
+            "no resolvable file/line" in str(c.args[-1])
+            for c in mock_log.call_args_list
+        )
 
     def test_skips_existing_anchors(self):
         from app.review_runner import (
@@ -8436,11 +8496,11 @@ class TestMaybePostInlineCommentsBatch:
                    return_value=(set(), True)), \
              patch("app.review_runner._submit_batch_review", return_value=(True, 1)) as mock_batch, \
              patch("app.review_runner._post_inline_finding_comments") as mock_indiv:
-            posted, attempted, batch_ok = _maybe_post_inline_comments(
+            posted, attempted, event_state = _maybe_post_inline_comments(
                 "o", "r", "42", review_data, "abc123",
                 event="COMMENT", body="",
             )
-        assert (posted, attempted, batch_ok) == (1, 1, True)
+        assert (posted, attempted, event_state) == (1, 1, EVENT_APPLIED)
         mock_batch.assert_called_once()
         mock_indiv.assert_not_called()
 
@@ -8453,11 +8513,11 @@ class TestMaybePostInlineCommentsBatch:
                    return_value=(set(), True)), \
              patch("app.review_runner._submit_batch_review", return_value=(False, 0)), \
              patch("app.review_runner._post_inline_finding_comments", return_value=(1, 1)) as mock_indiv:
-            posted, attempted, batch_ok = _maybe_post_inline_comments(
+            posted, attempted, event_state = _maybe_post_inline_comments(
                 "o", "r", "42", review_data, "abc123",
                 event="REQUEST_CHANGES", body="blockers",
             )
-        assert batch_ok is False
+        assert event_state == EVENT_NOT_APPLIED
         assert (posted, attempted) == (1, 1)
         mock_indiv.assert_called_once()
 
@@ -8478,7 +8538,7 @@ class TestMaybePostInlineCommentsBatch:
                 "o", "r", "42", review_data, "abc123",
                 event="REQUEST_CHANGES", body="blockers",
             )
-        assert result == (0, 0, False)
+        assert result == (0, 0, EVENT_NOT_APPLIED)
         mock_batch.assert_not_called()
         mock_indiv.assert_not_called()
 
@@ -8501,7 +8561,7 @@ class TestMaybePostInlineCommentsBatch:
                 "o", "r", "42", review_data, "abc123",
                 event="COMMENT", body="",
             )
-        assert result == (0, 1, False)
+        assert result == (0, 1, EVENT_UNKNOWN)
         mock_indiv.assert_not_called()
 
     def test_partial_landing_posts_remainder_individually(self):
@@ -8518,14 +8578,16 @@ class TestMaybePostInlineCommentsBatch:
              patch("app.review_runner._submit_batch_review", return_value=(False, 0)), \
              patch("app.review_runner._post_inline_finding_comments",
                    return_value=(1, 1)) as mock_indiv:
-            posted, attempted, batch_ok = _maybe_post_inline_comments(
+            posted, attempted, event_state = _maybe_post_inline_comments(
                 "o", "r", "42", review_data, "abc123",
                 event="COMMENT", body="",
             )
         mock_indiv.assert_called_once()
         # Already-landed anchors are handed to the fallback so it skips them.
         assert landed <= mock_indiv.call_args.kwargs["existing_anchors"]
-        assert batch_ok is False
+        # A partial landing proves a review exists server-side → unknown, so
+        # the caller must not POST a second verdict.
+        assert event_state == EVENT_UNKNOWN
         assert posted == 2
 
     def test_full_landing_skips_fallback(self):
@@ -8543,7 +8605,7 @@ class TestMaybePostInlineCommentsBatch:
                 "o", "r", "42", review_data, "abc123",
                 event="COMMENT", body="",
             )
-        assert result == (1, 1, True)
+        assert result == (1, 1, EVENT_APPLIED)
         mock_indiv.assert_not_called()
 
     def test_fallback_reuses_fetched_anchors(self):
@@ -8574,7 +8636,7 @@ class TestMaybePostInlineCommentsBatch:
              patch("app.review_runner._submit_batch_review") as mock_batch:
             assert _maybe_post_inline_comments(
                 "o", "r", "42", {"file_comments": [_inline_finding()]}, "abc",
-            ) == (0, 0, False)
+            ) == (0, 0, EVENT_NOT_APPLIED)
         mock_batch.assert_not_called()
 
 

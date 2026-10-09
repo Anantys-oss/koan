@@ -300,6 +300,20 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   the existing verdict-only path is unchanged. The summary **issue** comment
   remains the durable review body (`SUMMARY_TAG`, collapse, hunter-append,
   stale-HEAD, footer) and is **not** replaced by the review body.
+- **An uncertain batch outcome never gets a second verdict.** The batch result
+  is tri-state: *applied* (create succeeded, or every comment is confirmed
+  landed), *not applied* (no review was created — inline disabled, nothing new
+  to post, or GitHub rejected the create atomically with zero comments
+  landed), and *unknown* (the landed-comment recheck was unavailable, or only
+  some comments landed, so a review may exist server-side). A separate
+  verdict POST is sent only in the *not applied* case; *unknown* is skipped
+  and left for the next `/review`, because a duplicate APPROVE /
+  REQUEST_CHANGES is the same double-notification harm `max_attempts=1`
+  exists to prevent.
+- **A total filter-out is logged.** Findings with no resolvable file/line are
+  counted and logged in one line, so systematic upstream schema drift (every
+  finding missing `line_start`) is visible instead of indistinguishable from
+  "nothing new to post".
 - **Core review is posted before the optional enrichment passes.** The core
   summary comment is posted first (`_post_review_comment`); the bot-comment
   triage and silent-failure-hunter passes run *after* and are strictly

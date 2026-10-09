@@ -3304,6 +3304,14 @@ def _post_inline_finding_comments(
     return (posted, attempted)
 
 
+# Outcome of the batch-review ``event`` (verdict) submission. Tri-state
+# because "the create failed" is not the same as "the event was not applied":
+# a client-side timeout can leave the review created server-side.
+EVENT_APPLIED = "applied"
+EVENT_NOT_APPLIED = "not_applied"
+EVENT_UNKNOWN = "unknown"
+
+
 def _build_review_comment_payloads(
     findings: list,
     *,
@@ -3321,13 +3329,16 @@ def _build_review_comment_payloads(
 
     payloads: list = []
     attempted = 0
+    unresolvable = 0
     for item in findings:
         if attempted >= max_comments:
             break
         if not isinstance(item, dict):
+            unresolvable += 1
             continue
         line_start = item.get("line_start") or 0
         if line_start <= 0 or not item.get("file"):
+            unresolvable += 1
             continue
         line = item.get("line_end") or line_start
         body = sanitize_github_comment(_format_inline_finding_body(item))
@@ -3345,6 +3356,14 @@ def _build_review_comment_payloads(
             entry["start_line"] = int(line_start)
             entry["start_side"] = "RIGHT"
         payloads.append(entry)
+    if unresolvable:
+        # Without this, a systematic upstream problem (every finding missing
+        # line_start) is indistinguishable from "nothing new to post".
+        log(
+            "review",
+            f"{unresolvable} finding(s) had no resolvable file/line — "
+            f"not posted inline",
+        )
     return payloads, attempted
 
 
@@ -3454,18 +3473,25 @@ def _maybe_post_inline_comments(
 ) -> tuple:
     """Config-gated inline posting (batch-first, individual fallback).
 
-    Returns (posted, attempted, batch_ok).
-    ``batch_ok`` is True only when createReview succeeded (so the caller can
-    skip a separate verdict POST when the event was already applied).
+    Returns (posted, attempted, event_state) where ``event_state`` is one of:
+
+    - ``EVENT_APPLIED`` — createReview succeeded, so the verdict ``event``
+      already rides that review; the caller must not submit it again.
+    - ``EVENT_NOT_APPLIED`` — no review was created (inline disabled, nothing
+      new to post); the caller owns the separate verdict POST.
+    - ``EVENT_UNKNOWN`` — the create failed but may have been accepted
+      server-side (client timeout, partial landing). The caller must skip the
+      separate verdict POST: a second APPROVE / REQUEST_CHANGES is exactly the
+      duplicate-notification harm ``max_attempts=1`` exists to prevent.
     """
     cfg = get_review_inline_comments_config()
     if not cfg["enabled"]:
-        return (0, 0, False)
+        return (0, 0, EVENT_NOT_APPLIED)
     if not isinstance(review_data, dict) or not head_sha:
-        return (0, 0, False)
+        return (0, 0, EVENT_NOT_APPLIED)
     findings = review_data.get("file_comments") or []
     if not findings:
-        return (0, 0, False)
+        return (0, 0, EVENT_NOT_APPLIED)
 
     existing, anchors_ok = _fetch_existing_inline_anchors_checked(
         owner, repo, pr_number,
@@ -3480,14 +3506,14 @@ def _maybe_post_inline_comments(
             f"Skipping inline comments on PR #{pr_number}: could not verify "
             f"existing anchors (idempotency check unavailable)",
         )
-        return (0, 0, False)
+        return (0, 0, EVENT_NOT_APPLIED)
     payloads, attempted = _build_review_comment_payloads(
         findings,
         existing_anchors=existing,
         max_comments=cfg["max_comments"],
     )
     if not payloads:
-        return (0, attempted, False)
+        return (0, attempted, EVENT_NOT_APPLIED)
 
     ok, n = _submit_batch_review(
         owner, repo, pr_number,
@@ -3497,7 +3523,7 @@ def _maybe_post_inline_comments(
         body=body,
     )
     if ok:
-        return (n, attempted, True)
+        return (n, attempted, EVENT_APPLIED)
 
     # createReview raising is not proof the review was not created: a POST
     # that times out client-side may still have been accepted server-side.
@@ -3517,7 +3543,7 @@ def _maybe_post_inline_comments(
             f"recheck is unavailable — skipping fallback to avoid duplicating "
             f"a possibly-accepted review",
         )
-        return (0, attempted, False)
+        return (0, attempted, EVENT_UNKNOWN)
 
     confirmed = sum(
         1 for p in payloads
@@ -3529,7 +3555,7 @@ def _maybe_post_inline_comments(
             f"Batch review reported failure but all {confirmed} comment(s) "
             f"landed on PR #{pr_number} — skipping fallback",
         )
-        return (confirmed, attempted, True)
+        return (confirmed, attempted, EVENT_APPLIED)
     already_landed = 0
     if confirmed:
         # Partial landing: post only the missing ones individually
@@ -3549,7 +3575,13 @@ def _maybe_post_inline_comments(
         owner, repo, pr_number, findings, head_sha, cfg["max_comments"],
         existing_anchors=fallback_anchors,
     )
-    return (posted + already_landed, max(attempted, att2), False)
+    # A partial landing proves a review *was* created server-side (so its
+    # event may already be applied) without proving the whole set landed —
+    # "unknown", not "not applied". Zero landed comments is GitHub rejecting
+    # the create atomically (e.g. a line outside the diff → 422), so no review
+    # exists and the caller still owns the separate verdict POST.
+    event_state = EVENT_UNKNOWN if already_landed else EVENT_NOT_APPLIED
+    return (posted + already_landed, max(attempted, att2), event_state)
 
 
 def _patch_comment_body(
@@ -4845,7 +4877,7 @@ def _run_review_body(
     # Additive to the summary comment above and independently failable, so an
     # inline-posting error never affects the already-posted summary.
     if posted:
-        inline_posted, inline_attempted, batch_ok = _maybe_post_inline_comments(
+        inline_posted, inline_attempted, event_state = _maybe_post_inline_comments(
             owner, repo, pr_number, review_data,
             current_shas[-1] if current_shas else "",
             event=verdict_event if want_verdict else "COMMENT",
@@ -4858,9 +4890,19 @@ def _run_review_body(
                 f"Inline posting failed: 0 of {inline_attempted} comment(s) "
                 f"posted on PR #{pr_number}."
             )
-        if batch_ok and want_verdict:
+        if event_state == EVENT_APPLIED and want_verdict:
             # Event already applied on the batch review — do not double-submit.
             verdict_submitted = True
+        elif event_state == EVENT_UNKNOWN and want_verdict:
+            # The batch create may have been accepted server-side. A second
+            # APPROVE / REQUEST_CHANGES POST would double-notify the author —
+            # the exact harm max_attempts=1 guards against. Leave the verdict
+            # unsubmitted; the next /review resolves it.
+            log(
+                "review",
+                f"Batch review outcome unknown on PR #{pr_number} — skipping "
+                f"the separate verdict POST to avoid a duplicate review",
+            )
         elif want_verdict and current_shas:
             # Step 7b: separate verdict when batch did not carry it
             # (inline off, no new comments, or batch failed and fell back).
