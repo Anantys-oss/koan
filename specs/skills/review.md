@@ -1,10 +1,10 @@
 ---
 type: skill-spec
 title: "Skill Spec — review"
-description: "Documents the `/review` skill that queues a code-review mission on PRs/issues, posting findings as a comment with severity-driven LGTM logic and re-review comment handling, covered by the eval harness."
+description: "Documents the `/review` skill that queues a code-review mission on PRs/issues, posting findings as a comment with severity-driven LGTM logic, batched opt-in inline review submission, and re-review comment handling, covered by the eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-09-11
+updated: 2026-09-25
 ---
 
 # Skill Spec — `review`
@@ -257,6 +257,82 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   (byte-identical output), and the alert never blocks the post, changes the LGTM
   verdict, or re-runs analysis — re-covering the new commits is the
   incremental-review path's job on the next `/review`.
+- **Inline findings (opt-in):** When `review_inline_comments.enabled` is true,
+  resolvable findings are submitted as a **single** GitHub pull-request review
+  (`POST …/pulls/{n}/reviews` with a `comments` array), not as N separate
+  `…/pulls/{n}/comments` posts. Cap with `max_comments`. Re-runs stay
+  idempotent (existing anchors skipped). If the batch create fails (e.g. line
+  not in diff, or a human draft review already holds the one-pending-review
+  slot and GitHub answers 422), fall back to individual inline posts without
+  failing the run — that path POSTs to `…/pulls/{n}/comments` and is unaffected
+  by a pending review.
+- **Idempotency is a precondition, not a best effort:** if the existing-anchor
+  listing itself fails, inline posting is **skipped** for that run rather than
+  posting an unverified (potentially wholly duplicate) comment set; the next
+  `/review` posts it once the listing succeeds.
+- **The review POST carries no retry budget:** `createReview` is not
+  idempotent, so it is sent with `max_attempts=1`. A stalled-but-accepted POST
+  that got re-sent would publish a second complete review — two notifications
+  and 2×N inline threads the author cannot bulk-delete — which costs far more
+  than one failed attempt that degrades to the fallback.
+- **A failed create is still not proof of non-creation:** a client-side timeout
+  can leave the review created server-side, so before falling back to
+  individual posts the run re-lists the PR's inline comments. Only a *fully*
+  landed comment set skips the fallback (and treats the verdict as already
+  applied); on a partial landing the missing comments are posted individually,
+  with the confirmed anchors handed to that path so it cannot duplicate them.
+  If that re-listing itself fails, the fallback is **skipped** too — the
+  precondition above binds harder after a failed create, because the review
+  may already be on the PR.
+- **Only GitHub may declare a create "not created".** The failure *class*
+  decides whether the fallback may run, because the landed-comment recheck
+  alone cannot: `…/pulls/{n}/comments` is read-after-write lagged, so a recheck
+  issued right after a client-side timeout can legitimately show zero comments
+  while the write completes behind it. A 4xx is a decision — the request
+  reached the API and was rejected, so no review exists and the fallback plus
+  the separate verdict are safe. A `TimeoutExpired`, an `OSError`, a 5xx, or
+  any transport failure with no HTTP status leaves the non-idempotent POST
+  possibly committed: with no comments visible, the run posts **nothing** and
+  reports *unknown*.
+- **The anchor listing must survive pagination.** It is read through
+  `gh api --paginate --jq …` as one JSON value per line. Parsing raw
+  `--paginate` output as a single document breaks at the first page boundary
+  (30 comments) — and because the listing is a hard precondition, that would
+  disable inline posting permanently on any PR with enough comment history.
+  `gh` exiting non-zero (or an entry that will not decode) reports "unknown";
+  empty output on a successful call means the PR genuinely has no inline
+  comments. A run skipped for an unverifiable listing is surfaced through
+  `notify_fn`, not the log alone, so it is distinguishable from "nothing new
+  to post".
+- **Kōan never deletes a review it did not create.** It has no cleanup pass
+  over pre-existing reviews: every review Kōan POSTs carries an `event`, so it
+  can never leave a PENDING review of its own behind, and any PENDING review on
+  the PR is therefore unsubmitted human draft content. Deleting one is
+  irreversible destruction of human work and is forbidden by "the agent
+  proposes, the human decides".
+- **Verdict may ride the batch:** When a formal verdict is submitted in the
+  same run (`review_verdict.approved`) and there is at least one new inline
+  comment to post, the verdict `event` (`APPROVE` / `REQUEST_CHANGES`, or
+  `COMMENT` on self-authored PRs) is attached to that same review so the
+  author gets one review notification. If there are no new inline comments,
+  the existing verdict-only path is unchanged. The summary **issue** comment
+  remains the durable review body (`SUMMARY_TAG`, collapse, hunter-append,
+  stale-HEAD, footer) and is **not** replaced by the review body.
+- **An uncertain batch outcome never gets a second verdict.** The batch result
+  is tri-state: *applied* (create succeeded, or every comment is confirmed
+  landed), *not applied* (no review was created — inline disabled, nothing new
+  to post, or GitHub answered the create with a 4xx and zero comments
+  landed), and *unknown* (the landed-comment recheck was unavailable, only some
+  comments landed, or the create failed without a definitive GitHub rejection —
+  so a review may exist server-side). A separate
+  verdict POST is sent only in the *not applied* case; *unknown* is skipped
+  and left for the next `/review`, because a duplicate APPROVE /
+  REQUEST_CHANGES is the same double-notification harm `max_attempts=1`
+  exists to prevent.
+- **A total filter-out is logged.** Findings with no resolvable file/line are
+  counted and logged in one line, so systematic upstream schema drift (every
+  finding missing `line_start`) is visible instead of indistinguishable from
+  "nothing new to post".
 - **Core review is posted before the optional enrichment passes.** The core
   summary comment is posted first (`_post_review_comment`); the bot-comment
   triage and silent-failure-hunter passes run *after* and are strictly
