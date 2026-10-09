@@ -281,11 +281,29 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   landed comment set skips the fallback (and treats the verdict as already
   applied); on a partial landing the missing comments are posted individually,
   with the confirmed anchors handed to that path so it cannot duplicate them.
-  The anchor listing reports "unknown" (not "empty") on an empty or non-array
-  payload, so a short-circuited `gh` response can never be read as a PR with
-  no comments. If that re-listing itself fails, the fallback is **skipped**
-  too — the precondition above binds harder after a failed create, because the
-  review may already be on the PR.
+  If that re-listing itself fails, the fallback is **skipped** too — the
+  precondition above binds harder after a failed create, because the review
+  may already be on the PR.
+- **Only GitHub may declare a create "not created".** The failure *class*
+  decides whether the fallback may run, because the landed-comment recheck
+  alone cannot: `…/pulls/{n}/comments` is read-after-write lagged, so a recheck
+  issued right after a client-side timeout can legitimately show zero comments
+  while the write completes behind it. A 4xx is a decision — the request
+  reached the API and was rejected, so no review exists and the fallback plus
+  the separate verdict are safe. A `TimeoutExpired`, an `OSError`, a 5xx, or
+  any transport failure with no HTTP status leaves the non-idempotent POST
+  possibly committed: with no comments visible, the run posts **nothing** and
+  reports *unknown*.
+- **The anchor listing must survive pagination.** It is read through
+  `gh api --paginate --jq …` as one JSON value per line. Parsing raw
+  `--paginate` output as a single document breaks at the first page boundary
+  (30 comments) — and because the listing is a hard precondition, that would
+  disable inline posting permanently on any PR with enough comment history.
+  `gh` exiting non-zero (or an entry that will not decode) reports "unknown";
+  empty output on a successful call means the PR genuinely has no inline
+  comments. A run skipped for an unverifiable listing is surfaced through
+  `notify_fn`, not the log alone, so it is distinguishable from "nothing new
+  to post".
 - **Kōan never deletes a review it did not create.** It has no cleanup pass
   over pre-existing reviews: every review Kōan POSTs carries an `event`, so it
   can never leave a PENDING review of its own behind, and any PENDING review on
@@ -303,9 +321,10 @@ See `docs/users/skills.md` for the end-user `/review` reference and
 - **An uncertain batch outcome never gets a second verdict.** The batch result
   is tri-state: *applied* (create succeeded, or every comment is confirmed
   landed), *not applied* (no review was created — inline disabled, nothing new
-  to post, or GitHub rejected the create atomically with zero comments
-  landed), and *unknown* (the landed-comment recheck was unavailable, or only
-  some comments landed, so a review may exist server-side). A separate
+  to post, or GitHub answered the create with a 4xx and zero comments
+  landed), and *unknown* (the landed-comment recheck was unavailable, only some
+  comments landed, or the create failed without a definitive GitHub rejection —
+  so a review may exist server-side). A separate
   verdict POST is sent only in the *not applied* case; *unknown* is skipped
   and left for the next `/review`, because a duplicate APPROVE /
   REQUEST_CHANGES is the same double-notification harm `max_attempts=1`

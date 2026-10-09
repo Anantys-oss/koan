@@ -3190,31 +3190,47 @@ def _fetch_existing_inline_anchors_checked(
     ``ok`` is False when the listing could not be performed, so callers can
     distinguish "no comments yet" from "we do not know" — the batch path must
     not submit a whole duplicate review on a swallowed fetch error.
+
+    ``--paginate`` must be paired with ``--jq``: without it ``gh`` concatenates
+    one top-level JSON array per page, so ``json.loads`` raises "Extra data" as
+    soon as a PR has more than one page (30) of inline comments — which would
+    report "unknown" forever on an active PR and disable inline posting with it.
+    Projecting to NDJSON through ``--jq`` makes paging transparent (same
+    convention as ``_fetch_pr_commit_shas``). ``run_gh`` raises on a non-zero
+    ``gh`` exit, so empty output here is a genuinely empty comment list.
     """
     try:
         raw = run_gh(
             "api", f"repos/{owner}/{repo}/pulls/{pr_number}/comments",
             "--paginate",
+            "--jq",
+            r".[] | {path: .path, line: .line, "
+            r"original_line: .original_line, body: .body}",
         )
-        data = json.loads(raw) if raw else None
     except Exception as e:
         log("review", f"Could not fetch existing inline comments on PR #{pr_number}: {e}")
         return set(), False
 
-    if not isinstance(data, list):
-        # Empty output or a non-array payload means the listing did not
-        # actually happen (gh short-circuited / returned an error object).
-        # Reporting ok=True here would be indistinguishable from "no
-        # comments yet" — the exact ambiguity this variant removes.
-        log(
-            "review",
-            f"Unexpected inline-comment listing payload on PR #{pr_number} "
-            f"(not a JSON array) — treating as unknown",
-        )
-        return set(), False
-
     anchors = set()
-    for c in data:
+    for raw_line in raw.splitlines():
+        entry = raw_line.strip()
+        if not entry:
+            continue
+        try:
+            c = json.loads(entry)
+        except (json.JSONDecodeError, ValueError):
+            c = None
+        if not isinstance(c, dict):
+            # A line we cannot decode means we hold only part of the listing.
+            # Reporting ok=True on a partial set would let the caller re-post
+            # comments it believes are missing — the exact duplication this
+            # variant exists to prevent.
+            log(
+                "review",
+                f"Unexpected inline-comment listing payload on PR #{pr_number} "
+                f"(undecodable entry) — treating as unknown",
+            )
+            return set(), False
         path = c.get("path")
         line = c.get("line") or c.get("original_line")
         body = (c.get("body") or "").strip()
@@ -3384,6 +3400,34 @@ def _post_review_once(endpoint: str, payload: dict) -> None:
     )
 
 
+_HTTP_STATUS_RE = re.compile(r"\bhttp[ /]?[\d.]*\s*(\d{3})\b", re.IGNORECASE)
+
+
+def _batch_create_failure_state(error: Exception) -> str:
+    """Classify a failed ``createReview`` POST: definitely-not-created vs unknown.
+
+    GitHub answering with a 4xx is a *decision*: the request reached the API and
+    was rejected, so no review exists and the caller may safely fall back to
+    individual comments plus its own verdict POST.
+
+    Everything else leaves the write possibly committed server-side — a
+    client-side ``TimeoutExpired`` or ``OSError`` can fire while GitHub commits
+    the review, and a 5xx says nothing about whether it landed. Since
+    ``createReview`` is not idempotent (see ``_post_review_once``), those must
+    be reported as unknown so the caller neither re-posts the comments nor
+    double-submits the verdict.
+    """
+    if isinstance(error, (subprocess.TimeoutExpired, OSError)):
+        return EVENT_UNKNOWN
+    m = _HTTP_STATUS_RE.search(str(error))
+    if m:
+        status = int(m.group(1))
+        # 408 Request Timeout is not a decision about whether the write landed.
+        if 400 <= status < 500 and status != 408:
+            return EVENT_NOT_APPLIED
+    return EVENT_UNKNOWN
+
+
 def _submit_batch_review(
     owner: str,
     repo: str,
@@ -3396,7 +3440,11 @@ def _submit_batch_review(
 ) -> tuple:
     """POST one pull-request review with inline comments.
 
-    Returns (ok, posted_count). On self-authored PR 422 for APPROVE /
+    Returns (ok, posted_count, create_state) where ``create_state`` is
+    ``EVENT_APPLIED`` on success, ``EVENT_NOT_APPLIED`` when GitHub definitively
+    rejected the create (4xx), and ``EVENT_UNKNOWN`` when the POST may have been
+    committed server-side despite the failure (see
+    ``_batch_create_failure_state``). On self-authored PR 422 for APPROVE /
     REQUEST_CHANGES, retries once with event=COMMENT (comments preserved).
 
     GitHub requires a non-empty ``body`` when ``event`` is COMMENT or
@@ -3412,7 +3460,7 @@ def _submit_batch_review(
     deletes a review it did not create.
     """
     if not head_sha or not comments:
-        return False, 0
+        return False, 0, EVENT_NOT_APPLIED
 
     # GitHub: body required for COMMENT / REQUEST_CHANGES events.
     review_body = body
@@ -3433,8 +3481,9 @@ def _submit_batch_review(
 
     endpoint = f"repos/{owner}/{repo}/pulls/{pr_number}/reviews"
     # Catch broadly: run_gh() raises OSError and TimeoutExpired as well as
-    # RuntimeError. Returning (False, 0) lets the caller fall back to
-    # individual posts instead of aborting the review pipeline.
+    # RuntimeError. Returning ok=False lets the caller fall back to individual
+    # posts instead of aborting the review pipeline — but only when the
+    # classified state says the create definitely did not happen.
     try:
         _post_review_once(endpoint, payload)
         log(
@@ -3442,7 +3491,7 @@ def _submit_batch_review(
             f"Submitted batch review ({event}) with {len(comments)} "
             f"comment(s) on PR #{pr_number}",
         )
-        return True, len(comments)
+        return True, len(comments), EVENT_APPLIED
     except Exception as e:
         if event in ("APPROVE", "REQUEST_CHANGES") and _is_self_review_error(e):
             try:
@@ -3456,12 +3505,12 @@ def _submit_batch_review(
                     "review",
                     f"Posted batch {event} as COMMENT on own PR #{pr_number}",
                 )
-                return True, len(comments)
+                return True, len(comments), EVENT_APPLIED
             except Exception as e2:
                 log("review", f"Batch review failed on PR #{pr_number}: {e2}")
-                return False, 0
+                return False, 0, _batch_create_failure_state(e2)
         log("review", f"Batch review failed on PR #{pr_number}: {e}")
-        return False, 0
+        return False, 0, _batch_create_failure_state(e)
 
 
 def _maybe_post_inline_comments(
@@ -3470,6 +3519,7 @@ def _maybe_post_inline_comments(
     *,
     event: str = "COMMENT",
     body: str = "",
+    notify_fn=None,
 ) -> tuple:
     """Config-gated inline posting (batch-first, individual fallback).
 
@@ -3483,6 +3533,10 @@ def _maybe_post_inline_comments(
       server-side (client timeout, partial landing). The caller must skip the
       separate verdict POST: a second APPROVE / REQUEST_CHANGES is exactly the
       duplicate-notification harm ``max_attempts=1`` exists to prevent.
+
+    *notify_fn* (optional) is called when a run is skipped because the
+    idempotency precondition could not be verified — otherwise a skipped run is
+    indistinguishable from "nothing new to post" outside the log.
     """
     cfg = get_review_inline_comments_config()
     if not cfg["enabled"]:
@@ -3501,11 +3555,13 @@ def _maybe_post_inline_comments(
         # would duplicate the whole comment set (a full extra review in the
         # batch path), breaking the documented re-run idempotency guarantee.
         # Skip this run; the next /review re-posts once the listing works.
-        log(
-            "review",
+        msg = (
             f"Skipping inline comments on PR #{pr_number}: could not verify "
-            f"existing anchors (idempotency check unavailable)",
+            f"existing anchors (idempotency check unavailable)"
         )
+        log("review", msg)
+        if notify_fn:
+            notify_fn(f"⚠️ {msg}")
         return (0, 0, EVENT_NOT_APPLIED)
     payloads, attempted = _build_review_comment_payloads(
         findings,
@@ -3515,7 +3571,7 @@ def _maybe_post_inline_comments(
     if not payloads:
         return (0, attempted, EVENT_NOT_APPLIED)
 
-    ok, n = _submit_batch_review(
+    ok, n, create_state = _submit_batch_review(
         owner, repo, pr_number,
         head_sha=head_sha,
         comments=payloads,
@@ -3556,6 +3612,20 @@ def _maybe_post_inline_comments(
             f"landed on PR #{pr_number} — skipping fallback",
         )
         return (confirmed, attempted, EVENT_APPLIED)
+    if not confirmed and create_state == EVENT_UNKNOWN:
+        # The failure was not a GitHub decision (client-side timeout, OSError,
+        # 5xx, transport fault), so the POST may be committing right now and the
+        # recheck simply has not caught up — ``…/pulls/{n}/comments`` is
+        # read-after-write lagged. Zero visible comments is therefore not proof
+        # the create was rejected: falling back would publish 2xN threads and a
+        # second blocking review. Skip; the next /review resolves it.
+        log(
+            "review",
+            f"Batch review on PR #{pr_number} failed without a definitive "
+            f"GitHub rejection and no comments are visible yet — skipping "
+            f"fallback to avoid duplicating a possibly-accepted review",
+        )
+        return (0, attempted, EVENT_UNKNOWN)
     already_landed = 0
     if confirmed:
         # Partial landing: post only the missing ones individually
@@ -3577,10 +3647,14 @@ def _maybe_post_inline_comments(
     )
     # A partial landing proves a review *was* created server-side (so its
     # event may already be applied) without proving the whole set landed —
-    # "unknown", not "not applied". Zero landed comments is GitHub rejecting
-    # the create atomically (e.g. a line outside the diff → 422), so no review
-    # exists and the caller still owns the separate verdict POST.
-    event_state = EVENT_UNKNOWN if already_landed else EVENT_NOT_APPLIED
+    # "unknown", not "not applied". Zero landed comments only means "not
+    # applied" when GitHub definitively rejected the create (4xx, e.g. a line
+    # outside the diff); the ambiguous case already returned above.
+    event_state = (
+        EVENT_NOT_APPLIED
+        if not already_landed and create_state == EVENT_NOT_APPLIED
+        else EVENT_UNKNOWN
+    )
     return (posted + already_landed, max(attempted, att2), event_state)
 
 
@@ -4882,6 +4956,7 @@ def _run_review_body(
             current_shas[-1] if current_shas else "",
             event=verdict_event if want_verdict else "COMMENT",
             body=verdict_body if want_verdict else "",
+            notify_fn=notify_fn,
         )
         if inline_posted:
             notify_fn(f"Posted {inline_posted} inline comment(s) on PR #{pr_number}.")
