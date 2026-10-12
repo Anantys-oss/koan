@@ -8,7 +8,7 @@
 # Run:    docker compose up --build
 # Setup:  ./setup-docker.sh  (auto-detects host paths, generates mounts)
 
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # System dependencies + Node.js (for Claude CLI) + gh (GitHub CLI)
 # Dev tools (ripgrep, fd-find, bat, etc.) improve agent productivity inside
