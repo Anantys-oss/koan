@@ -1,2 +1,2 @@
 # Optional MCP server runtime (stdio and Streamable HTTP). Core Kōan stays lean.
-mcp>=2.0,<3
+mcp>=2.3.0,<3

@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: ⚙️ Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           # Must track tests.yml's PR version: the drift check is a byte compare,
           # and test_committed_artifact_is_current (run there on 3.11 AND 3.14)
