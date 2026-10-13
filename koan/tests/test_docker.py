@@ -7,6 +7,7 @@ without requiring Docker to be installed.
 import os
 import re
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -26,8 +27,18 @@ class TestDockerfile:
         assert (REPO_ROOT / "Dockerfile").exists()
 
     def test_base_image_is_python_slim(self):
-        """Thin image — CLIs are mounted, not installed."""
-        assert "FROM python:3.12-slim" in self.dockerfile
+        """Thin image — CLIs are mounted, not installed.
+
+        Version-agnostic on purpose: Dependabot bumps the tag without touching
+        tests, so pinning an exact minor here fails CI on every valid bump.
+        """
+        match = re.search(r"^FROM python:3\.(\d+)-slim$", self.dockerfile, re.M)
+        assert match, "Dockerfile must build on a python:3.<minor>-slim base"
+        requires = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+        floor = requires["project"]["requires-python"].removeprefix(">=")
+        assert int(match.group(1)) >= int(floor.split(".")[1]), (
+            f"base image is older than requires-python ({floor})"
+        )
 
     def test_installs_claude_cli_via_npm(self):
         """Claude CLI is installed in the image (can't mount across architectures)."""
