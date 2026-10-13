@@ -4798,18 +4798,20 @@ class TestRunSkillMissionEnv:
         env = self._run_with_title(tmp_path, "/review https://x/pull/1", is_debug=True)
         assert "KOAN_SUPPRESS_RUNNER_OUTCOME" not in env
 
-    def test_suppress_outcome_not_set_for_plan(self, tmp_path):
-        """/plan is tracked but never opens a PR — its runner emits the issue/Jira
-        URL (or inline plan body) that the PR-only canonical line cannot carry, so
-        the flag must NOT be set or that content is lost in normal mode (#2153)."""
-        env = self._run_with_title(tmp_path, "/plan add dark mode", is_debug=False)
-        assert "KOAN_SUPPRESS_RUNNER_OUTCOME" not in env
+    @pytest.mark.parametrize("title", [
+        "/plan add dark mode", "/recreate https://x/pull/1", "/squash https://x/pull/1",
+        "[project:p] /dbg https://x/issues/1",
+    ])
+    def test_suppress_outcome_set_for_every_tracked_skill(self, tmp_path, title):
+        """Every tracked skill's runner hands its outcome (URL, detail, reason)
+        over as stdout markers, so the loop's one message carries it all (#2153).
+        Project prefixes and aliases resolve to the canonical skill."""
+        env = self._run_with_title(tmp_path, title, is_debug=False)
+        assert env.get("KOAN_SUPPRESS_RUNNER_OUTCOME") == "1"
 
     def test_suppress_outcome_not_set_for_untracked_skill(self, tmp_path):
-        """The canonical-completion dedup is scoped to PR-producing tracked skills.
-        Untracked skills (e.g. /recreate) are left untouched by design, so the
-        flag is not set and the runner's outcome line still reaches chat."""
-        env = self._run_with_title(tmp_path, "/recreate https://x/pull/1", is_debug=False)
+        """Skills outside outcome_line.SKILL_COMPLETION keep their own message."""
+        env = self._run_with_title(tmp_path, "/audit everything", is_debug=False)
         assert "KOAN_SUPPRESS_RUNNER_OUTCOME" not in env
 
     def test_appends_stream_usage_to_stdout_file_for_post_mission(self, tmp_path):

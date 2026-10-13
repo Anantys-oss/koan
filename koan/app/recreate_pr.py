@@ -63,9 +63,12 @@ def run_recreate(
     )
 
     if not success:
-        from app.messaging_level import notify_outcome
+        from app.messaging_level import report_outcome
         pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
-        notify_outcome(f"❌ Recreate failed {pr_url}: {summary}", notify_fn)
+        report_outcome(
+            "recreate", False, project_path=project_path, url=pr_url,
+            reason=summary, send_fn=notify_fn,
+        )
     return success, summary
 
 
@@ -249,11 +252,13 @@ def _run_recreate_impl(
     summary = f"PR #{pr_number} recreated.\n" + "\n".join(
         f"- {a}" for a in actions_log
     )
-    from app.messaging_level import notify_outcome
+    from app.messaging_level import report_outcome
     new_pr_url = push_result.get("new_pr_url") or (
         f"https://github.com/{owner}/{repo}/pull/{pr_number}"
     )
-    notify_outcome(f"✅ Recreated {new_pr_url}", notify_fn)
+    report_outcome(
+        "recreate", True, project_path=project_path, url=new_pr_url, send_fn=notify_fn,
+    )
     return True, summary
 
 

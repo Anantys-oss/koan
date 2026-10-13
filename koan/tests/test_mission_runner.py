@@ -4329,3 +4329,42 @@ class TestFirePostMissionHookMissionHooks:
             )
         post.assert_not_called()          # repo post_hooks suppressed here
         fire.assert_called_once()         # Python post_mission hook still fires
+
+
+class TestOutcomeFromStdout:
+    """The agent loop reads the outcome a runner handed over on stdout."""
+
+    def test_no_report_falls_back_to_first_pr_url(self):
+        from app.mission_runner import outcome_from_stdout
+        out = "transcript\nhttps://github.com/o/r/pull/1\n"
+        assert outcome_from_stdout(out) == {
+            "pr_url": "https://github.com/o/r/pull/1", "reason": "", "detail": "",
+            "reported": False,
+        }
+        assert outcome_from_stdout("")["pr_url"] == ""
+
+    def test_handed_over_url_wins(self):
+        from app.mission_runner import outcome_from_stdout
+        out = ("old https://github.com/o/r/pull/1\nKOAN_OUTCOME_OK: 1\n"
+               "KOAN_OUTCOME_URL: https://github.com/o/r/pull/2\n")
+        assert outcome_from_stdout(out)["pr_url"] == "https://github.com/o/r/pull/2"
+
+    def test_reported_without_url_never_guesses_one(self):
+        """An inline /plan quoting a PR link must not be reported as that PR."""
+        from app.mission_runner import outcome_from_stdout
+        out = ("KOAN_OUTCOME_OK: 1\nKOAN_OUTCOME_DETAIL: see https://github.com/o/r/pull/42\n")
+        found = outcome_from_stdout(out)
+        assert found["reported"] is True
+        assert found["pr_url"] == ""
+
+    def test_reason_and_detail(self):
+        from app.mission_runner import outcome_from_stdout
+        out = ("KOAN_OUTCOME_OK: 0\nKOAN_OUTCOME_REASON: first\nKOAN_OUTCOME_DETAIL: line one\n"
+               "noise\nKOAN_OUTCOME_DETAIL:   indented\nKOAN_OUTCOME_REASON: second\n")
+        found = outcome_from_stdout(out)
+        assert found["reason"] == "second"
+        assert found["detail"] == "line one\n  indented"
+
+    def test_marker_must_start_the_line(self):
+        from app.mission_runner import outcome_from_stdout
+        assert outcome_from_stdout("quoted KOAN_OUTCOME_REASON: nope\n")["reason"] == ""

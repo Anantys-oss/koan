@@ -4,7 +4,7 @@ title: "Component Spec — Agent Loop Pipeline"
 description: "Design contract for the core mission pipeline (iteration manager, mission executor/runner, quota handling, stagnation monitor) that pulls missions, invokes the CLI provider, and finalizes lifecycle state."
 tags: [agent-loop]
 created: 2026-06-27
-updated: 2026-09-30
+updated: 2026-10-13
 ---
 
 # Component Spec — Agent Loop Pipeline
@@ -56,6 +56,9 @@ mission_runner (post-processing)   # usage tracking, pending.md archival, reflec
 | `mission_runner.parse_claude_output()` | JSON → text extraction from `--output-format json` / stream-json. |
 | `run._is_ci_check_mission()` | Classifies a mission title as CI-related (`/ci_check …`, ci_dispatch `Fix CI failure: …`). |
 | `run._mission_fail_icon()` | **The single source of truth for the emoji prefix on a mission-failure notification** — 🚦 for CI missions, ❌ otherwise. Every failure-notification site MUST call this, never hardcode ❌. |
+| `run._notify_mission_end()` | **The single end-of-mission chat message.** Its first line is a fixed template from `outcome_line` (`✅ [p] 🔍 Reviewed <url>`, `❌ [p] 🔍 Review failed: <url>`, `✅ [p] Done: <title>`), sent verbatim via `_notify(…, verbatim=True)` — never through the Claude reformatter. |
+| `outcome_line` | **The one table of end-of-mission templates** (`SKILL_COMPLETION`: skill → emoji, success verb, failure noun) and the stdout hand-over markers. Pure. Shared by the loop and `messaging_level.report_outcome`. |
+| `messaging_level.report_outcome()` | **The one call a tracked skill's runner ends with.** Sends the fixed template itself, or — when the loop owns the message — prints it as markers. |
 | `iteration_manager._downgrade_if_burning_fast()` | Burn-rate-driven mode downgrade, next to affordability downgrade. |
 | `stagnation_monitor` | Daemon thread hashing last-N stdout lines; kills the subprocess group after K identical hashes; requeues up to `max_retry_on_stagnation`. |
 | `stagnation_monitor.get_retry_info()` | Exposes the per-mission retry count and stagnation pattern; consumed by `prompt_builder._get_stagnation_retry_section()` to coach a requeued session away from repeating the same stuck pattern. |
@@ -498,6 +501,30 @@ heuristic:
   This was scattered across call sites and kept regressing (start-transition and
   devcontainer-setup failures still hardcoded ❌). New failure-notify sites must call
   `_mission_fail_icon(mission_title)`, never inline the emoji.
+- **End-of-mission lines are fixed templates, sent verbatim.** The same outcome
+  must read the same every time, so the operator can scan the channel. The first
+  line comes from `outcome_line` (table `SKILL_COMPLETION`: emoji, success verb,
+  failure noun) and is sent with `_notify(…, verbatim=True)`; the Claude
+  reformatter rephrased it, dropped the URL or emoji, and made four wordings of one
+  "PR reviewed" event. Free text (a gate note, a plan body, a failure reason) only
+  ever goes on the lines below it. The first line is identical in `normal` and
+  `debug`; `debug` only appends the run counter and the journal detail. Always the
+  full URL, no trailing full stop. A failure starts with ❌ (🚦 for CI missions,
+  via `_mission_fail_icon`).
+- **One message per mission; the agent loop is the reporter.** A tracked skill's
+  runner (every `SKILL_COMPLETION` key) never builds its own outcome text: it ends
+  with `messaging_level.report_outcome(skill, ok, url=, detail=, reason=)`. In
+  `normal` mode the loop sets `KOAN_SUPPRESS_RUNNER_OUTCOME=1`, and the runner
+  prints `KOAN_OUTCOME_OK:` (always) / `KOAN_OUTCOME_URL:` /
+  `KOAN_OUTCOME_DETAIL:` (one per line) / `KOAN_OUTCOME_REASON:` on stdout instead
+  of sending; the loop reads them (`mission_runner.outcome_from_stdout`) and sends
+  the one message — `No reason given.` when the runner died before reporting.
+  Once the runner reported, its URL is final (`/recreate`'s new PR, `/plan`'s issue
+  URL, or none): no PR link from the transcript or `pending.md` stands in for it,
+  and the "— skipping" shortcut (runner already told the user) does not apply.
+  Otherwise (`debug`) the runner sends the same template itself. A runner's
+  `main()` ends with `report_failure_unless_reported`, so a failure path that only
+  returned its summary still reaches chat, once.
 - **Contemplative failures must surface, not swallow.** `_handle_contemplative`
   captures the CLI exit code and runs `_notify_contemplative_failure`, which classifies
   the outcome (529 overload, quota, auth, transient, exit-code) and sends ONE throttled

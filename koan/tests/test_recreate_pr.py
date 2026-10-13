@@ -671,4 +671,4 @@ class TestRecreateOutcomeGating:
         monkeypatch.setattr(rp, "_run_recreate_impl", lambda *a, **k: (False, "boom"))
         ok, _ = rp.run_recreate("o", "r", "7", "/tmp/x")
         assert ok is False
-        assert sent == ["❌ Recreate failed https://github.com/o/r/pull/7: boom"]
+        assert sent == ["❌ [x] ♻️ Recreate failed: https://github.com/o/r/pull/7\nboom"]

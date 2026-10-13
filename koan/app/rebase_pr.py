@@ -692,26 +692,23 @@ def run_rebase(
         fix=fix, feedback_context=feedback_context, outcome_meta=outcome_meta,
     )
 
-    from app.messaging_level import notify_outcome
+    from app.messaging_level import report_outcome
     pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
-    if success:
-        # A successful rebase that could NOT apply the reviewer's feedback is a
-        # partial success — surface it as a warning that always reaches chat
-        # (notify_outcome is not messaging.level-gated), so the dropped feedback
-        # is not mistaken for "done". The bare ✅ here is exactly why these were
-        # easy to miss.
-        feedback_unapplied = outcome_meta.get("feedback_unapplied")
-        if feedback_unapplied:
-            notify_outcome(
-                f"⚠️ Rebased {pr_url} — review feedback NOT applied "
-                f"({feedback_unapplied}); the reviewer comments still need "
-                "attention.",
-                notify_fn,
-            )
-        else:
-            notify_outcome(f"✅ Rebased {pr_url}", notify_fn)
-    else:
-        notify_outcome(f"❌ Rebase failed {pr_url}: {summary}", notify_fn)
+    # A successful rebase that could NOT apply the reviewer's feedback is a
+    # partial success: the warning rides under the outcome line, which always
+    # reaches chat, so the dropped feedback is not mistaken for "done".
+    feedback_unapplied = outcome_meta.get("feedback_unapplied") if success else ""
+    skipped = success and summary.startswith(f"PR #{pr_number} is already")
+    report_outcome(
+        "rebase", success, project_path=project_path, url=pr_url,
+        detail="\n".join(filter(None, [
+            summary if skipped else "",
+            f"⚠️ Review feedback NOT applied ({feedback_unapplied}); the "
+            "reviewer comments still need attention." if feedback_unapplied else "",
+        ])),
+        reason="" if success else summary,
+        send_fn=notify_fn,
+    )
     return success, summary
 
 
@@ -3203,6 +3200,12 @@ def main(argv=None):
             skill_dir=skills_base / "recreate",
         )
         print(recreate_summary)
+        from app.messaging_level import hand_over_detail
+        hand_over_detail(
+            f"The rebase conflicted, so PR #{pr_number} was recreated as a new PR."
+            if recreate_ok else
+            "The rebase conflicted, and the /recreate fallback failed too."
+        )
         return 0 if recreate_ok else 1
 
     print(summary)

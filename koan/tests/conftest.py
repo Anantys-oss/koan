@@ -250,6 +250,17 @@ def _reset_steering_context_log():
 
 
 @pytest.fixture(autouse=True)
+def _reset_outcome_reported():
+    """A runner process reports its outcome once; tests share one process."""
+    try:
+        import app.messaging_level as ml
+        ml._outcome_reported = False
+    except Exception:
+        pass
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_reply_breaker():
     """Clear per-thread reply circuit-breaker state between tests.
 

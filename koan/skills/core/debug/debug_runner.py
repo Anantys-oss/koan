@@ -110,9 +110,7 @@ def run_debug(
             issue_url, project_name=project_name, project_path=project_path,
         )
     except UnresolvedJiraProjectError as e:
-        msg = str(e)
-        notify_fn(f"❌ {msg}")
-        return False, msg
+        return False, str(e)
     except Exception as e:
         return False, f"Failed to fetch issue: {str(e)[:300]}"
 
@@ -185,24 +183,21 @@ def run_debug(
 
     hyp_note = f"\nHypothesis: {hypothesis}" if hypothesis else ""
 
+    from app.messaging_level import report_outcome
+    issue_note = f"Issue {label}{context_label}{hyp_note}"
     if pr_url:
-        notify_fn(
-            f"✅ Debug complete for issue {label}"
-            f"{context_label}{hyp_note}\nDraft PR: {pr_url}"
-        )
+        detail = issue_note
         summary = f"Debug complete for {label}{context_label}\nDraft PR: {pr_url}"
     elif not on_base_branch:
-        notify_fn(
-            f"✅ Debug complete for issue {label}"
-            f"{context_label}{hyp_note}\nBranch: {branch}"
-        )
+        detail = f"{issue_note}\nBranch: {branch}"
         summary = f"Debug complete for {label}{context_label}\nBranch: {branch}"
     else:
-        notify_fn(
-            f"⚠️ Debug complete for issue {label}"
-            f"{context_label} — changes landed on base branch `{branch}`"
-        )
+        detail = f"{issue_note}\n⚠️ Changes landed on the base branch `{branch}`, no PR created."
         summary = f"Debug complete for {label}{context_label} (on base branch {branch}, no PR)"
+    report_outcome(
+        "debug", True, project=project_name, project_path=project_path,
+        url=pr_url or "", detail=detail, send_fn=notify_fn,
+    )
 
     return True, summary
 
@@ -364,6 +359,12 @@ def main(argv=None):
         instance_dir=cli_args.instance_dir,
     )
     print(summary)
+    if not success:
+        from app.messaging_level import report_failure_unless_reported
+        report_failure_unless_reported(
+            "debug", summary, project=cli_args.project_name or "",
+            project_path=cli_args.project_path, url=cli_args.issue_url,
+        )
     return 0 if success else 1
 
 

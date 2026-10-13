@@ -4,7 +4,7 @@ title: "Skill Spec — review"
 description: "Documents the `/review` skill that queues a code-review mission on PRs/issues, posting findings as a comment with severity-driven LGTM logic and re-review comment handling, covered by the eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-09-11
+updated: 2026-10-13
 ---
 
 # Skill Spec — `review`
@@ -63,6 +63,7 @@ See `docs/users/skills.md` for the end-user `/review` reference and
 | closed/merged target | skipped unless `--force` |
 | pause-label present | success-with-skip unless `--force` (see invariant) |
 | unresolved project | alias resolution then skip if unknown |
+| runner failure (any path that returns a failure: checkout pin, provider, post) | exactly one `❌ [project] 🔍 Review failed: <pr-url>` message with the reason below (see invariant) |
 
 ## Integration hooks
 
@@ -74,6 +75,12 @@ See `docs/users/skills.md` for the end-user `/review` reference and
 
 - Multi-URL queues preserve order via a single atomic locked insert.
 - Findings are advisory comments — `/review` never merges or pushes code.
+- **Every failed review run tells the operator why.** A failed run ends with
+  exactly one `❌ [project] 🔍 Review failed: <pr-url>` message with the reason on
+  the next line, regardless of `messaging.level` (in `normal` mode the agent loop
+  sends it, from the runner's handed-over markers). Failure paths that only return
+  their summary are reported once by `review_runner.main()`
+  (`report_failure_unless_reported`). The reason is secret-redacted and capped.
 - **Read-only is enforced by a positive allowlist, not by omission.**
   `review_mode` is a member of `app.provider.READ_ONLY_ROLES`, so every review
   pass is restricted to `READ_ONLY_TOOLS` via `--tools` and *additionally* denies

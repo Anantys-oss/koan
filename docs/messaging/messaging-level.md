@@ -4,7 +4,7 @@ title: "Messaging level (bridge verbosity)"
 description: "Explains the `messaging.level` setting (`normal`/`debug`) that controls how much lifecycle/progress chatter Kōan's Telegram/Slack bridge sends versus only logs."
 tags: [messaging]
 created: 2026-06-24
-updated: 2026-06-25
+updated: 2026-10-13
 ---
 
 # Messaging level (bridge verbosity)
@@ -60,11 +60,10 @@ without rewriting YAML — handy for temporary debugging.
 |-------|----------|---------|
 | Mission start (`🚀 … Starting/Autonomous/Skill`) | log only | sent |
 | Skill-runner **progress** (`Reviewing PR…`, `Analyzing code changes…`, `Posting review…`, `🧠 Planning…`, `🔍 Checking…`) | log only | sent |
-| PR-producing tracked skill completion (`/review` `/fix` `/rebase` `/implement`) | one short outcome line: `✅ [project] 🔍 Reviewed <pr-url>` (emitted by the agent loop; the runner's own outcome line is suppressed to avoid a duplicate row) | progress + verbose summary (both lines) |
-| `/plan` completion | one outcome line from the **runner** carrying the issue/Jira URL or inline plan body (`✅ Plan created: <url>` / `✅ Plan generated inline:\n\n<body>`); the agent loop's bare `🧠 Planned` line is logged only | progress + verbose summary |
+| Tracked skill completion (`/review` `/ultrareview` `/fix` `/rebase` `/plan` `/implement` `/squash` `/recreate` `/debug` `/speckit`) | one message from the agent loop: `✅ [project] 🔍 Reviewed <url>`, with the runner's detail (gate note, plan body, warning) on the lines below | the runner's own message + the loop's message with run counter and journal summary |
 | Operator-initiated mission success (a user/Telegram-queued task with a real title) | one short line: `✅ [project] Done: <title>` | sent with journal summary |
 | Autonomous-run success (no mission title) | log only | sent with journal summary |
-| Mission failure | sent (short form) | sent with failure context |
+| Mission failure | one message: `❌ [project] 🔍 Review failed: <pr-url>` + the reason on the next line (`❌ [project] Failed: <title>` for other missions) | same first line + run counter + failure context |
 | GitHub/Jira per-mention queue line | log only | sent |
 | GitHub/Jira queued aggregate | `📬 GitHub: N new missions queued.` (when N > 0) | not emitted (per-mention lines already shown) |
 | GitHub notification/dispatch banners (`Processing N notification(s)…`) | log only | sent |
@@ -78,30 +77,45 @@ Skill runners (`/review`, `/rebase`, `/recreate`, `/squash`, `/checkup`, `/plan`
 - **Progress** — intermediate step narration (`Reviewing PR #2098…`, `Analyzing
   code changes…`, `Posting review…`). Routed through a debug-gated notifier:
   always logged, forwarded to chat **only** in `debug`.
-- **Outcome** — exactly one terminal line per mission carrying the PR/issue URL
-  on success (`✅ Reviewed https://github.com/o/r/pull/2098`) or a short context
-  string on failure (`❌ Rebase failed https://github.com/o/r/pull/7: <reason>`).
-  Always logged **and** sent, regardless of `messaging.level`.
+- **Outcome** — exactly one message per mission. Its first line is a **fixed
+  template, sent verbatim** (it skips the Claude personality reformatter that
+  rewrites other bot messages), so the same outcome always reads the same:
 
-  Exception: for the **PR-producing tracked** skills (`/review`, `/fix`,
-  `/rebase`, `/implement`) dispatched through the agent loop, the loop already
-  emits a canonical completion line (`✅ [project] 🔍 Reviewed <pr-url>`) that
-  carries the same PR URL. To avoid two rows advertising the same result, the
-  agent loop sets `KOAN_SUPPRESS_RUNNER_OUTCOME=1` for the runner subprocess in
-  `normal` mode, so the runner's own success outcome line is logged only (not
-  sent). Failure outcome lines are still sent — the agent-loop replacement carries
-  only the mission title, so the runner's specific failure reason must still reach
-  chat. `debug` keeps both.
+  ```
+  ✅ [project] 🔍 Reviewed https://github.com/o/r/pull/2098
+  ❌ [project] 🔄 Rebase failed: https://github.com/o/r/pull/7
+  <reason>
+  ```
 
-  `/plan` is **not** suppressed: it never opens a PR, so the canonical line
-  (`✅ [project] 🧠 Planned`) cannot carry its result URL. The PR-only extraction
-  that builds the canonical line never matches a `/plan` outcome — which is an
-  *issue*/Jira URL (`✅ Plan created: <url>`, `✅ Plan posted as comment on …`) or
-  an inline plan body (`✅ Plan generated inline:\n\n<body>`). Suppressing the
-  runner here would drop that content entirely, so the runner's line is left to
-  reach chat and the agent loop logs its bare `🧠 Planned` line instead of sending
-  it (avoiding the duplicate from the other direction). `notify_outcome` keeps a
-  defensive single-line guard so only bare `✅` restatements are ever suppressed.
+  Full URL, no trailing full stop. Free text — a review-gate note, a plan body,
+  a "feedback NOT applied" warning, a failure reason — goes only on the lines
+  below. A failure starts with ❌ (🚦 for CI missions). Always sent, regardless of
+  `messaging.level`.
+
+  | Skill | Success | Failure |
+  |---|---|---|
+  | `/review` | `🔍 Reviewed <url>` | `🔍 Review failed: <url>` |
+  | `/ultrareview` | `🔭 Ultra reviewed <url>` | `🔭 Ultra review failed: <url>` |
+  | `/fix` | `🐞 Fixed <url>` | `🐞 Fix failed: <url>` |
+  | `/rebase` | `🔄 Rebased <url>` | `🔄 Rebase failed: <url>` |
+  | `/plan` | `🧠 Planned <issue-url>` | `🧠 Plan failed: <url>` |
+  | `/implement` | `🔨 Implemented <url>` | `🔨 Implement failed: <url>` |
+  | `/squash` | `🗜️ Squashed <url>` | `🗜️ Squash failed: <url>` |
+  | `/recreate` | `♻️ Recreated <new-url>` | `♻️ Recreate failed: <url>` |
+  | `/debug` | `🔬 Debugged <url>` | `🔬 Debug failed: <url>` |
+  | `/speckit` | `📐 Specified <url>` | `📐 Speckit failed: <url>` |
+
+  Other missions get `✅ [project] Done: <title>` / `❌ [project] Failed: <title>`.
+
+  These skills' runners end with `messaging_level.report_outcome()`. Dispatched
+  through the agent loop in `normal` mode (`KOAN_SUPPRESS_RUNNER_OUTCOME=1`), the
+  runner does not send: it prints its outcome on stdout as `KOAN_OUTCOME_OK:` /
+  `KOAN_OUTCOME_URL:` / `KOAN_OUTCOME_DETAIL:` / `KOAN_OUTCOME_REASON:` lines,
+  and the agent loop sends the one message (`No reason given.` if the runner died
+  before reporting). A skipped run (PR already merged) says so on the line below. `debug` keeps the runner's own message too. A runner's
+  `main()` reports a failed run whose path did not, with its summary as the
+  reason. The URL, detail and reason are secret-redacted; the reason is one
+  line, capped at 500 characters.
 
 So under `normal` a PR review produces a single chat line — the PR URL — instead
 of the four-line play-by-play. Switch to `debug` to see every step again; nothing

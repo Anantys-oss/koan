@@ -1169,11 +1169,14 @@ class TestCLI:
             assert code == 0
             assert mock.call_args.kwargs["issue_url"] == url
 
-    def test_failure_returns_1(self):
+    def test_failure_returns_1(self, monkeypatch):
+        monkeypatch.delenv("KOAN_SUPPRESS_RUNNER_OUTCOME", raising=False)
         with patch("app.plan_runner.run_plan",
-                    return_value=(False, "error")):
+                    return_value=(False, "error")), \
+             patch("app.notify.send_telegram") as mock_send:
             code = main(["--project-path", "/proj", "--idea", "bad"])
             assert code == 1
+        mock_send.assert_called_once_with("❌ [proj] 🧠 Plan failed\nerror")
 
     def test_missing_args_exits(self):
         with pytest.raises(SystemExit):

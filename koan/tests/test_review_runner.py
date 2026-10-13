@@ -2982,11 +2982,13 @@ class TestMainCli:
             bot_comments=False,
         )
 
+    @patch("app.notify.send_telegram")
     @patch("app.review_runner.run_review")
-    def test_failure_returns_1(self, mock_run):
-        """CLI returns exit code 1 on review failure."""
+    def test_failure_returns_1_and_reports_once(self, mock_run, mock_send, monkeypatch):
+        """CLI returns exit code 1 and sends one failure message with the reason."""
         from app.review_runner import main
 
+        monkeypatch.delenv("KOAN_SUPPRESS_RUNNER_OUTCOME", raising=False)
         mock_run.return_value = (False, "Claude failed.", None)
         exit_code = main([
             "https://github.com/owner/repo/pull/42",
@@ -2994,6 +2996,10 @@ class TestMainCli:
         ])
 
         assert exit_code == 1
+        assert [c.args[0] for c in mock_send.call_args_list] == [
+            "❌ [project] 🔍 Review failed: https://github.com/owner/repo/pull/42\n"
+            "Claude failed."
+        ]
 
     def test_invalid_url(self):
         """CLI returns exit code 1 for non-PR URLs."""

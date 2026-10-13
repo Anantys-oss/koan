@@ -111,9 +111,7 @@ def run_implement(
             issue_url, project_name=project_name, project_path=project_path,
         )
     except UnresolvedJiraProjectError as e:
-        msg = str(e)
-        notify_fn(f"❌ {msg}")
-        return False, msg
+        return False, str(e)
     except Exception as e:
         return False, f"Failed to fetch issue: {str(e)[:300]}"
 
@@ -292,9 +290,12 @@ def run_implement(
             logger.warning(
                 "[implement] Could not checkout %s: %s", landed_branch, stderr,
             )
-            notify_fn(
-                f"⚠️ Work landed on `{landed_branch}` but checkout failed — "
-                "skipping PR submission. A human may need to open the PR manually."
+            _report_implement(
+                project_name, project_path, notify_fn,
+                detail=(
+                    f"⚠️ Work landed on `{landed_branch}` but checkout failed — "
+                    "PR submission skipped. A human may need to open the PR manually."
+                ),
             )
             return True, (
                 f"Work landed on {landed_branch} but could not switch to it for PR submission."
@@ -339,10 +340,11 @@ def run_implement(
         plan_url=issue_url,
     )
     gate_note = format_gate_note(gate_result)
+    issue_note = f"Issue {label}{context_label}"
     if pr_url:
-        notify_fn(
-            f"\u2705 Implementation complete for issue {label}"
-            f"{context_label}\nDraft PR: {pr_url}{gate_note}"
+        _report_implement(
+            project_name, project_path, notify_fn, url=pr_url,
+            detail=f"{issue_note}{gate_note}",
         )
         summary = (
             f"Implementation complete for {label}{context_label}"
@@ -353,21 +355,23 @@ def run_implement(
             " (PR creation skipped)" if provider != "github"
             else " (PR creation failed \u2014 see prior message for details)"
         )
-        notify_fn(
-            f"\u2705 Implementation complete for issue {label}"
-            f"{context_label}\nBranch: {branch}{skip_reason}"
+        _report_implement(
+            project_name, project_path, notify_fn,
+            detail=f"{issue_note}\nBranch: {branch}{skip_reason}",
         )
         summary = (
             f"Implementation complete for {label}{context_label}"
             f"\nBranch: {branch}"
         )
     else:
-        notify_fn(
-            f"\u26a0\ufe0f Implementation complete for issue {label}"
-            f"{context_label} \u2014 changes landed on the base branch "
-            f"`{branch}`, no PR created. The skill failed to create a "
-            "feature branch; move the commits onto a feature branch "
-            "manually before pushing."
+        _report_implement(
+            project_name, project_path, notify_fn,
+            detail=(
+                f"{issue_note}\n\u26a0\ufe0f Changes landed on the base branch "
+                f"`{branch}`, no PR created. The skill failed to create a feature "
+                "branch; move the commits onto a feature branch manually before "
+                "pushing."
+            ),
         )
         summary = (
             f"Implementation complete for {label}{context_label}"
@@ -1025,6 +1029,14 @@ def _submit_implement_pr(
 # CLI entry point -- python3 -m app.implement_runner
 # ---------------------------------------------------------------------------
 
+def _report_implement(project_name, project_path, notify_fn, url="", detail=""):
+    from app.messaging_level import report_outcome
+    report_outcome(
+        "implement", True, project=project_name, project_path=project_path,
+        url=url, detail=detail, send_fn=notify_fn,
+    )
+
+
 def main(argv=None):
     """CLI entry point for implement_runner."""
     import argparse
@@ -1056,6 +1068,12 @@ def main(argv=None):
         instance_dir=cli_args.instance_dir,
     )
     print(summary)
+    if not success:
+        from app.messaging_level import report_failure_unless_reported
+        report_failure_unless_reported(
+            "implement", summary, project=cli_args.project_name or "",
+            project_path=cli_args.project_path, url=cli_args.issue_url,
+        )
     return 0 if success else 1
 
 

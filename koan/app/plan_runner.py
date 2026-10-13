@@ -74,7 +74,7 @@ def run_plan(
         (success, summary) tuple.
     """
     # Progress lines are gated behind messaging.level=debug when we default the
-    # sink; the outcome line always reaches chat via _messaging.notify_outcome().
+    # sink; the outcome always reaches chat via _messaging.report_outcome().
     if notify_fn is None:
         from app.messaging_level import progress_notify
         notify_fn = progress_notify(log_category="plan")
@@ -152,7 +152,10 @@ def _run_new_plan(
     issue_body = f"{plan_body}\n\n---\n{build_koan_footer()}"
 
     if not tracker_is_configured(project_name, project_path):
-        _messaging.notify_outcome(f"✅ Plan generated inline:\n\n{plan[:3000]}", notify_fn)
+        _messaging.report_outcome(
+            "plan", True, project=project_name, project_path=project_path,
+            detail=plan[:3000], send_fn=notify_fn,
+        )
         return True, "Plan generated inline (no issue tracker configured)."
 
     provider = tracker_provider(project_name, project_path)
@@ -167,14 +170,17 @@ def _run_new_plan(
         try:
             result_url = create_issue(project_name, project_path, title, issue_body)
         except (RuntimeError, OSError) as e2:
-            _messaging.notify_outcome(
-                f"⚠️ Plan ready but tracker issue creation failed "
-                f"({e2}):\n\n{plan[:3000]}",
-                notify_fn,
+            _messaging.report_outcome(
+                "plan", True, project=project_name, project_path=project_path,
+                detail=f"⚠️ Tracker issue creation failed ({e2}).\n\n{plan[:3000]}",
+                send_fn=notify_fn,
             )
             return True, f"Plan generated but issue creation failed: {e2}"
 
-    _messaging.notify_outcome(f"✅ Plan created: {result_url}", notify_fn)
+    _messaging.report_outcome(
+        "plan", True, project=project_name, project_path=project_path,
+        url=result_url, send_fn=notify_fn,
+    )
     return True, f"Plan created: {result_url}"
 
 
@@ -208,9 +214,9 @@ def _deliver_jira_plan(
             # silently would throw away the model run this module protects, so
             # echo it inline the way the tracker-failure path does.
             summary = f"Plan generated but staging failed: {e}"
-            _messaging.notify_outcome(
-                f"⚠️ {summary}. The plan itself:\n\n{comment_body[:3000]}",
-                notify_fn,
+            _messaging.report_outcome(
+                "plan", False, url=issue_url, reason=f"{summary}.",
+                detail=comment_body[:3000], send_fn=notify_fn,
             )
             return False, summary
 
@@ -229,10 +235,13 @@ def _deliver_jira_plan(
         # The comment is live; only the local artifact survived. Saying Jira
         # rejected the plan here would send the reader hunting the wrong fault.
         summary = f"Plan posted, but its staged copy could not be removed: {stage}"
-        _messaging.notify_outcome(
-            f"⚠️ {summary}. Until it is, a bare /plan on this issue republishes "
-            "the same plan; pass instructions to force a fresh one.",
-            notify_fn,
+        _messaging.report_outcome(
+            "plan", False, url=issue_url,
+            reason=(
+                f"{summary}. Until it is, a bare /plan on this issue republishes "
+                "the same plan; pass instructions to force a fresh one."
+            ),
+            send_fn=notify_fn,
         )
         return False, summary
 
@@ -244,8 +253,10 @@ def _deliver_jira_plan(
         note = f"the plan stays staged for retry at {stage}"
         echo = ""
     summary = f"Jira could not verify the plan comment: {detail}"
-    _messaging.notify_outcome(
-        f"❌ Jira did not confirm the plan comment ({detail}); {note}.{echo}", notify_fn,
+    _messaging.report_outcome(
+        "plan", False, url=issue_url,
+        reason=f"Jira did not confirm the plan comment ({detail}); {note}.",
+        detail=echo.strip(), send_fn=notify_fn,
     )
     return False, summary
 
@@ -272,7 +283,10 @@ def _run_issue_plan(
         )
     except UnresolvedJiraProjectError as e:
         msg = str(e)
-        _messaging.notify_outcome(f"❌ {msg}", notify_fn)
+        _messaging.report_outcome(
+            "plan", False, project=project_name, project_path=project_path,
+            url=issue_url, reason=msg, send_fn=notify_fn,
+        )
         return False, msg
     except Exception as e:
         return False, f"Failed to fetch issue: {str(e)[:300]}"
@@ -295,10 +309,11 @@ def _run_issue_plan(
             posted, detail = _deliver_jira_plan(issue_url, instance_dir, notify_fn)
             if not posted:
                 return False, detail
-            _messaging.notify_outcome(
-                f"✅ Previously staged plan posted as comment on {ref.label} "
-                f"(Jira comment {detail}): {issue_url}",
-                notify_fn,
+            _messaging.report_outcome(
+                "plan", True, project=project_name, project_path=project_path,
+                url=issue_url,
+                detail=f"Previously staged plan posted on {ref.label} (Jira comment {detail}).",
+                send_fn=notify_fn,
             )
             return True, (
                 f"Plan posted on {ref.label} from a previously staged copy: {issue_url}"
@@ -310,7 +325,10 @@ def _run_issue_plan(
         )
     except UnresolvedJiraProjectError as e:
         msg = str(e)
-        _messaging.notify_outcome(f"❌ {msg}", notify_fn)
+        _messaging.report_outcome(
+            "plan", False, project=project_name, project_path=project_path,
+            url=issue_url, reason=msg, send_fn=notify_fn,
+        )
         return False, msg
     except Exception as e:
         return False, f"Failed to fetch issue: {str(e)[:300]}"
@@ -386,12 +404,19 @@ def _run_issue_plan(
             if not posted:
                 raise RuntimeError("tracker declined the comment")
         except Exception as e:
-            _messaging.notify_outcome(f"Plan ready but comment failed ({e}):\n\n{plan[:3000]}", notify_fn)
+            _messaging.report_outcome(
+                "plan", False, project=project_name, project_path=project_path,
+                url=issue_url, reason=f"The plan is ready but the comment failed ({e}).",
+                detail=plan[:3000], send_fn=notify_fn,
+            )
             return False, f"Plan generated but comment failed: {e}"
 
     if title:
         label = f"{label} ({title[:60]})"
-    _messaging.notify_outcome(f"✅ Plan posted as comment on {label}: {issue_url}", notify_fn)
+    _messaging.report_outcome(
+        "plan", True, project=project_name, project_path=project_path,
+        url=issue_url, detail=f"Posted on {label}.", send_fn=notify_fn,
+    )
     return True, f"Plan posted on {label}: {issue_url}"
 
 
@@ -1241,6 +1266,11 @@ def main(argv=None):
         iterations=cli_args.iterations,
     )
     print(summary)
+    if not success:
+        _messaging.report_failure_unless_reported(
+            "plan", summary, project=cli_args.project_name or "",
+            project_path=cli_args.project_path, url=cli_args.issue_url or "",
+        )
     return 0 if success else 1
 
 

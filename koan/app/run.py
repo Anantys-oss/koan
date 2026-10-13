@@ -917,8 +917,16 @@ def run_startup(koan_root: str, instance: str, projects: list):
 # Notify helper
 # ---------------------------------------------------------------------------
 
-def _notify(instance: str, message: str):
-    """Send a formatted notification to Telegram."""
+def _notify(instance: str, message: str, *, verbatim: bool = False):
+    """Send a formatted notification to Telegram.
+
+    ``verbatim=True`` skips the Claude-CLI personality reformatter (see
+    ``_notify_raw``): for fixed-template lines whose exact text is the contract,
+    such as the end-of-mission lines.
+    """
+    if verbatim:
+        _notify_raw(instance, message)
+        return
     try:
         from app.notify import format_and_send
         format_and_send(message, instance_dir=instance)
@@ -1007,46 +1015,27 @@ def _mission_fail_icon(mission_title: str) -> str:
     return "🚦" if _is_ci_check_mission(mission_title) else "❌"
 
 
-_SKILL_COMPLETION = {
-    "review": ("🔍", "Reviewed"),
-    "fix": ("🐞", "Fixed"),
-    "rebase": ("🔄", "Rebased"),
-    "plan": ("🧠", "Planned"),
-    "implement": ("🔨", "Implemented"),
-}
-
-# Tracked skills whose canonical completion line carries the PR URL that the
-# runner's own outcome line would otherwise restate. For these the agent loop is
-# the sole reporter (the runner's duplicate line is suppressed). /plan is tracked
-# but deliberately excluded: it never opens a PR — it emits an *issue*/Jira URL or
-# an inline plan body that the PR-only canonical extraction cannot recover — so
-# its runner outcome line is the only place that content reaches the user and must
-# never be suppressed (#2153 follow-up).
-_PR_URL_SKILLS = {"review", "fix", "rebase", "implement"}
-
-
 def _skill_command_name(mission_title: str) -> str:
-    """Return the lowercased slash-command name of a mission, or "" if none."""
-    t = (mission_title or "").strip()
-    if not t.startswith("/"):
-        return ""
-    return t[1:].split(None, 1)[0].lower()
+    """Canonical slash-command name of a mission (aliases and a
+    ``[project:x]`` prefix resolved), or "" if it is not a skill mission."""
+    from app.skill_dispatch import mission_command_name
+    return mission_command_name((mission_title or "").strip())
 
 
-def _tracked_skill(mission_title: str):
-    """Return (emoji, past_tense) if the mission is a tracked skill, else None."""
+def _tracked_skill(mission_title: str) -> str:
+    """The ``outcome_line.SKILL_COMPLETION`` key of a mission, or ""."""
+    from app.outcome_line import SKILL_COMPLETION
     cmd = _skill_command_name(mission_title)
-    return _SKILL_COMPLETION.get(cmd) if cmd else None
+    return cmd if cmd in SKILL_COMPLETION else ""
 
 
-def _canonical_line_carries_url(mission_title: str) -> bool:
-    """True when the agent loop's canonical completion line carries the same URL
-    the runner's outcome line would, so the runner line can be safely suppressed.
+def _loop_reports_outcome(mission_title: str) -> bool:
+    """True when the agent loop sends the mission's one end message.
 
-    Only the PR-producing tracked skills qualify. /plan is tracked but its URL
-    (issue/Jira) or inline body cannot be recovered by the PR-only canonical
-    extraction, so it is excluded — its runner line is the sole reporter (#2153)."""
-    return _skill_command_name(mission_title) in _PR_URL_SKILLS
+    Every tracked skill's runner ends with ``messaging_level.report_outcome``,
+    which hands its URL / detail / reason over as stdout markers when the loop
+    owns the message, so the loop's message carries all of it (#2153)."""
+    return bool(_tracked_skill(mission_title))
 
 
 def _completion_pr_url(instance, project_name):
@@ -1057,6 +1046,38 @@ def _completion_pr_url(instance, project_name):
         return ""
 
 
+def _completion_message(project_name: str, mission_title: str, url: str, detail: str) -> str:
+    """Fixed success line ("✅ [p] 🔍 Reviewed <url>" / "✅ [p] Done: <title>") + detail."""
+    from app import outcome_line as ol
+    skill = _tracked_skill(mission_title)
+    if not skill:
+        return ol.message(f"✅ [{project_name}] Done: {mission_title}", detail)
+    return ol.message(ol.success_line(project_name, skill, url), detail)
+
+
+def _failure_message(
+    project_name: str, mission_title: str, url: str, reason: str, detail: str = "",
+    *, sole_reporter: bool,
+) -> str:
+    """Fixed failure line ("❌ [p] 🔍 Review failed: <url|title>") + reason + detail.
+
+    *sole_reporter* is true when the runner handed its outcome over as stdout
+    markers instead of sending it (normal mode, a tracked skill — see
+    ``build_skill_env``). Then a missing reason is said out loud rather than
+    left blank.
+    """
+    from app import outcome_line as ol
+    icon = _mission_fail_icon(mission_title)
+    skill = _tracked_skill(mission_title)
+    if skill:
+        line = ol.failure_line(project_name, skill, url or mission_title, icon=icon)
+    else:
+        line = f"{icon} [{project_name}] Failed: {mission_title}"
+    if not reason and sole_reporter:
+        reason = ol.NO_REASON_GIVEN
+    return ol.message(line, reason, detail)
+
+
 def _notify_mission_normal(
     instance: str,
     project_name: str,
@@ -1065,44 +1086,27 @@ def _notify_mission_normal(
     exit_code: int,
     mission_title: str,
     pr_url: str,
+    reason: str = "",
+    detail: str = "",
+    reported: bool = False,
 ):
     """Normal-mode (quiet) end-of-mission emit. See _notify_mission_end."""
-    skill = _tracked_skill(mission_title)
+    title = (mission_title or "").strip()
+    skill = _tracked_skill(title)
 
-    # Failures always surface (short form).
+    # Failures always surface: fixed line + reason.
     if exit_code != 0:
-        emoji = (skill[0] + " ") if skill else ""
-        prefix = _mission_fail_icon(mission_title)
-        label = mission_title or "Run"
-        _notify(instance, f"{prefix} [{project_name}] {emoji}Failed: {label}")
-        return
-
-    # Tracked skill success → concise "✅ [project] 🔍 Reviewed <pr-url>". Prefer
-    # the URL captured during post-mission processing (before pending.md was
-    # deleted); fall back to a best-effort re-read.
-    if skill is not None:
-        emoji, verb = skill
-        # /plan is tracked but the canonical line cannot carry its issue/Jira URL
-        # or inline body (PR-only extraction). The runner already emitted that
-        # content via notify_outcome (not suppressed), so emitting a bare
-        # "✅ [project] 🧠 Planned" here would just duplicate the row with less
-        # information. Log only and let the runner's line stand (#2153).
-        if not _canonical_line_carries_url(mission_title):
-            from app.run_log import log_safe
-            log_safe(
-                "mission",
-                f"[{project_name}] {verb} (runner emitted outcome line)",
-            )
-            return
-        url = pr_url or _completion_pr_url(instance, project_name)
-        _notify(instance, f"✅ [{project_name}] {emoji} {verb} {url}".rstrip())
+        msg = _failure_message(
+            project_name, title or "Run", pr_url if skill else "", reason, detail,
+            sole_reporter=_loop_reports_outcome(title),
+        )
+        _notify(instance, msg, verbatim=True)
         return
 
     # Genuinely autonomous background runs carry no mission title — suppress
     # those (log only). An operator-initiated mission (a user/Telegram-queued
     # task with a real title) still gets a minimal completion signal so
     # explicitly-requested work isn't silently dropped.
-    title = (mission_title or "").strip()
     if not title:
         from app.run_log import log_safe
         log_safe(
@@ -1111,7 +1115,14 @@ def _notify_mission_normal(
             "(normal mode, autonomous run suppressed)",
         )
         return
-    _notify(instance, f"✅ [{project_name}] Done: {title}")
+
+    # A runner that reported gave its final URL (possibly none). Otherwise prefer
+    # the URL captured during post-mission processing (before pending.md was
+    # deleted); fall back to a best-effort re-read.
+    url = ""
+    if skill:
+        url = pr_url if reported else (pr_url or _completion_pr_url(instance, project_name))
+    _notify(instance, _completion_message(project_name, title, url, detail), verbatim=True)
 
 
 def _notify_mission_end(
@@ -1122,51 +1133,62 @@ def _notify_mission_end(
     exit_code: int,
     mission_title: str = "",
     pr_url: str = "",
+    reason: str = "",
+    detail: str = "",
+    reported: bool = False,
 ):
     """Send a notification when a mission or autonomous run completes.
 
+    The first line is a fixed template (``outcome_line``), sent verbatim (never
+    reformatted), and is the same in both messaging levels:
+
+    - success: ``✅ [project] 🔍 Reviewed <url>`` for tracked skills,
+      ``✅ [project] Done: <title>`` for other operator missions;
+    - failure: ``❌ [project] 🔍 Review failed: <url>`` (or ``Failed: <title>``)
+      with *reason* on the next line.
+
+    *detail* (the runner's extra lines: a gate note, a plan body…) follows.
+    *reported* means the runner handed its outcome over, so *pr_url* is final
+    (no pending.md guess).
+
     Honors messaging.level:
-    - normal (default): one short line for tracked skill missions
-      (✅ [project] 🔍 Reviewed <pr-url>); operator-initiated missions get a
-      minimal one-line success (✅ [project] Done: <title>); genuinely
-      autonomous background runs (no mission title) are logged only (no bridge
-      push); failures always surface (short form).
-    - debug: full lifecycle line + journal summary (legacy behavior).
+    - normal (default): only that message. Genuinely autonomous background
+      runs (no mission title) are logged only (no bridge push).
+    - debug: every run is reported; the run counter and the journal summary
+      (or failure context) follow. The runner also sends its own message.
     """
     if not is_debug():
         _notify_mission_normal(
             instance, project_name, run_num, max_runs,
-            exit_code, mission_title, pr_url,
+            exit_code, mission_title, pr_url, reason, detail, reported,
         )
         return
 
-    # ---- debug mode: legacy verbose behavior ----
+    title = (mission_title or "").strip()
+    url = pr_url if _tracked_skill(title) else ""
     if exit_code == 0:
-        prefix = "✅"
-        label = mission_title if mission_title else "Autonomous run"
-        msg = f"{prefix} [{project_name}] Run {run_num}/{max_runs} — {label}"
-        # Try to attach a brief summary from the journal
-        try:
-            from app.mission_summary import get_mission_summary
-            summary = get_mission_summary(instance, project_name, max_chars=300)
-            if summary:
-                msg += f"\n\n{summary}"
-        except Exception as e:
-            log("error", f"Mission summary extraction failed: {e}")
+        msg = _completion_message(project_name, title or "Autonomous run", url, detail)
+        journal = _journal_detail("get_mission_summary", instance, project_name)
     else:
-        prefix = _mission_fail_icon(mission_title)
-        label = mission_title if mission_title else "Run"
-        msg = f"{prefix} [{project_name}] Run {run_num}/{max_runs} — Failed: {label}"
-        # Try to attach error context from the journal
-        try:
-            from app.mission_summary import get_failure_context
-            context = get_failure_context(instance, project_name, max_chars=300)
-            if context:
-                msg += f"\n\n{context}"
-        except Exception as e:
-            log("error", f"Failure context extraction failed: {e}")
+        # Debug mode never hands the runner's outcome over: it sends its own.
+        msg = _failure_message(
+            project_name, title or "Run", url, reason, detail, sole_reporter=False,
+        )
+        journal = _journal_detail("get_failure_context", instance, project_name)
+    msg += f"\nRun {run_num}/{max_runs}"
+    if journal:
+        msg += f"\n\n{journal}"
+    _notify(instance, msg, verbatim=True)
 
-    _notify(instance, msg)
+
+def _journal_detail(getter: str, instance: str, project_name: str) -> str:
+    """Debug-mode journal summary or failure context; "" when unavailable."""
+    try:
+        import app.mission_summary as summary
+        return getattr(summary, getter)(instance, project_name, max_chars=300)
+    except Exception as e:
+        log("error", f"Mission {getter} extraction failed: {e}")
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -3766,15 +3788,12 @@ def _run_skill_mission(
     }
     if _mission_model_key:
         skill_env["KOAN_MISSION_MODEL_KEY"] = _mission_model_key
-    # For PR-producing tracked skills (/review, /fix, /rebase, /implement) the
-    # agent loop emits the canonical "✅ [project] 🔍 Reviewed <url>" completion
-    # line after the runner finishes (see _notify_mission_end). In normal mode the
-    # runner's own notify_outcome() line would advertise the same URL, producing a
-    # duplicate row in chat (#2153). Signal the subprocess to log-only its outcome
-    # line; debug mode keeps both for full verbosity. /plan is deliberately
-    # excluded — its canonical line cannot carry the issue/Jira URL or inline
-    # plan body, so suppressing the runner line would drop that content entirely.
-    if _canonical_line_carries_url(mission_title) and not is_debug():
+    # For tracked skills (outcome_line.SKILL_COMPLETION) the agent loop sends
+    # the one end message ("✅ [project] 🔍 Reviewed <url>" + detail) after the
+    # runner finishes (see _notify_mission_end). In normal mode the runner hands
+    # its outcome over as stdout markers instead of sending it, so chat gets one
+    # row, not two (#2153). Debug mode keeps both for full verbosity.
+    if _loop_reports_outcome(mission_title) and not is_debug():
         skill_env["KOAN_SUPPRESS_RUNNER_OUTCOME"] = "1"
     stderr_fh = None
     out_fh = None

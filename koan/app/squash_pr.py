@@ -198,12 +198,13 @@ def run_squash(
         notify_fn=notify_fn, skill_dir=skill_dir,
     )
 
-    from app.messaging_level import notify_outcome
+    from app.messaging_level import report_outcome
     pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
-    if success:
-        notify_outcome(f"✅ Squashed {pr_url}", notify_fn)
-    else:
-        notify_outcome(f"❌ Squash failed {pr_url}: {summary}", notify_fn)
+    report_outcome(
+        "squash", success, project_path=project_path, url=pr_url,
+        detail=summary if success and "— skipping" in summary else "",
+        reason="" if success else summary, send_fn=notify_fn,
+    )
     return success, summary
 
 

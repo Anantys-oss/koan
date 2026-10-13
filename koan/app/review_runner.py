@@ -4145,8 +4145,7 @@ def run_review(
         # wrong review is neither.
         msg = f"Could not prepare a clean checkout of PR #{pr_number}: {exc}"
         log("error", msg)
-        notify_fn(f"❌ {msg}")
-        return False, msg, None
+        return False, msg, None  # main() reports it
 
 
 def _run_review_body(
@@ -4651,10 +4650,13 @@ def _run_review_body(
             summary += f" Replied to {len(reply_results)} comment(s)."
         if closed:
             summary += f" PR closed: {close_reason or 'no reason provided'}."
-        from app.messaging_level import notify_outcome
+        from app.messaging_level import report_outcome
         pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
-        verb = "Ultra reviewed" if ultra else "Reviewed"
-        notify_outcome(f"✅ {verb} {pr_url}", notify_fn)
+        report_outcome(
+            "ultrareview" if ultra else "review", True,
+            project=project_name or "", project_path=project_path,
+            url=pr_url, send_fn=notify_fn,
+        )
         _fire_post_review(
             instance_dir=str(KOAN_ROOT / "instance"),
             project_name=project_name or "",
@@ -4672,9 +4674,14 @@ def _run_review_body(
         return True, summary, review_data
     else:
         detail = f" Error: {post_error}" if post_error else ""
-        from app.messaging_level import notify_outcome
+        from app.messaging_level import report_outcome
         pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
-        notify_outcome(f"❌ Review failed {pr_url}{detail}", notify_fn)
+        report_outcome(
+            "ultrareview" if ultra else "review", False,
+            project=project_name or "", project_path=project_path, url=pr_url,
+            reason=f"The review was generated but could not be posted.{detail}",
+            send_fn=notify_fn,
+        )
         return False, f"Review generated but failed to post comment on PR #{pr_number}.{detail}", review_data
 
 
@@ -4801,6 +4808,13 @@ def main(argv=None):
         bot_comments=cli_args.bot_comments,
     )
     print(summary)
+    if not success:
+        from app.messaging_level import report_failure_unless_reported
+        report_failure_unless_reported(
+            "ultrareview" if cli_args.ultra else "review", summary,
+            project=cli_args.project_name or "", project_path=cli_args.project_path,
+            url=f"https://github.com/{owner}/{repo}/pull/{pr_number}",
+        )
     return 0 if success else 1
 
 
