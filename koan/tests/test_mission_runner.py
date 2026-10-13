@@ -4329,3 +4329,26 @@ class TestFirePostMissionHookMissionHooks:
             )
         post.assert_not_called()          # repo post_hooks suppressed here
         fire.assert_called_once()         # Python post_mission hook still fires
+
+
+class TestExtractOutcomeReason:
+    """The agent loop reads the runner's handed-over failure reason from stdout."""
+
+    def test_no_marker(self):
+        from app.mission_runner import _extract_outcome_reason
+        assert _extract_outcome_reason("transcript\nhttps://github.com/o/r/pull/1\n") == ""
+        assert _extract_outcome_reason("") == ""
+
+    def test_one_marker(self):
+        from app.mission_runner import _extract_outcome_reason
+        out = "step 1\nKOAN_OUTCOME_REASON: PR is closed\nbye\n"
+        assert _extract_outcome_reason(out) == "PR is closed"
+
+    def test_last_marker_wins(self):
+        from app.mission_runner import _extract_outcome_reason
+        out = "KOAN_OUTCOME_REASON: first\nKOAN_OUTCOME_REASON: second\n"
+        assert _extract_outcome_reason(out) == "second"
+
+    def test_marker_must_start_the_line(self):
+        from app.mission_runner import _extract_outcome_reason
+        assert _extract_outcome_reason("quoted KOAN_OUTCOME_REASON: nope\n") == ""

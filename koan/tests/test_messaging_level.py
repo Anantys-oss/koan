@@ -105,19 +105,45 @@ def test_notify_outcome_suppressed_when_agent_loop_reports(monkeypatch):
     assert logged and logged[0][1].startswith("✅ Reviewed")  # still logged
 
 
-def test_notify_outcome_failure_still_sent_when_flag_set(monkeypatch):
-    """Even with KOAN_SUPPRESS_RUNNER_OUTCOME=1, a failure outcome line is still
-    sent: the agent-loop replacement carries only the mission title, so the
-    runner's detailed failure reason must reach chat (#2153 regression)."""
+def test_notify_outcome_failure_handed_to_agent_loop_when_flag_set(monkeypatch, capsys):
+    """With KOAN_SUPPRESS_RUNNER_OUTCOME=1 the agent loop sends the one failure
+    message ("❌ [p] 🔍 Review failed: <url>" + reason). The runner does not send
+    its own line; it prints the reason as a marker the loop reads from stdout."""
     logged, sent = [], []
     monkeypatch.setattr(ml, "_log", lambda cat, msg: logged.append((cat, msg)))
     monkeypatch.setenv("KOAN_SUPPRESS_RUNNER_OUTCOME", "1")
     ml.notify_outcome(
-        "❌ Review failed https://github.com/o/r/pull/1: lint errors",
+        "❌ Could not review https://github.com/o/r/pull/1: lint errors",
         lambda m: sent.append(m),
     )
-    assert sent == ["❌ Review failed https://github.com/o/r/pull/1: lint errors"]
-    assert logged and logged[0][1].startswith("❌ Review failed")
+    assert sent == []
+    assert capsys.readouterr().out == "KOAN_OUTCOME_REASON: lint errors\n"
+    assert logged and logged[0][1].startswith("❌ Could not review")
+
+
+def test_notify_outcome_failure_sent_when_flag_unset(monkeypatch, capsys):
+    sent = []
+    monkeypatch.setattr(ml, "_log", lambda cat, msg: None)
+    monkeypatch.delenv("KOAN_SUPPRESS_RUNNER_OUTCOME", raising=False)
+    line = "❌ Rebase failed https://github.com/o/r/pull/1: conflict"
+    ml.notify_outcome(line, lambda m: sent.append(m))
+    assert sent == [line]
+    assert "KOAN_OUTCOME_REASON" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("line, reason", [
+    ("❌ Rebase failed https://github.com/o/r/pull/1: conflict in a.py", "conflict in a.py"),
+    ("🚦 CI failed https://github.com/o/r/pull/1: lint: E501", "lint: E501"),
+    ("❌ Squash failed https://x/pull/1: line one\n  line two", "line one line two"),
+    ("❌ Something broke", "Something broke"),
+])
+def test_failure_reason(line, reason):
+    assert ml.failure_reason(line) == reason
+
+
+def test_failure_reason_is_capped():
+    reason = ml.failure_reason("❌ X failed https://x: " + "a" * 2000)
+    assert len(reason) == 500 and reason.endswith("…")
 
 
 def test_notify_outcome_not_suppressed_when_flag_unset(monkeypatch):

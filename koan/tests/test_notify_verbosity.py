@@ -1,66 +1,123 @@
+import pytest
+
 from app import run as koan_run
 
+PR = "https://github.com/Org/repo/pull/713"
 
-def test_normal_mode_skill_success_is_one_line(monkeypatch):
-    sent = []
-    monkeypatch.setattr(koan_run, "_notify", lambda inst, msg: sent.append(msg))
+
+@pytest.fixture
+def sent(monkeypatch):
+    """Capture what reaches the chat sink; fail if the reformatter is used.
+
+    End-of-mission lines are fixed templates: they must go to send_telegram
+    verbatim, never through the Claude-CLI personality reformatter.
+    """
+    out = []
+    monkeypatch.setattr("app.notify.send_telegram", lambda msg, **k: out.append(msg))
+
+    def _reformatter(*a, **k):
+        raise AssertionError("end-of-mission line went through format_and_send")
+
+    monkeypatch.setattr("app.notify.format_and_send", _reformatter)
+    monkeypatch.setattr(koan_run, "_completion_pr_url", lambda *a, **k: "")
+    return out
+
+
+@pytest.fixture
+def normal(monkeypatch):
     monkeypatch.setattr(koan_run, "is_debug", lambda: False)
-    monkeypatch.setattr(
-        koan_run, "_completion_pr_url",
-        lambda *a, **k: "https://github.com/Org/repo/pull/713",
-    )
+
+
+@pytest.fixture
+def debug(monkeypatch):
+    monkeypatch.setattr(koan_run, "is_debug", lambda: True)
+    monkeypatch.setattr("app.mission_summary.get_mission_summary", lambda *a, **k: "")
+    monkeypatch.setattr("app.mission_summary.get_failure_context", lambda *a, **k: "")
+
+
+@pytest.mark.parametrize("title, line", [
+    ("/review fix the parser", f"✅ [proj] 🔍 Reviewed {PR}"),
+    ("/fix 42", f"✅ [proj] 🐞 Fixed {PR}"),
+    ("/rebase x", f"✅ [proj] 🔄 Rebased {PR}"),
+    ("/implement x", f"✅ [proj] 🔨 Implemented {PR}"),
+])
+def test_normal_mode_skill_success_is_one_fixed_line(sent, normal, title, line):
+    koan_run._notify_mission_end("/i", "proj", 1, 3, 0, mission_title=title, pr_url=PR)
+    assert sent == [line]
+
+
+def test_same_outcome_reads_the_same_every_time(sent, normal):
+    for n in (6480, 6481, 6482):
+        koan_run._notify_mission_end(
+            "/i", "my-toolkit", 1, 3, 0, mission_title=f"/review https://github.com/o/my-toolkit/pull/{n}",
+            pr_url=f"https://github.com/o/my-toolkit/pull/{n}",
+        )
+    assert sent == [f"✅ [my-toolkit] 🔍 Reviewed https://github.com/o/my-toolkit/pull/{n}"
+                    for n in (6480, 6481, 6482)]
+
+
+def test_normal_mode_skill_success_falls_back_to_pending_url(sent, normal, monkeypatch):
+    monkeypatch.setattr(koan_run, "_completion_pr_url", lambda *a, **k: PR)
     koan_run._notify_mission_end("/i", "proj", 1, 3, 0, mission_title="/review fix the parser")
-    assert sent == ["✅ [proj] 🔍 Reviewed https://github.com/Org/repo/pull/713"]
+    assert sent == [f"✅ [proj] 🔍 Reviewed {PR}"]
 
 
-def test_normal_mode_autonomous_success_is_suppressed(monkeypatch):
-    sent = []
-    monkeypatch.setattr(koan_run, "_notify", lambda inst, msg: sent.append(msg))
-    monkeypatch.setattr(koan_run, "is_debug", lambda: False)
+def test_normal_mode_autonomous_success_is_suppressed(sent, normal):
     koan_run._notify_mission_end("/i", "proj", 1, 3, 0, mission_title="")
     assert sent == []  # logged only, not pushed to bridge
 
 
-def test_normal_mode_operator_mission_success_is_one_line(monkeypatch):
+def test_normal_mode_plan_success_left_to_runner(sent, normal):
+    koan_run._notify_mission_end("/i", "proj", 1, 3, 0, mission_title="/plan an idea")
+    assert sent == []
+
+
+def test_normal_mode_operator_mission_success_is_one_line(sent, normal):
     # A user-queued, non-skill mission (real title, no leading slash) is
     # operator-initiated work — it should still get a minimal completion line,
     # not be silently suppressed like a background autonomous run.
-    sent = []
-    monkeypatch.setattr(koan_run, "_notify", lambda inst, msg: sent.append(msg))
-    monkeypatch.setattr(koan_run, "is_debug", lambda: False)
     koan_run._notify_mission_end("/i", "proj", 1, 3, 0, mission_title="fix the parser bug")
     assert sent == ["✅ [proj] Done: fix the parser bug"]
 
 
-def test_normal_mode_skill_success_prefers_threaded_pr_url(monkeypatch):
-    # The PR URL captured during post-mission processing (pending.md already
-    # deleted by then) is threaded in via pr_url and must win over a re-read.
-    sent = []
-    monkeypatch.setattr(koan_run, "_notify", lambda inst, msg: sent.append(msg))
-    monkeypatch.setattr(koan_run, "is_debug", lambda: False)
-    monkeypatch.setattr(koan_run, "_completion_pr_url", lambda *a, **k: "")
+def test_normal_mode_skill_failure_is_one_message_with_reason(sent, normal):
     koan_run._notify_mission_end(
-        "/i", "proj", 1, 3, 0,
-        mission_title="/review fix the parser",
-        pr_url="https://github.com/Org/repo/pull/713",
+        "/i", "proj", 2, 3, 1, mission_title=f"/review {PR}", pr_url=PR,
+        reason="PR is closed",
     )
-    assert sent == ["✅ [proj] 🔍 Reviewed https://github.com/Org/repo/pull/713"]
+    assert sent == [f"❌ [proj] 🔍 Review failed: {PR}\nPR is closed"]
 
 
-def test_normal_mode_failure_still_shown(monkeypatch):
-    sent = []
-    monkeypatch.setattr(koan_run, "_notify", lambda inst, msg: sent.append(msg))
-    monkeypatch.setattr(koan_run, "is_debug", lambda: False)
+def test_normal_mode_skill_failure_without_reason_says_so(sent, normal):
+    koan_run._notify_mission_end("/i", "proj", 2, 3, 1, mission_title=f"/review {PR}", pr_url=PR)
+    assert sent == [f"❌ [proj] 🔍 Review failed: {PR}\nNo reason given."]
+
+
+def test_normal_mode_skill_failure_without_url_names_the_mission(sent, normal):
     koan_run._notify_mission_end("/i", "proj", 2, 3, 1, mission_title="/fix flaky test")
-    assert sent and sent[0].startswith("❌ [proj]")
+    assert sent == ["❌ [proj] 🐞 Fix failed: /fix flaky test\nNo reason given."]
 
 
-def test_debug_mode_keeps_verbose_summary(monkeypatch):
-    sent = []
-    monkeypatch.setattr(koan_run, "_notify", lambda inst, msg: sent.append(msg))
-    monkeypatch.setattr(koan_run, "is_debug", lambda: True)
-    koan_run._notify_mission_end("/i", "proj", 1, 3, 0, mission_title="/review x")
-    assert sent and "Run 1/3" in sent[0]
+def test_normal_mode_operator_mission_failure(sent, normal):
+    koan_run._notify_mission_end("/i", "proj", 2, 3, 1, mission_title="fix the parser bug")
+    assert sent == ["❌ [proj] Failed: fix the parser bug"]
+
+
+def test_normal_mode_ci_failure_keeps_traffic_light(sent, normal):
+    title = "/ci_check https://github.com/o/r/pull/42"
+    koan_run._notify_mission_end("/i", "proj", 2, 3, 1, mission_title=title)
+    assert sent == [f"🚦 [proj] Failed: {title}"]
+
+
+def test_debug_mode_first_line_matches_normal_mode(sent, debug):
+    koan_run._notify_mission_end("/i", "proj", 1, 3, 0, mission_title="/review x", pr_url=PR)
+    assert sent == [f"✅ [proj] 🔍 Reviewed {PR}\nRun 1/3"]
+
+
+def test_debug_mode_failure_does_not_claim_a_missing_reason(sent, debug):
+    # Debug mode keeps the runner's own failure line, which carries the reason.
+    koan_run._notify_mission_end("/i", "proj", 1, 3, 1, mission_title="/review x", pr_url=PR)
+    assert sent == [f"❌ [proj] 🔍 Review failed: {PR}\nRun 1/3"]
 
 
 # --- Phase 4: per-notification gating + aggregate ---

@@ -4,7 +4,7 @@ title: "Component Spec — Agent Loop Pipeline"
 description: "Design contract for the core mission pipeline (iteration manager, mission executor/runner, quota handling, stagnation monitor) that pulls missions, invokes the CLI provider, and finalizes lifecycle state."
 tags: [agent-loop]
 created: 2026-06-27
-updated: 2026-09-30
+updated: 2026-10-13
 ---
 
 # Component Spec — Agent Loop Pipeline
@@ -56,6 +56,7 @@ mission_runner (post-processing)   # usage tracking, pending.md archival, reflec
 | `mission_runner.parse_claude_output()` | JSON → text extraction from `--output-format json` / stream-json. |
 | `run._is_ci_check_mission()` | Classifies a mission title as CI-related (`/ci_check …`, ci_dispatch `Fix CI failure: …`). |
 | `run._mission_fail_icon()` | **The single source of truth for the emoji prefix on a mission-failure notification** — 🚦 for CI missions, ❌ otherwise. Every failure-notification site MUST call this, never hardcode ❌. |
+| `run._notify_mission_end()` | **The single end-of-mission chat message.** Its first line is a fixed template from `_SKILL_COMPLETION` (`✅ [p] 🔍 Reviewed <url>`, `❌ [p] 🔍 Review failed: <url>`, `✅ [p] Done: <title>`), sent verbatim via `_notify(…, verbatim=True)` — never through the Claude reformatter. |
 | `iteration_manager._downgrade_if_burning_fast()` | Burn-rate-driven mode downgrade, next to affordability downgrade. |
 | `stagnation_monitor` | Daemon thread hashing last-N stdout lines; kills the subprocess group after K identical hashes; requeues up to `max_retry_on_stagnation`. |
 | `stagnation_monitor.get_retry_info()` | Exposes the per-mission retry count and stagnation pattern; consumed by `prompt_builder._get_stagnation_retry_section()` to coach a requeued session away from repeating the same stuck pattern. |
@@ -498,6 +499,20 @@ heuristic:
   This was scattered across call sites and kept regressing (start-transition and
   devcontainer-setup failures still hardcoded ❌). New failure-notify sites must call
   `_mission_fail_icon(mission_title)`, never inline the emoji.
+- **End-of-mission lines are fixed templates, sent verbatim.** The same outcome
+  must read the same every time, so the operator can scan the channel. The first
+  line comes from `_completion_line` / `_failure_line` (table `_SKILL_COMPLETION`:
+  emoji, success verb, failure noun) and is sent with `_notify(…, verbatim=True)`;
+  the Claude reformatter rephrased it, dropped the URL or emoji, and made four
+  wordings of one "PR reviewed" event. It is identical in `normal` and `debug`;
+  `debug` only appends the run counter and the journal detail below it. Always the
+  full URL, no trailing full stop.
+- **One failure message per mission; the agent loop is the reporter.** For the
+  PR-producing skills in `normal` mode (`KOAN_SUPPRESS_RUNNER_OUTCOME=1`),
+  `notify_outcome` does not send the runner's `❌`/`🚦` line: it prints
+  `KOAN_OUTCOME_REASON: <reason>` on stdout, the loop reads it
+  (`mission_runner._extract_outcome_reason`) and sends the fixed failure line with
+  the reason below — `No reason given.` when the runner died before printing one.
 - **Contemplative failures must surface, not swallow.** `_handle_contemplative`
   captures the CLI exit code and runs `_notify_contemplative_failure`, which classifies
   the outcome (529 overload, quota, auth, transient, exit-code) and sends ONE throttled

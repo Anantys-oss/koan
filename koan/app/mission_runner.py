@@ -1698,6 +1698,20 @@ def _extract_pr_url(content: str) -> str:
     return match.group(0) if match else ""
 
 
+def _extract_outcome_reason(stdout: str) -> str:
+    """The failure reason a runner handed over on stdout, or "".
+
+    See ``messaging_level.notify_outcome``: when the agent loop owns the
+    failure message, the runner prints ``KOAN_OUTCOME_REASON: <reason>``
+    instead of sending its own line. The last marker wins.
+    """
+    from app.messaging_level import OUTCOME_REASON_MARKER
+    for line in reversed((stdout or "").splitlines()):
+        if line.startswith(OUTCOME_REASON_MARKER):
+            return line[len(OUTCOME_REASON_MARKER):].strip()
+    return ""
+
+
 def get_last_pr_url(instance_dir: str, project_name: str = "") -> str:
     """Best-effort PR URL for the just-finished mission (from pending.md).
 

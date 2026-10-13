@@ -159,6 +159,26 @@ def progress_notify(send_fn=None, *, log_category: str = "bridge"):
     return _ProgressNotifier(send_fn, log_category)
 
 
+OUTCOME_REASON_MARKER = "KOAN_OUTCOME_REASON:"
+_FAILURE_PREFIXES = ("❌", "🚦")
+_REASON_MAX_CHARS = 500
+
+
+def failure_reason(line: str) -> str:
+    """The reason part of a runner failure line, on one line.
+
+    Runner failure lines read "❌ <What> failed <url>: <reason>"; the reason is
+    the text after the first ": " (a URL's "https:" has no space after it). A
+    line without one gives its whole text minus the emoji.
+    """
+    _head, sep, tail = line.partition(": ")
+    reason = tail if sep else line.lstrip("".join(_FAILURE_PREFIXES))
+    reason = " ".join(reason.split())
+    if len(reason) > _REASON_MAX_CHARS:
+        reason = reason[: _REASON_MAX_CHARS - 1].rstrip() + "…"
+    return reason
+
+
 def notify_outcome(msg: str, send_fn=None) -> None:
     """Always log AND send msg.
 
@@ -183,18 +203,20 @@ def notify_outcome(msg: str, send_fn=None) -> None:
     Only a *single-line* ``✅`` outcome is suppressed (defensive guard): those are
     bare URL restatements the canonical line fully replaces. A multi-line ``✅``
     outcome carries content the canonical line does NOT, so it is always sent.
-    Failure outcome lines are still sent too: the agent-loop replacement carries
-    only the mission title ("❌ ... Failed: /review <url>"), so suppressing the
-    runner's failure line would drop the specific reason from chat.
+
+    A suppressed *failure* line (``❌``/``🚦``) is not sent either: its reason is
+    printed to stdout as a ``KOAN_OUTCOME_REASON:`` marker instead, and the agent
+    loop sends one message — the fixed "❌ [project] 🔍 Review failed: <url>"
+    line with that reason below it.
     """
     _log("outcome", msg)
     stripped = msg.strip()
-    if (
-        os.environ.get("KOAN_SUPPRESS_RUNNER_OUTCOME") == "1"
-        and stripped.startswith("✅")
-        and "\n" not in stripped
-    ):
-        return
+    if os.environ.get("KOAN_SUPPRESS_RUNNER_OUTCOME") == "1":
+        if stripped.startswith("✅") and "\n" not in stripped:
+            return
+        if stripped.startswith(_FAILURE_PREFIXES):
+            print(f"{OUTCOME_REASON_MARKER} {failure_reason(stripped)}", flush=True)
+            return
     if isinstance(send_fn, _ProgressNotifier):
         send_fn = send_fn.raw_send
     if send_fn is None:
