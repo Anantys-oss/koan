@@ -159,9 +159,7 @@ def progress_notify(send_fn=None, *, log_category: str = "bridge"):
     return _ProgressNotifier(send_fn, log_category)
 
 
-OUTCOME_REASON_MARKER = "KOAN_OUTCOME_REASON:"
 _FAILURE_PREFIXES = ("❌", "🚦")
-_REASON_MAX_CHARS = 500
 
 
 def failure_reason(line: str) -> str:
@@ -171,12 +169,105 @@ def failure_reason(line: str) -> str:
     the text after the first ": " (a URL's "https:" has no space after it). A
     line without one gives its whole text minus the emoji.
     """
+    from app.outcome_line import one_line_reason
     _head, sep, tail = line.partition(": ")
-    reason = tail if sep else line.lstrip("".join(_FAILURE_PREFIXES))
-    reason = " ".join(reason.split())
-    if len(reason) > _REASON_MAX_CHARS:
-        reason = reason[: _REASON_MAX_CHARS - 1].rstrip() + "…"
-    return reason
+    return one_line_reason(tail if sep else line.lstrip("".join(_FAILURE_PREFIXES)))
+
+
+# Set once this process has reported its outcome. A skill runner is one
+# process per mission, so main() can report a failure the run did not.
+_outcome_reported = False
+
+
+def report_failure_unless_reported(skill: str, summary: str, **kwargs) -> None:
+    """Report a failed run with *summary* as the reason — unless the run
+    already reported its own outcome. The safety net a runner's main() ends with,
+    so a failure path that only returned its reason still reaches chat."""
+    if not _outcome_reported:
+        report_outcome(skill, False, reason=summary, **kwargs)
+
+
+def hand_over_detail(text: str) -> None:
+    """Add *text* under the loop's end message, when the loop owns it.
+
+    For a runner that reports twice (``/rebase`` falling back to ``/recreate``):
+    the note says how the last outcome came about. When the runner sends its own
+    messages (debug mode), each already says it, so nothing is added.
+    """
+    from app.outcome_line import DETAIL_MARKER
+    if _loop_owns_outcome() and text:
+        print("\n".join(f"{DETAIL_MARKER} {line}" for line in _redact(text).splitlines()),
+              flush=True)
+
+
+def _loop_owns_outcome() -> bool:
+    return os.environ.get("KOAN_SUPPRESS_RUNNER_OUTCOME") == "1"
+
+
+def report_outcome(
+    skill: str,
+    ok: bool,
+    *,
+    project: str = "",
+    project_path: str = "",
+    url: str = "",
+    detail: str = "",
+    reason: str = "",
+    send_fn=None,
+) -> None:
+    """Report a skill runner's final outcome — the one call a runner ends with.
+
+    The message is the fixed template from ``outcome_line``:
+    ``✅ [project] 🔍 Reviewed <url>`` (or ``❌ … Review failed: <url>`` + *reason*),
+    with *detail* on the lines below. Always logged.
+
+    When the agent loop owns the message (``KOAN_SUPPRESS_RUNNER_OUTCOME=1``:
+    normal mode, a loop-dispatched skill) nothing is sent: the outcome is printed
+    on stdout as markers, and the loop sends the one message for the mission.
+    Otherwise (debug mode, or a runner the loop did not start) the message is
+    sent here. ``send_fn`` follows ``notify_outcome``. *project* defaults to the
+    name of *project_path*.
+    """
+    from app import outcome_line as ol
+
+    global _outcome_reported
+    _outcome_reported = True
+    url, detail, reason = (_redact(text) for text in (url, detail, reason))
+    if not project and project_path:
+        from app.utils import project_name_for_path
+        project = project_name_for_path(project_path)
+
+    if ok:
+        first = ol.success_line(project, skill, url)
+        text = ol.message(first, detail)
+    else:
+        first = ol.failure_line(project, skill, url)
+        text = ol.message(first, ol.one_line_reason(reason) or ol.NO_REASON_GIVEN, detail)
+    _log("outcome", text)
+    if _loop_owns_outcome():
+        handover = ol.markers(url=url, detail=detail, reason=reason, ok=ok)
+        if handover:
+            print(handover, flush=True)
+        return
+    _send_outcome(text, send_fn)
+
+
+def _redact(text: str) -> str:
+    """*text* with secrets masked — a failure reason can quote a token-bearing
+    command line or URL, and the outcome reaches chat."""
+    if not text:
+        return text
+    from app.leak_detector import redact_secrets
+    return redact_secrets(text)[0]
+
+
+def _send_outcome(msg: str, send_fn) -> None:
+    if isinstance(send_fn, _ProgressNotifier):
+        send_fn = send_fn.raw_send
+    if send_fn is None:
+        from app.notify import send_telegram
+        send_fn = send_telegram
+    send_fn(msg)
 
 
 def notify_outcome(msg: str, send_fn=None) -> None:
@@ -211,15 +302,11 @@ def notify_outcome(msg: str, send_fn=None) -> None:
     """
     _log("outcome", msg)
     stripped = msg.strip()
-    if os.environ.get("KOAN_SUPPRESS_RUNNER_OUTCOME") == "1":
+    if _loop_owns_outcome():
         if stripped.startswith("✅") and "\n" not in stripped:
             return
         if stripped.startswith(_FAILURE_PREFIXES):
-            print(f"{OUTCOME_REASON_MARKER} {failure_reason(stripped)}", flush=True)
+            from app.outcome_line import markers
+            print(markers(reason=failure_reason(stripped), ok=False), flush=True)
             return
-    if isinstance(send_fn, _ProgressNotifier):
-        send_fn = send_fn.raw_send
-    if send_fn is None:
-        from app.notify import send_telegram
-        send_fn = send_telegram
-    send_fn(msg)
+    _send_outcome(msg, send_fn)

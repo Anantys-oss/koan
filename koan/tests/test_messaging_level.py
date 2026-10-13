@@ -117,7 +117,7 @@ def test_notify_outcome_failure_handed_to_agent_loop_when_flag_set(monkeypatch, 
         lambda m: sent.append(m),
     )
     assert sent == []
-    assert capsys.readouterr().out == "KOAN_OUTCOME_REASON: lint errors\n"
+    assert capsys.readouterr().out == "KOAN_OUTCOME_OK: 0\nKOAN_OUTCOME_REASON: lint errors\n"
     assert logged and logged[0][1].startswith("❌ Could not review")
 
 
@@ -144,6 +144,67 @@ def test_failure_reason(line, reason):
 def test_failure_reason_is_capped():
     reason = ml.failure_reason("❌ X failed https://x: " + "a" * 2000)
     assert len(reason) == 500 and reason.endswith("…")
+
+
+def test_report_outcome_sends_fixed_template(monkeypatch):
+    sent = []
+    monkeypatch.setattr(ml, "_log", lambda cat, msg: None)
+    monkeypatch.delenv("KOAN_SUPPRESS_RUNNER_OUTCOME", raising=False)
+    ml.report_outcome(
+        "squash", True, project="proj", url="https://x/pull/1",
+        detail="line one\nline two", send_fn=sent.append,
+    )
+    ml.report_outcome("squash", False, project="proj", url="https://x/pull/1",
+                      reason="conflict\n in a.py", send_fn=sent.append)
+    ml.report_outcome("squash", False, url="https://x/pull/1", send_fn=sent.append)
+    assert sent == [
+        "✅ [proj] 🗜️ Squashed https://x/pull/1\nline one\nline two",
+        "❌ [proj] 🗜️ Squash failed: https://x/pull/1\nconflict in a.py",
+        "❌ 🗜️ Squash failed: https://x/pull/1\nNo reason given.",
+    ]
+
+
+def test_report_outcome_hands_over_when_loop_owns_it(monkeypatch, capsys):
+    sent = []
+    monkeypatch.setattr(ml, "_log", lambda cat, msg: None)
+    monkeypatch.setenv("KOAN_SUPPRESS_RUNNER_OUTCOME", "1")
+    ml.report_outcome("plan", True, url="https://x/issues/2", detail="# Plan\n1. Do it",
+                      send_fn=sent.append)
+    assert sent == []
+    assert capsys.readouterr().out == (
+        "KOAN_OUTCOME_OK: 1\n"
+        "KOAN_OUTCOME_URL: https://x/issues/2\n"
+        "KOAN_OUTCOME_DETAIL: # Plan\n"
+        "KOAN_OUTCOME_DETAIL: 1. Do it\n"
+    )
+
+
+def test_report_outcome_redacts_secrets(monkeypatch):
+    sent = []
+    monkeypatch.setattr(ml, "_log", lambda cat, msg: None)
+    monkeypatch.delenv("KOAN_SUPPRESS_RUNNER_OUTCOME", raising=False)
+    token = "ghp_" + "A" * 36
+    ml.report_outcome("review", False, project="p", url=f"https://x/pull/1?token={token}",
+                      reason=f"gh failed with {token}", send_fn=sent.append)
+    assert len(sent) == 1 and token not in sent[0]
+
+
+def test_hand_over_detail_only_when_loop_owns_outcome(monkeypatch, capsys):
+    monkeypatch.delenv("KOAN_SUPPRESS_RUNNER_OUTCOME", raising=False)
+    ml.hand_over_detail("note")
+    assert capsys.readouterr().out == ""
+    monkeypatch.setenv("KOAN_SUPPRESS_RUNNER_OUTCOME", "1")
+    ml.hand_over_detail("one\ntwo")
+    assert capsys.readouterr().out == "KOAN_OUTCOME_DETAIL: one\nKOAN_OUTCOME_DETAIL: two\n"
+
+
+def test_report_failure_unless_reported(monkeypatch):
+    sent = []
+    monkeypatch.setattr(ml, "_log", lambda cat, msg: None)
+    monkeypatch.delenv("KOAN_SUPPRESS_RUNNER_OUTCOME", raising=False)
+    ml.report_failure_unless_reported("fix", "boom", project="p", send_fn=sent.append)
+    ml.report_failure_unless_reported("fix", "again", project="p", send_fn=sent.append)
+    assert sent == ["❌ [p] 🐞 Fix failed\nboom"]
 
 
 def test_notify_outcome_not_suppressed_when_flag_unset(monkeypatch):

@@ -64,19 +64,15 @@ def run_speckit(
     project_name = project_name or ""
     goal = (goal or "").strip()
     if not goal:
-        msg = "No goal provided to /speckit."
-        notify_fn(f"❌ {msg}")
-        return False, msg
+        return False, "No goal provided to /speckit."
 
     # Defense-in-depth: the handler already gated on the constitution, but
     # re-check so a /speckit mission can never run without it (FR-003).
     if not has_constitution(project_path):
-        msg = (
-            f"❌ speckit abort: {project_name or project_path} has no constitution "
+        return False, (
+            f"speckit abort: {project_name or project_path} has no constitution "
             "at .specify/memory/constitution.md."
         )
-        notify_fn(msg)
-        return False, msg
 
     from app.config import get_branch_prefix, get_speckit_config
     from app.projects_config import resolve_base_branch
@@ -112,17 +108,17 @@ def run_speckit(
     try:
         output = _invoke_claude(project_path, prompt)
     except Exception as exc:  # surface any CLI failure to the operator
-        msg = f"❌ /speckit invocation failed for {label}: {str(exc)[:200]}"
-        notify_fn(msg)
-        return False, msg
+        return False, f"/speckit invocation failed for {label}: {str(exc)[:200]}"
 
     if not output:
-        msg = f"⚠️ /speckit produced no output for {label}: {goal_text[:120]}"
-        notify_fn(msg)
-        return False, msg
+        return False, f"/speckit produced no output for {label}: {goal_text[:120]}"
 
     _progress("/speckit pipeline complete")
-    notify_fn(f"✅ /speckit complete for {label}: {goal_text[:120]}")
+    from app.messaging_level import report_outcome
+    report_outcome(
+        "speckit", True, project=project_name, project_path=project_path,
+        detail=f"Goal: {goal_text[:120]}", send_fn=notify_fn,
+    )
     return True, output.strip()
 
 
@@ -187,6 +183,11 @@ def main(argv=None) -> int:
         base_branch=cli.base_branch,
     )
     print(summary)
+    if not success:
+        from app.messaging_level import report_failure_unless_reported
+        report_failure_unless_reported(
+            "speckit", summary, project=cli.project_name, project_path=cli.project_path,
+        )
     return 0 if success else 1
 
 

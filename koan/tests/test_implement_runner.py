@@ -1204,7 +1204,8 @@ class TestRunImplement:
             assert not ok
             assert "projects.yaml" in msg
             assert "PROJ-42" in msg
-            notify.assert_called_once()
+            # main() reports the failure, with this summary as the reason.
+            notify.assert_not_called()
 
     def test_no_plan_found(self):
         notify = MagicMock()
@@ -1975,14 +1976,18 @@ class TestMain:
             ])
             assert code == 0
 
-    def test_failure_exit_code(self):
+    def test_failure_exit_code(self, monkeypatch):
+        monkeypatch.delenv("KOAN_SUPPRESS_RUNNER_OUTCOME", raising=False)
         with patch(f"{_IMPL_MODULE}.run_implement",
-                    return_value=(False, "failed")):
+                    return_value=(False, "failed")), \
+             patch("app.notify.send_telegram") as mock_send:
             code = main([
                 "--project-path", "/project",
                 "--issue-url", "https://github.com/o/r/issues/1",
             ])
             assert code == 1
+        mock_send.assert_called_once_with(
+            "❌ [project] 🔨 Implement failed: https://github.com/o/r/issues/1\nfailed")
 
     def test_context_arg_passed(self):
         with patch(f"{_IMPL_MODULE}.run_implement",
@@ -2226,7 +2231,7 @@ class TestEscalatedRetry:
         assert "could not switch" in msg.lower()
         submit_mock.assert_not_called()
         all_notified = " ".join(c.args[0] for c in notify.call_args_list)
-        assert "skipping PR submission" in all_notified
+        assert "PR submission skipped" in all_notified
 
     def test_escalated_retry_injects_escalation_preamble_into_context(self):
         """_execute_implementation with escalate=True prepends the retry-context fragment."""

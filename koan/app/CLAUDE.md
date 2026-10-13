@@ -53,6 +53,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`bridge_state.py`** — Shared module-level state for bridge (config, paths, registries); avoids circular imports
 - **`bridge_log.py`** — Colored log output for bridge process (mirrors run.py's `log()`)
 - **`notify.py`** — Telegram notification helper with flood protection
+- **`outcome_line.py`** — Fixed templates for the one end-of-mission chat message (`SKILL_COMPLETION`: skill → emoji, success verb, failure noun) and the `KOAN_OUTCOME_*` stdout hand-over markers. Pure; shared by `run._notify_mission_end` and `messaging_level.report_outcome` (the one call a tracked skill's runner ends with).
 
 **Process management:**
 

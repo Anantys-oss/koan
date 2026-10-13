@@ -517,6 +517,43 @@ class TestHandleSkillDispatchMatched:
         assert any("exception" in str(c).lower() for c in mock_log.call_args_list)
 
 
+    @pytest.mark.parametrize("stdout, notified", [
+        # Old-style runner that already told the user it skipped: no loop message.
+        ("PR #1 is already merged — skipping squash.\n", False),
+        # A runner that handed its outcome over told no one yet: the loop sends it.
+        ("PR #1 is already merged — skipping squash.\nKOAN_OUTCOME_OK: 1\n"
+         "KOAN_OUTCOME_URL: https://x/pull/1\n", True),
+    ])
+    def test_skip_shortcut_respects_handed_over_outcome(self, tmp_path, stdout, notified):
+        skill_result = {"exit_code": 0, "stdout": stdout, "stderr": "",
+                        "quota_exhausted": False, "quota_info": None}
+        with contextlib.ExitStack() as stack:
+            for target, kw in [
+                ("app.skill_dispatch.dispatch_skill_mission", {"return_value": ["claude", "/review"]}),
+                ("app.skill_dispatch.cleanup_skill_temp_files", {}),
+                ("app.loop_manager.create_pending_file", {}),
+                ("app.core_files.snapshot_core_files", {"return_value": set()}),
+                ("app.core_files.check_core_files", {"return_value": []}),
+                ("app.run._run_skill_mission", {"return_value": skill_result}),
+                ("app.run._provider_identity", {"return_value": ("claude", "Claude")}),
+                ("app.run._classify_and_handle_cli_error", {"return_value": False}),
+                ("app.run._probe_exit0_quota", {"return_value": False}),
+                ("app.run._finalize_mission", {}),
+                ("app.run._commit_instance", {}),
+                ("app.run._sleep_between_runs", {}),
+                ("app.run.set_status", {}),
+                ("app.run._notify", {}),
+                ("app.run.log", {}),
+                ("app.mission_executor._maybe_escalate_to_debug", {}),
+            ]:
+                stack.enter_context(patch(target, **kw))
+            notify_end = stack.enter_context(patch("app.run._notify_mission_end"))
+            self._call(str(tmp_path))
+        assert notify_end.called is notified
+        if notified:
+            assert notify_end.call_args.kwargs["pr_url"] == "https://x/pull/1"
+
+
 # ---------------------------------------------------------------------------
 # _maybe_escalate_to_debug — duplicate-insert path
 # ---------------------------------------------------------------------------

@@ -1702,16 +1702,18 @@ class TestRunRebase:
     @patch("app.messaging_level.notify_outcome")
     def test_outcome_warns_when_feedback_unapplied(self, mock_outcome, mock_impl):
         """A rebase that succeeds but drops feedback must surface a warning
-        outcome (not a green check) so the dropped feedback is noticed."""
+        under the outcome line so the dropped feedback is noticed."""
         def impl(*args, **kwargs):
             kwargs["outcome_meta"]["feedback_unapplied"] = "timed out"
             return True, "PR #42 rebased."
         mock_impl.side_effect = impl
-        run_rebase("o", "r", "42", "/p", notify_fn=MagicMock())
-        msg = mock_outcome.call_args.args[0]
-        assert "⚠️" in msg
-        assert "feedback NOT applied" in msg
-        assert "timed out" in msg
+        notify = MagicMock()
+        run_rebase("o", "r", "42", "/p", notify_fn=notify)
+        assert notify.call_args.args[0] == (
+            "✅ [p] 🔄 Rebased https://github.com/o/r/pull/42\n"
+            "⚠️ Review feedback NOT applied (timed out); the reviewer comments "
+            "still need attention."
+        )
 
     @patch("app.rebase_pr._run_rebase_impl")
     @patch("app.messaging_level.notify_outcome")
@@ -1719,10 +1721,9 @@ class TestRunRebase:
         def impl(*args, **kwargs):
             return True, "PR #42 rebased."
         mock_impl.side_effect = impl
-        run_rebase("o", "r", "42", "/p", notify_fn=MagicMock())
-        msg = mock_outcome.call_args.args[0]
-        assert msg.startswith("✅")
-        assert "NOT applied" not in msg
+        notify = MagicMock()
+        run_rebase("o", "r", "42", "/p", notify_fn=notify)
+        assert notify.call_args.args[0] == "✅ [p] 🔄 Rebased https://github.com/o/r/pull/42"
 
     @patch("app.rebase_pr.fetch_pr_context")
     def test_fetch_failure(self, mock_ctx):
@@ -2870,6 +2871,23 @@ class TestMain:
             assert call_args[0][:3] == ("sukria", "koan", "42")
             assert call_args[0][3] == "/project"
             assert str(call_args[1]["skill_dir"]).endswith("skills/core/recreate")
+
+    @pytest.mark.parametrize("recreate_ok, note", [
+        (True, "KOAN_OUTCOME_DETAIL: The rebase conflicted, so PR #42 was recreated as a new PR."),
+        (False, "KOAN_OUTCOME_DETAIL: The rebase conflicted, and the /recreate fallback failed too."),
+    ])
+    def test_main_fallback_tells_the_loop_how_it_ended(
+        self, recreate_ok, note, monkeypatch, capsys,
+    ):
+        """The loop's one '🔄 Rebased/Rebase failed' message says the PR was recreated."""
+        monkeypatch.setenv("KOAN_SUPPRESS_RUNNER_OUTCOME", "1")
+        conflict_msg = "Rebase conflict on `main` (tried origin and upstream). Manual resolution required."
+        open_ctx = {"state": "OPEN", "branch": "feat", "base": "main"}
+        with patch("app.rebase_pr.run_rebase", return_value=(False, conflict_msg)), \
+             patch("app.rebase_pr.fetch_pr_context", return_value=open_ctx), \
+             patch("app.recreate_pr.run_recreate", return_value=(recreate_ok, "done")):
+            rebase_main(["https://github.com/sukria/koan/pull/42", "--project-path", "/project"])
+        assert note in capsys.readouterr().out.splitlines()
 
     def test_main_non_conflict_failure_no_fallback(self):
         """Non-conflict failures should NOT trigger recreate fallback."""
@@ -5124,7 +5142,7 @@ class TestRebaseOutcomeGating:
         monkeypatch.setattr(rp, "_run_rebase_impl", lambda *a, **k: (True, "done"))
         ok, summary = rp.run_rebase("o", "r", "7", "/tmp/x")
         assert ok is True
-        assert sent == ["✅ Rebased https://github.com/o/r/pull/7"]
+        assert sent == ["✅ [x] 🔄 Rebased https://github.com/o/r/pull/7"]
 
     def test_failure_emits_outcome_with_context(self, monkeypatch):
         import app.rebase_pr as rp
@@ -5150,7 +5168,7 @@ class TestRebaseOutcomeGating:
         monkeypatch.setattr(rp, "_run_rebase_impl", _impl)
         rp.run_rebase("o", "r", "7", "/tmp/x")
         assert not any("..." in m for m in sent)  # progress gated
-        assert sent == ["✅ Rebased https://github.com/o/r/pull/7"]
+        assert sent == ["✅ [x] 🔄 Rebased https://github.com/o/r/pull/7"]
 
 
 # ---------------------------------------------------------------------------

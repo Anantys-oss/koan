@@ -1698,18 +1698,25 @@ def _extract_pr_url(content: str) -> str:
     return match.group(0) if match else ""
 
 
-def _extract_outcome_reason(stdout: str) -> str:
-    """The failure reason a runner handed over on stdout, or "".
+def outcome_from_stdout(stdout: str) -> dict:
+    """The outcome a skill runner handed over on stdout, as
+    ``_notify_mission_end`` keyword arguments: ``pr_url``, ``reason``,
+    ``detail``, ``reported``.
 
-    See ``messaging_level.notify_outcome``: when the agent loop owns the
-    failure message, the runner prints ``KOAN_OUTCOME_REASON: <reason>``
-    instead of sending its own line. The last marker wins.
+    See ``messaging_level.report_outcome``. Once the runner reported, its URL is
+    final — it can be an issue URL, the new PR of a /recreate, or none at all
+    (an inline /plan): a PR link quoted in the transcript must not stand in for
+    it. Only a runner that died before reporting falls back to the first PR URL
+    in the transcript.
     """
-    from app.messaging_level import OUTCOME_REASON_MARKER
-    for line in reversed((stdout or "").splitlines()):
-        if line.startswith(OUTCOME_REASON_MARKER):
-            return line[len(OUTCOME_REASON_MARKER):].strip()
-    return ""
+    from app.outcome_line import read_markers
+    found = read_markers(stdout)
+    return {
+        "pr_url": found["url"] if found["reported"] else _extract_pr_url(stdout),
+        "reason": found["reason"],
+        "detail": found["detail"],
+        "reported": found["reported"],
+    }
 
 
 def get_last_pr_url(instance_dir: str, project_name: str = "") -> str:

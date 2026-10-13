@@ -240,25 +240,24 @@ def _handle_skill_dispatch(
         # Suppress redundant notification when the skill already notified
         # the user directly (e.g. fix_runner sends "⏭ Issue already closed").
         _skill_stdout = skill_result.get("stdout", "")
+        from app.mission_runner import outcome_from_stdout
+        _skill_outcome = outcome_from_stdout(_skill_stdout)
+        # A runner that handed its outcome over (report_outcome) told no one
+        # yet: the loop's message is the only one, skip or not.
         _skill_already_notified = (
             exit_code == 0
             and "— skipping" in _skill_stdout
+            and not _skill_outcome["reported"]
         )
         if not _skill_already_notified:
-            # Tracked skills (/review, /fix, /rebase, /plan, /implement) render a
-            # concise "✅ [project] 🔍 Reviewed <pr-url>" line. The skill runners
-            # emit their transcript (which carries the PR URL) to stdout rather
-            # than pending.md, so extract it here and thread it through —
-            # otherwise the URL falls back to a pending.md-only read that the
-            # skill path rarely populates. Empty result still falls back to the
-            # pending.md re-read inside _notify_mission_end.
-            from app.mission_runner import _extract_outcome_reason, _extract_pr_url
-            _skill_pr_url = _extract_pr_url(_skill_stdout)
+            # Tracked skills end with one "✅ [project] 🔍 Reviewed <url>" message
+            # sent here. Their runners hand the URL / detail / reason over as
+            # stdout markers (messaging_level.report_outcome); an empty URL still
+            # falls back to the pending.md re-read inside _notify_mission_end.
             _run._notify_mission_end(
                 instance, project_name, run_num, max_runs,
                 exit_code, mission_title,
-                pr_url=_skill_pr_url,
-                reason=_extract_outcome_reason(_skill_stdout),
+                **_skill_outcome,
             )
         was_stagnated = _run._last_mission_stagnated.is_set()
         _run._finalize_mission(instance, mission_title, project_name, exit_code)

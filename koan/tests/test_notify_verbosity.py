@@ -67,9 +67,43 @@ def test_normal_mode_autonomous_success_is_suppressed(sent, normal):
     assert sent == []  # logged only, not pushed to bridge
 
 
-def test_normal_mode_plan_success_left_to_runner(sent, normal):
-    koan_run._notify_mission_end("/i", "proj", 1, 3, 0, mission_title="/plan an idea")
-    assert sent == []
+def test_normal_mode_plan_success_carries_issue_url_and_detail(sent, normal):
+    koan_run._notify_mission_end(
+        "/i", "proj", 1, 3, 0, mission_title="/plan an idea",
+        pr_url="https://github.com/o/r/issues/5", detail="Posted on #5.",
+    )
+    assert sent == ["✅ [proj] 🧠 Planned https://github.com/o/r/issues/5\nPosted on #5."]
+
+
+def test_normal_mode_inline_plan_body_follows_the_line(sent, normal):
+    koan_run._notify_mission_end(
+        "/i", "proj", 1, 3, 0, mission_title="[project:proj] /plan an idea",
+        detail="# Plan\n1. Do it",
+    )
+    assert sent == ["✅ [proj] 🧠 Planned\n# Plan\n1. Do it"]
+
+
+def test_normal_mode_alias_resolves_to_skill(sent, normal):
+    koan_run._notify_mission_end(
+        "/i", "proj", 1, 3, 1, mission_title="/dbg https://x/issues/1", reason="boom",
+    )
+    assert sent == ["❌ [proj] 🔬 Debug failed: /dbg https://x/issues/1\nboom"]
+
+
+def test_reported_outcome_without_url_skips_pending_guess(sent, normal, monkeypatch):
+    monkeypatch.setattr(koan_run, "_completion_pr_url", lambda *a, **k: PR)
+    koan_run._notify_mission_end(
+        "/i", "proj", 1, 3, 0, mission_title="/plan an idea", detail="# Plan",
+        reported=True,
+    )
+    assert sent == ["✅ [proj] 🧠 Planned\n# Plan"]
+
+
+def test_skill_md_alias_resolves_to_skill(sent, normal):
+    koan_run._notify_mission_end(
+        "/i", "proj", 1, 3, 0, mission_title=f"/rb {PR}", pr_url=PR, reported=True,
+    )
+    assert sent == [f"✅ [proj] 🔄 Rebased {PR}"]
 
 
 def test_normal_mode_operator_mission_success_is_one_line(sent, normal):
