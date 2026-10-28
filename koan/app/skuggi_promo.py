@@ -96,7 +96,9 @@ def maybe_send_launch_notice(instance: str) -> None:
     state = _read_state(instance)
     if _LAUNCH_KEY in state:
         return
-    _send(LAUNCH_NOTICE.format(url=tracked_url("telegram", "launch")))
+    if not _send(LAUNCH_NOTICE.format(url=tracked_url("telegram", "launch"))):
+        log("warn", "Skuggi launch notice not delivered; will retry next boot")
+        return
     state[_LAUNCH_KEY] = time.time()  # only after a successful send
     _write_state(instance, state)
 
@@ -136,16 +138,27 @@ def _nudge(instance: str, trigger: str, fields: dict) -> bool:
     key = f"nudge:{trigger}"
     if time.time() - state.get(key, 0) < NUDGE_COOLDOWN_SECONDS:
         return False
-    _send(NUDGES[trigger].format(url=tracked_url("telegram", trigger), **fields))
+    if not _send(NUDGES[trigger].format(url=tracked_url("telegram", trigger), **fields)):
+        log("warn", f"Skuggi nudge '{trigger}' not delivered; cooldown not armed")
+        return False
     state[key] = time.time()
     _write_state(instance, state)
     return True
 
 
-def _send(message: str) -> None:
-    # Raw send: the personality reformatter could drop the link.
-    from app.notify import send_telegram
-    send_telegram(message)
+def send_verbatim(message: str) -> bool:
+    """Send *message* verbatim; True only when it was actually delivered.
+
+    Raw send: the personality reformatter could drop the link. A message
+    dropped by min_priority or dedup (NOTIFICATION_SUPPRESSED) is not a delivery.
+    """
+    from app.notify import NOTIFICATION_SUPPRESSED, send_telegram
+    result = send_telegram(message)
+    return bool(result) and result != NOTIFICATION_SUPPRESSED
+
+
+def _send(message: str) -> bool:
+    return send_verbatim(message)
 
 
 def _state_path(instance: str) -> Path:

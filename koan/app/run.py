@@ -1091,8 +1091,11 @@ def _notify_mission_normal(
     reason: str = "",
     detail: str = "",
     reported: bool = False,
-):
-    """Normal-mode (quiet) end-of-mission emit. See _notify_mission_end."""
+) -> bool:
+    """Normal-mode (quiet) end-of-mission emit. See _notify_mission_end.
+
+    Returns False when the run was logged only (nothing sent to chat).
+    """
     title = (mission_title or "").strip()
     skill = _tracked_skill(title)
 
@@ -1103,7 +1106,7 @@ def _notify_mission_normal(
             sole_reporter=_loop_reports_outcome(title),
         )
         _notify(instance, msg, verbatim=True)
-        return
+        return True
 
     # Genuinely autonomous background runs carry no mission title — suppress
     # those (log only). An operator-initiated mission (a user/Telegram-queued
@@ -1116,7 +1119,7 @@ def _notify_mission_normal(
             f"[{project_name}] Run {run_num}/{max_runs} done "
             "(normal mode, autonomous run suppressed)",
         )
-        return
+        return False
 
     # A runner that reported gave its final URL (possibly none). Otherwise prefer
     # the URL captured during post-mission processing (before pending.md was
@@ -1125,6 +1128,7 @@ def _notify_mission_normal(
     if skill:
         url = pr_url if reported else (pr_url or _completion_pr_url(instance, project_name))
     _notify(instance, _completion_message(project_name, title, url, detail), verbatim=True)
+    return True
 
 
 def _notify_mission_end(
@@ -1139,11 +1143,17 @@ def _notify_mission_end(
     detail: str = "",
     reported: bool = False,
 ):
-    """Send the end-of-mission message, then a Skuggi nudge when one is due."""
-    _notify_mission_outcome(
+    """Send the end-of-mission message, then a Skuggi nudge when one is due.
+
+    No nudge when the outcome itself was not sent (a quiet autonomous run in
+    normal mode): the nudge must never be the only message about a run.
+    """
+    notified = _notify_mission_outcome(
         instance, project_name, run_num, max_runs, exit_code,
         mission_title, pr_url, reason, detail, reported,
     )
+    if not notified:
+        return
     from app import skuggi_promo
     skuggi_promo.maybe_nudge_after_mission(instance, exit_code, pr_url)
 
@@ -1159,7 +1169,7 @@ def _notify_mission_outcome(
     reason: str = "",
     detail: str = "",
     reported: bool = False,
-):
+) -> bool:
     """Send a notification when a mission or autonomous run completes.
 
     The first line is a fixed template (``outcome_line``), sent verbatim (never
@@ -1181,11 +1191,10 @@ def _notify_mission_outcome(
       (or failure context) follow. The runner also sends its own message.
     """
     if not is_debug():
-        _notify_mission_normal(
+        return _notify_mission_normal(
             instance, project_name, run_num, max_runs,
             exit_code, mission_title, pr_url, reason, detail, reported,
         )
-        return
 
     title = (mission_title or "").strip()
     url = pr_url if _tracked_skill(title) else ""
@@ -1202,6 +1211,7 @@ def _notify_mission_outcome(
     if journal:
         msg += f"\n\n{journal}"
     _notify(instance, msg, verbatim=True)
+    return True
 
 
 def _journal_detail(getter: str, instance: str, project_name: str) -> str:

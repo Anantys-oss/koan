@@ -10,7 +10,12 @@ from app import skuggi_promo
 @pytest.fixture
 def sent(monkeypatch):
     messages = []
-    monkeypatch.setattr(skuggi_promo, "_send", messages.append)
+
+    def _record(message):
+        messages.append(message)
+        return True
+
+    monkeypatch.setattr(skuggi_promo, "_send", _record)
     return messages
 
 
@@ -59,6 +64,23 @@ class TestLaunchNotice:
             skuggi_promo.maybe_send_launch_notice(str(tmp_path))
         assert sent == []
 
+    def test_undelivered_send_not_recorded(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(skuggi_promo, "_send", lambda m: False)
+        with _config({}):
+            skuggi_promo.maybe_send_launch_notice(str(tmp_path))
+        assert skuggi_promo._read_state(str(tmp_path)) == {}
+
+
+class TestSendVerbatim:
+    @pytest.mark.parametrize("result,expected", [
+        (True, True),
+        (False, False),
+        ("suppressed", False),
+    ])
+    def test_only_real_delivery_counts(self, result, expected):
+        with patch("app.notify.send_telegram", return_value=result):
+            assert skuggi_promo.send_verbatim("hi") is expected
+
 
 class TestNudges:
     def test_cooldown_per_trigger(self, tmp_path, sent):
@@ -79,6 +101,12 @@ class TestNudges:
         monkeypatch.setattr(skuggi_promo, "_send", lambda m: (_ for _ in ()).throw(RuntimeError()))
         with _config({}):
             assert skuggi_promo.maybe_nudge(str(tmp_path), "quota") is False
+
+    def test_undelivered_nudge_keeps_cooldown_unarmed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(skuggi_promo, "_send", lambda m: False)
+        with _config({}):
+            assert skuggi_promo.maybe_nudge(str(tmp_path), "quota") is False
+        assert skuggi_promo._read_state(str(tmp_path)) == {}
 
     def test_unknown_trigger_ignored(self, tmp_path, sent):
         with _config({}):
@@ -121,6 +149,35 @@ class TestFooter:
     def test_empty_when_opted_out(self):
         with _config({"skuggi": {"promo": False}}):
             assert skuggi_promo.footer("help") == ""
+
+
+class TestRunWiring:
+    def test_no_nudge_after_suppressed_autonomous_run(self, tmp_path):
+        from app import run
+        with patch.object(run, "_notify_mission_outcome", return_value=False), \
+                patch.object(skuggi_promo, "maybe_nudge_after_mission") as nudge:
+            run._notify_mission_end(str(tmp_path), "p", 1, 5, 0, "", "https://x/pull/1")
+        nudge.assert_not_called()
+
+    def test_nudge_after_sent_outcome(self, tmp_path):
+        from app import run
+        with patch.object(run, "_notify_mission_outcome", return_value=True), \
+                patch.object(skuggi_promo, "maybe_nudge_after_mission") as nudge:
+            run._notify_mission_end(str(tmp_path), "p", 1, 5, 0, "T", "https://x/pull/1")
+        nudge.assert_called_once()
+
+
+class TestReportFooter:
+    def test_footer_sent_verbatim_after_report(self):
+        from app import daily_report
+        with patch.object(daily_report, "generate_report", return_value="REPORT"), \
+                patch.object(daily_report, "format_and_send", return_value=True) as fmt, \
+                patch.object(daily_report, "mark_report_sent"), \
+                patch.object(skuggi_promo, "footer", return_value="FOOTER"), \
+                patch.object(skuggi_promo, "send_verbatim") as verbatim:
+            assert daily_report.send_daily_report("morning") is True
+        fmt.assert_called_once_with("REPORT")
+        verbatim.assert_called_once_with("FOOTER")
 
 
 def test_config_validator_accepts_skuggi_section():

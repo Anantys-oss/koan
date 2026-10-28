@@ -222,10 +222,19 @@ def mark_report_sent():
     atomic_write(REPORT_MARKER, date.today().strftime("%Y-%m-%d"))
 
 
-def _with_promo_footer(report: str) -> str:
-    from app.skuggi_promo import footer
-    line = footer("report")
-    return f"{report}\n\n{line}" if line else report
+def _send_promo_footer() -> None:
+    """Send the Skuggi footer verbatim, after the report.
+
+    Kept out of the report body: format_and_send's personality reformatter
+    could rewrite or drop the tracked link.
+    """
+    try:
+        from app.skuggi_promo import footer, send_verbatim
+        line = footer("report")
+        if line:
+            send_verbatim(line)
+    except Exception as e:
+        print(f"[daily-report] Skuggi footer failed: {e}")
 
 
 def send_daily_report(report_type: str = None) -> bool:
@@ -243,11 +252,12 @@ def send_daily_report(report_type: str = None) -> bool:
     if report_type is None:
         return False
 
-    report = _with_promo_footer(generate_report(report_type))
+    report = generate_report(report_type)
     success = format_and_send(report)
 
     if success:
         mark_report_sent()
+        _send_promo_footer()
         print(f"[daily-report] {report_type} report sent")
     else:
         print(f"[daily-report] Failed to send {report_type} report")
