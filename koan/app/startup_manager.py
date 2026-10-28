@@ -144,6 +144,13 @@ def run_migrations(koan_root: str):
         log("init", f"[migration] {msg}")
 
 
+def run_config_migrations(koan_root: str):
+    """Reshape legacy config.yaml sections in place (one-shot, idempotent)."""
+    from app.config_migration import run_config_migrations as _run
+    for msg in _run(koan_root):
+        log("init", f"[migration] {msg}")
+
+
 def ensure_projects_yaml(koan_root: str) -> list[str]:
     """Create a minimal projects.yaml if it doesn't exist.
 
@@ -690,6 +697,12 @@ def track_koan_commits(koan_root: str, instance: str):
         _notify_raw(instance, message)
 
 
+def check_codex_cli_update(koan_root: str, instance: str) -> None:
+    """Auto-update the Codex CLI when it's the active provider (once/day)."""
+    from app.codex_update import check_codex_update
+    check_codex_update(koan_root, instance)
+
+
 def run_morning_ritual(instance: str) -> bool:
     """Execute the morning ritual. Returns True on success, False otherwise."""
     log("init", "Running morning ritual...")
@@ -772,6 +785,11 @@ def run_startup(koan_root: str, instance: str, projects: list):
     from app.run import protected_phase
 
     with protected_phase("Startup checks"):
+        # Reshape any legacy config.yaml sections BEFORE strict validation, so
+        # an operator upgrading across a config shape change self-heals instead
+        # of hitting a hard stop.
+        _safe_run("Config migration", run_config_migrations, koan_root)
+
         # Strict config validation runs outside _safe_run so errors
         # propagate (hard stop) and reach the operator via Telegram.
         try:
@@ -829,6 +847,15 @@ def run_startup(koan_root: str, instance: str, projects: list):
         _safe_run("Mission store ingest", ensure_ingested, instance)
         from app.utils import reap_stale_mission_tmp_dirs
         _safe_run("Stale mission tmp sweep", reap_stale_mission_tmp_dirs)
+        # A scope outlives a hard crash or SIGKILL of run.py: teardown covers
+        # every ordinary mission exit, but not one that never runs. The
+        # registry is exactly the durable handle for that case, and a record
+        # left under this KOAN_ROOT can only be a previous incarnation of this
+        # instance — the unit name is a uuid4 that cannot collide, and a
+        # fallback pid-<n> record is start-time-verified before it is
+        # signalled. Same shape as the stale-TMPDIR sweep above.
+        from app.mission_scope import stop_registered_scopes
+        _safe_run("Leaked mission scope sweep", stop_registered_scopes, koan_root)
         _safe_run("Health check", check_health, koan_root)
         _safe_run("Config baseline", write_config_baseline, koan_root)
 
@@ -841,6 +868,10 @@ def run_startup(koan_root: str, instance: str, projects: list):
 
     # One-time advisory that the bridge now defaults to quiet (normal) mode.
     _safe_run("Messaging-level notice", maybe_send_messaging_level_notice, instance)
+
+    from app import skuggi_promo
+    _safe_run("Skuggi launch notice", skuggi_promo.maybe_send_launch_notice, instance)
+    skuggi_promo.maybe_nudge_fleet(instance, len(projects))
 
     # Load .env before git identity so KOAN_EMAIL is available.
     # run.py does not source .env itself; without this, GIT_AUTHOR_EMAIL is
@@ -875,6 +906,9 @@ def run_startup(koan_root: str, instance: str, projects: list):
 
     # Track Kōan's own commits (after sync so HEAD is current)
     _safe_run("Commit tracker", track_koan_commits, koan_root, instance)
+
+    # Codex CLI self-update (only when Codex is the active provider)
+    _safe_run("Codex CLI update", check_codex_cli_update, koan_root, instance)
 
     # Auto-update check (before daily report / morning ritual)
     updated = _safe_run("Auto-update check", check_auto_update, koan_root, instance)

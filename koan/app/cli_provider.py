@@ -17,6 +17,7 @@ from app.provider import (  # noqa: F401
     # Base class and constants
     CLIProvider,
     CLAUDE_TOOLS,
+    ReadOnlyUnenforceable,
     TOOL_NAME_MAP,
     # Concrete providers
     ClaudeProvider,

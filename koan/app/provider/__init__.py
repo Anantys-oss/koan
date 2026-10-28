@@ -16,6 +16,7 @@ Package structure:
     provider/cline.py        — ClineProvider implementation
     provider/codex.py        — CodexProvider implementation
     provider/copilot.py      — CopilotProvider implementation
+    provider/gemini.py       — GeminiProvider (Google Gemini CLI)
     provider/ollama_launch.py — OllamaLaunchProvider (ollama launch claude)
     provider/__init__.py     — Registry, resolution, convenience functions
 """
@@ -36,6 +37,9 @@ from app.provider.base import (  # noqa: F401
     CLIProvider,
     CLAUDE_TOOLS,
     PROVIDER_ERROR_EVENT_TYPES,
+    ReadOnlyUnenforceable,
+    READ_ONLY_TOOLS,
+    SIDE_EFFECT_TOOLS,
     TOOL_NAME_MAP,
 )
 
@@ -45,9 +49,11 @@ from app.provider.cline import ClineProvider  # noqa: F401
 from app.provider.codex import CodexProvider  # noqa: F401
 from app.provider.copilot import CopilotProvider  # noqa: F401
 from app.provider.fake import FakeProvider, FakeProviderNotAllowed  # noqa: F401
+from app.provider.gemini import GeminiProvider  # noqa: F401
 from app.provider.haze import HazeProvider  # noqa: F401
 from app.provider.grok import GrokProvider  # noqa: F401
 from app.provider.ollama_launch import OllamaLaunchProvider  # noqa: F401
+from app.token_parser import clamp_cached_input, dominant_stats_model
 
 
 def _extract_provider_error_preview(stdout: str) -> str:
@@ -120,21 +126,43 @@ _PROVIDERS = {
     "codex": CodexProvider,
     "copilot": CopilotProvider,
     "fake": FakeProvider,
+    "gemini": GeminiProvider,
     "haze": HazeProvider,
     "grok": GrokProvider,
     "ollama-launch": OllamaLaunchProvider,
 }
 
-# Cached provider instance (reset with reset_provider() in tests)
+# Execution roles that must never be able to write. Keyed by ``model_key``, the
+# role name callers already pass to run_command/run_command_streaming, so the
+# posture is derived rather than opt-in and no call site can forget it.
+#
+# ``review_mode`` only. Deliberately NOT "chat": scripts/wiki_sync_ci.py drives a
+# *write* job (Edit/Write plus a git-log Bash rule) on the chat role, and adding
+# it here would break that CI fixer.
+READ_ONLY_ROLES = frozenset({"review_mode"})
+
+# Cached provider instance (reset with reset_provider() in tests). The path is
+# part of the key: `cli_provider: claude:/a` and `claude:/b` are the same flavor
+# but must not share an instance.
 _cached_provider: Optional[CLIProvider] = None
 _cached_provider_name: str = ""
+_cached_provider_path: str = ""
+
+# True once an unparseable global cli_provider has been reported. get_provider()
+# runs on every command build, so without this a stale value (e.g. the removed
+# "local" flavor, which config_validator still special-cases) would log once per
+# CLI invocation for the life of the process.
+_warned_global_cli: bool = False
 
 
 def reset_provider():
-    """Reset the cached provider (for testing)."""
-    global _cached_provider, _cached_provider_name
+    """Reset the cached provider and warn-once state (for testing)."""
+    global _cached_provider, _cached_provider_name, _cached_provider_path
+    global _warned_global_cli
     _cached_provider = None
     _cached_provider_name = ""
+    _cached_provider_path = ""
+    _warned_global_cli = False
 
 
 def is_known_provider(name: str) -> bool:
@@ -142,45 +170,70 @@ def is_known_provider(name: str) -> bool:
     return str(name or "").strip().lower() in _PROVIDERS
 
 
-def get_provider_name() -> str:
-    """Determine which CLI provider to use.
+def _global_cli_spec() -> Tuple[str, str]:
+    """Resolve the global provider as ``(flavor, binary_path)``.
 
     Resolution order:
-    1. KOAN_CLI_PROVIDER env var (with CLI_PROVIDER fallback; highest priority)
-    2. config.yaml cli_provider key
-    3. Default: "claude"
+    1. KOAN_CLI_PROVIDER env var (with CLI_PROVIDER fallback; highest priority).
+       Flavor only — ``KOAN_CLAUDE_CLI_PATH`` is the env channel for a custom
+       binary, so this one deliberately carries no path.
+    2. config.yaml ``cli_provider`` key — ``flavor`` or ``flavor:path``, the same
+       grammar the per-role ``cli:`` entries use.
+    3. Default: ``("claude", "")``
+
+    An unparseable value warns once per distinct value rather than once per
+    call: this runs on every command build via :func:`get_provider`.
     """
     # Lazy import to avoid circular dependency
-    from app.utils import get_cli_provider_env, load_config
+    from app.utils import get_cli_provider_env
 
     env_val = get_cli_provider_env()
     if env_val and env_val in _PROVIDERS:
-        return env_val
+        return (env_val, "")
 
     try:
-        config = load_config()
-        config_val = str(config.get("cli_provider", "")).strip().lower()
-        if config_val and config_val in _PROVIDERS:
-            return config_val
+        from app.config import get_global_cli_spec
+
+        global _warned_global_cli
+        flavor, path = get_global_cli_spec(warn=not _warned_global_cli)
+        if not flavor:
+            _warned_global_cli = True
+        if flavor:
+            return (flavor, path)
     except Exception as e:
         print(f"[provider] Config loading failed: {e}", file=sys.stderr)
 
-    return "claude"
+    return ("claude", "")
+
+
+def get_provider_name() -> str:
+    """Determine which CLI provider to use.
+
+    Returns the bare flavor name; a ``cli_provider: flavor:path`` value resolves
+    to its flavor here and the path is applied by :func:`get_provider`.
+    """
+    return _global_cli_spec()[0]
 
 
 def get_provider() -> CLIProvider:
     """Get the configured CLI provider instance (cached singleton)."""
-    global _cached_provider, _cached_provider_name
+    global _cached_provider, _cached_provider_name, _cached_provider_path
+    # The flavor still comes from get_provider_name() so tests that patch it keep
+    # steering resolution. The configured path applies only when the resolved
+    # flavor is still the one it was configured for — an override must not
+    # inherit another flavor's binary.
+    spec_flavor, spec_path = _global_cli_spec()
     name = get_provider_name()
-    if _cached_provider is None or name != _cached_provider_name:
-        _cached_provider = _PROVIDERS[name]()
+    path = spec_path if name == spec_flavor else ""
+    if (
+        _cached_provider is None
+        or name != _cached_provider_name
+        or path != _cached_provider_path
+    ):
+        _cached_provider = _PROVIDERS[name](binary_path=path)
         _cached_provider_name = name
+        _cached_provider_path = path
     return _cached_provider
-
-
-def is_known_provider(name: str) -> bool:
-    """True when ``name`` resolves to a registered CLI provider."""
-    return str(name or "").strip().lower() in _PROVIDERS
 
 
 def known_providers() -> list:
@@ -483,6 +536,7 @@ def build_full_command(
     resume_session_id: str = "",
     project_context: bool = True,
     provider: Optional[CLIProvider] = None,
+    read_only: bool = False,
 ) -> List[str]:
     """Build a complete CLI command for the configured provider.
 
@@ -507,13 +561,68 @@ def build_full_command(
             uses the global :func:`get_provider`. Pass a per-role instance
             (from :func:`get_provider_for_role`) to build a command for a
             specific mission role's CLI / custom binary.
+        read_only: When True this invocation must not be able to write. The
+            side-effecting tools are added to *disallowed_tools* for providers
+            that can deny tools, and the flag is forwarded so providers with a
+            sandbox (Codex) can express the posture directly. Derived from the
+            role by :func:`run_command` / :func:`run_command_streaming` — see
+            :data:`READ_ONLY_ROLES`. Fails closed: a provider that can express
+            neither mechanism raises
+            :class:`~app.provider.base.ReadOnlyUnenforceable` instead of running
+            with full write access.
+
+    Raises:
+        ReadOnlyUnenforceable: *read_only* is True and the resolved provider
+            (including a ``cli.fallback`` swap) reports
+            ``enforces_read_only() is False``.
 
     Automatically reads ``skip_permissions`` from config.yaml so all
     callers get the flag without needing changes.
     """
     from app.config import get_skip_permissions
 
-    return (provider or get_provider()).build_command(
+    resolved = provider or get_provider()
+    if read_only:
+        if not resolved.enforces_read_only():
+            # Fail closed. A provider that can neither deny tools by name nor
+            # run in a read-only sandbox would execute this invocation with full
+            # write access to the live project clone, which is exactly what the
+            # role forbids. Refuse rather than downgrade the boundary to advice.
+            raise ReadOnlyUnenforceable(
+                f"CLI provider {resolved.name!r} cannot enforce a read-only "
+                "invocation: it supports neither per-tool denial nor a read-only "
+                "sandbox, so the session could write to the live project clone. "
+                "Pin a provider that can (claude, codex, ollama-launch) on this "
+                "role's `cli:` entry in instance/config.yaml (for reviews: "
+                "`cli.review_mode`), or clear the `cli.fallback` that resolved "
+                f"to {resolved.name!r}."
+            )
+        if resolved.supports_tool_denial():
+            # The secondary denial layer. An allowlist does not withhold
+            # anything -- ``--allowedTools`` only pre-approves -- so denying the
+            # side-effecting tools by name is what holds the boundary on a CLI
+            # that ignores an unknown ``--tools``. Merge rather than replace so
+            # an explicit caller-supplied denial is preserved.
+            #
+            # Subtract whatever READ_ONLY_TOOLS deliberately grants, but ONLY
+            # when the provider can actually restrict: ``--disallowedTools``
+            # removes a tool from the model's context, so denying ``Bash`` here
+            # would cancel the gated shell that ``--tools`` just granted. When
+            # the provider cannot restrict it also cannot install the PreToolUse
+            # gate, so it gets no shell at all and the full denial applies --
+            # still fail-closed, just without the capability.
+            granted = (
+                set(READ_ONLY_TOOLS) if resolved.supports_tool_restriction()
+                else set()
+            )
+            merged = list(disallowed_tools or [])
+            merged += [
+                t for t in SIDE_EFFECT_TOOLS
+                if t not in merged and t not in granted
+            ]
+            disallowed_tools = merged
+
+    return resolved.build_command(
         prompt=prompt,
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,
@@ -529,6 +638,7 @@ def build_full_command(
         effort=effort,
         resume_session_id=resume_session_id,
         project_context=project_context,
+        read_only=read_only,
     )
 
 
@@ -598,7 +708,11 @@ def build_full_command_managed(
 ) -> Tuple[List[str], List[str]]:
     """Build a CLI command, routing large system prompts through a temp file.
 
-    Same parameters as :func:`build_full_command`, but when ``system_prompt``
+    Same parameters as :func:`build_full_command` — minus ``read_only``, which
+    this path deliberately does not accept (see
+    ``specs/components/providers.md``: the fail-closed enforcement covers
+    ``read_only`` invocations, and the mission path through here is explicitly
+    out of scope). But when ``system_prompt``
     is non-empty AND the configured provider supports
     ``--append-system-prompt-file`` (or its equivalent), the prompt is
     written to a 0600 temp file and the file path is passed instead of the
@@ -608,7 +722,9 @@ def build_full_command_managed(
     Returns:
         ``(cmd, cleanup_paths)`` — the caller MUST unlink each path in
         ``cleanup_paths`` after the subprocess exits, typically from a
-        ``finally`` block alongside its other temp-file cleanup.
+        ``finally`` block alongside its other temp-file cleanup. If the build
+        itself raises, the temp file is unlinked here before the exception
+        propagates, so the caller never has to clean up a path it never got.
     """
     cleanup_paths: List[str] = []
 
@@ -637,7 +753,14 @@ def build_full_command_managed(
         kwargs.update(system_prompt="", system_prompt_file=cmd_path)
     else:
         kwargs["system_prompt"] = system_prompt
-    return build_full_command(**kwargs), cleanup_paths
+    try:
+        return build_full_command(**kwargs), cleanup_paths
+    except BaseException:
+        # The temp file is already on disk but ``cleanup_paths`` only reaches the
+        # caller on success, so anything raised out of the build would leak a
+        # 0600 file containing the system prompt. Unlink here and re-raise.
+        cleanup_managed_paths(cleanup_paths)
+        raise
 
 
 def cleanup_managed_paths(paths: List[str]) -> None:
@@ -725,6 +848,7 @@ def run_command(
         max_turns=max_turns,
         mcp_configs=mcp_configs,
         provider=provider,
+        read_only=model_key in READ_ONLY_ROLES,
     )
 
     from app.cli_exec import run_cli_with_retry
@@ -835,6 +959,50 @@ def _tool_input_preview(inp: Any, limit: int = 60) -> str:
     return ""
 
 
+def _tool_result_preview(content: Any, limit: int = 120) -> str:
+    """Return a bounded, single-line diagnostic from a failed tool result."""
+    values: List[str] = []
+    if isinstance(content, str):
+        values.append(content)
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, str):
+                values.append(block)
+            elif isinstance(block, dict):
+                text = block.get("text")
+                if isinstance(text, str):
+                    values.append(text)
+
+    for value in values:
+        preview = _first_line(value, limit=limit)
+        if preview:
+            return _drop_part_sep(preview)
+    return ""
+
+
+def _error_message(err: Any) -> str:
+    """Pull the human-readable message out of an error field.
+
+    Accepts the bare string some providers emit and the
+    ``{"type": …, "message": …}`` object others do; anything else yields ''.
+    """
+    if isinstance(err, str):
+        return err
+    if isinstance(err, dict):
+        message = err.get("message")
+        if isinstance(message, str) and message.strip():
+            return message
+        # A machine-readable-only error ({"type": "TOOL_CONFIRMATION_REQUIRED"})
+        # still carries the sole clue about why the session failed — never drop
+        # it on the floor.
+        err_type = err.get("type")
+        if isinstance(err_type, str) and err_type.strip():
+            return err_type.strip()
+        if err:
+            return repr(err)[:200]
+    return ""
+
+
 def _drop_part_sep(text: str) -> str:
     """Neutralize the ``", "`` part delimiter inside a free-text preview.
 
@@ -899,8 +1067,39 @@ def _summarize_stream_event(event: Dict[str, Any]) -> str:
             if isinstance(block, dict) and block.get("type") == "tool_result":
                 tid = str(block.get("tool_use_id") or "")[:12]
                 err = " (error)" if block.get("is_error") else ""
-                return f"[cli] tool_result {tid}{err}"
+                detail = _tool_result_preview(block.get("content")) if err else ""
+                suffix = f": {detail}" if detail else ""
+                return f"[cli] tool_result {tid}{err}{suffix}"
         return "[cli] user turn"
+
+    # Gemini CLI-style NDJSON: init / message / tool_use / tool_result events,
+    # shape-keyed on their own field names (``tool_name``, ``role`` + string
+    # ``content``) — no provider-name checks. See tests/gemini_samples.py.
+    if etype == "init" and isinstance(event.get("model"), str):
+        return f"[cli] session init (model={event['model']})"
+
+    if etype == "message" and isinstance(event.get("content"), str):
+        if event.get("role") == "assistant":
+            preview = _drop_part_sep(_first_line(event.get("content")))
+            if preview:
+                return f"[cli] assistant — text: {preview}"
+            return "[cli] assistant — streaming"
+        return "[cli] user turn"
+
+    if etype == "tool_use" and isinstance(event.get("tool_name"), str):
+        name = event.get("tool_name") or "?"
+        preview = _drop_part_sep(_tool_input_preview(event.get("parameters")))
+        return (
+            f"[cli] assistant — tool_use: {name}: {preview}" if preview
+            else f"[cli] assistant — tool_use: {name}"
+        )
+
+    if etype == "tool_result" and "tool_id" in event:
+        tid = str(event.get("tool_id") or "")[:12]
+        err = " (error)" if str(event.get("status") or "").lower() == "error" else ""
+        detail = _tool_result_preview(_error_message(event.get("error"))) if err else ""
+        suffix = f": {detail}" if detail else ""
+        return f"[cli] tool_result {tid}{err}{suffix}"
 
     if etype == "result":
         # Claude labels results with ``subtype`` ("success"); haze-style
@@ -1055,6 +1254,15 @@ def _extract_assistant_text_chunks(event: Dict[str, Any]) -> List[str]:
         if isinstance(data, str) and data:
             chunks.append(data)
 
+    # Gemini CLI-style assistant chunks: {"type":"message","role":"assistant",
+    # "content":"…","delta":true}. Deltas are concatenated with "" by the
+    # caller (see _is_text_delta_event); user-role messages echo the prompt
+    # back and must never be collected as assistant output.
+    if event.get("type") == "message" and event.get("role") == "assistant":
+        content = event.get("content")
+        if isinstance(content, str) and content:
+            chunks.append(content)
+
     # Haze-style segment completion: ``message_end`` carries the finalized
     # text for one assistant segment (one event per segment id). Cumulative
     # ``message_update`` snapshots are deliberately NOT collected — they would
@@ -1097,6 +1305,82 @@ def _extract_assistant_text_chunks(event: Dict[str, Any]) -> List[str]:
     return chunks
 
 
+def _is_text_delta_event(event: Dict[str, Any]) -> bool:
+    """Return True when *event* carries an incremental assistant text chunk.
+
+    Delta chunks are joined with ``""`` so ``"hel" + "lo"`` becomes ``"hello"``,
+    whereas block-style segments are joined with newlines. Shape-keyed on two
+    known delta shapes: Grok Build's ``{"type":"text","data":…}`` and Gemini
+    CLI's ``{"type":"message","role":"assistant","delta":true,"content":…}``.
+    """
+    etype = event.get("type")
+    if etype == "text" and isinstance(event.get("data"), str):
+        return True
+    return (
+        etype == "message"
+        and event.get("role") == "assistant"
+        and bool(event.get("delta"))
+        and isinstance(event.get("content"), str)
+    )
+
+
+# Terminal envelope types across providers: the event that closes a stream,
+# whether or not it carries the assistant text.
+_TERMINAL_RESULT_TYPES = frozenset({
+    "result",
+    "turn.completed",
+    "response.completed",
+    "task.completed",
+    "turn_complete",
+    "task_complete",
+    "end",
+})
+
+
+def _is_terminal_result_event(event: Dict[str, Any]) -> bool:
+    """Return True when *event* closes the stream, text or no text.
+
+    Deliberately distinct from ``_extract_result_text(event) is not None``:
+    Grok Build's ``end`` and any text-less ``result`` are terminal but yield no
+    string, so "the pass finished" and "the pass produced a result string" are
+    different questions. Callers that need the former — the post-result stall
+    exemption in :func:`run_command_streaming` — must not infer it from the
+    latter, or a completed pass on those providers is reported as a stall.
+
+    Matching is on the explicit whitelist ONLY, never on a ``.completed`` /
+    ``.done`` suffix — see :func:`_is_result_like_event` for why that looser
+    rule is safe where it lives and unsafe here.
+    """
+    return str(event.get("type") or "") in _TERMINAL_RESULT_TYPES
+
+
+def _is_result_like_event(event: Dict[str, Any]) -> bool:
+    """Loose 'this event might carry the final text' test for text extraction.
+
+    Accepts the terminal whitelist *plus* any ``.completed`` / ``.done`` suffix,
+    which is how unknown provider shapes have always reached
+    :func:`_extract_result_text`. A false positive is harmless there: the worst
+    case is ``final_result`` being overwritten by a mid-stream string, and the
+    last write wins.
+
+    It is NOT harmless as a terminality test. ``saw_terminal_result`` is a
+    one-way latch, so the first match permanently exempts the rest of the run
+    from the idle bound — and two real mid-stream types match the suffixes:
+    Codex's per-item ``item.completed`` (``turn.completed`` is its actual
+    terminal envelope) and ``response.output_text.done``, which this module
+    already classifies as an assistant *text* event. Latching on either would
+    let a provider go silent for the whole idle window and still return its
+    truncated output as a finished verdict — strictly worse than the
+    unbounded hang this bound exists to replace, because it fails quietly.
+    """
+    etype = str(event.get("type") or "")
+    return (
+        etype in _TERMINAL_RESULT_TYPES
+        or etype.endswith(".completed")
+        or etype.endswith(".done")
+    )
+
+
 def _extract_result_text(event: Dict[str, Any]) -> Optional[str]:
     """Pull the final assistant text out of a provider result event.
 
@@ -1110,23 +1394,12 @@ def _extract_result_text(event: Dict[str, Any]) -> Optional[str]:
     """
     etype = str(event.get("type") or "")
     if etype != "result":
-        if not (
-            etype.endswith(".completed")
-            or etype.endswith(".done")
-            or etype in {
-                "turn.completed",
-                "response.completed",
-                "task.completed",
-                "turn_complete",
-                "task_complete",
-                # Grok Build terminal envelope carries usage/stopReason but not
-                # the assistant text — return None so callers fall back to
-                # accumulated text deltas.
-                "end",
-            }
-        ):
+        if not _is_result_like_event(event):
             return None
         if etype == "end":
+            # Grok Build's terminal envelope carries usage/stopReason but not
+            # the assistant text — return None so callers fall back to
+            # accumulated text deltas.
             return None
         for key in ("output_text", "last_agent_message", "text"):
             result = event.get(key)
@@ -1176,6 +1449,46 @@ def _is_cancelled_end_event(event: Dict[str, Any]) -> bool:
         event.get("stopReason") or event.get("stop_reason") or ""
     ).strip().lower()
     return stop in _CANCELLED_STOP_REASONS
+
+
+# Terminal ``result`` statuses that mean the session DID complete. Anything
+# else — ``timeout``, ``quota_exceeded``, ``interrupted``, a status this
+# adapter has never seen — fails closed, matching the contract text in
+# specs/components/providers.md. Only the text-less envelope shape is
+# inspected (Gemini CLI: ``{"type":"result","status":…,"error"?,"stats"?}``) —
+# envelopes that carry the assistant text alongside the status (haze
+# ``result``+``result``/``usage``) keep their existing soft-return behaviour.
+_RESULT_SUCCESS_STATUSES = frozenset(
+    {"success", "succeeded", "complete", "completed", "ok"}
+)
+
+
+def _is_failed_result_event(event: Dict[str, Any]) -> bool:
+    """Return True for a text-less terminal result reporting a failed status.
+
+    Without this a headless run that could not answer a tool confirmation
+    prompt exits 0 with partial prose, and the mission is reported complete
+    with no branch and no commit — the same soft-success hole
+    :func:`_is_cancelled_end_event` closes for Grok Build.
+
+    ``stats`` is deliberately NOT required: a session that aborts before any
+    model call emits ``{"type":"result","status":"error","error":{…}}`` with no
+    stats block, which is exactly the shape this guard exists to catch.
+
+    The status test is a SUCCESS allowlist, not a failure blocklist: an
+    unrecognized terminal status (``timeout``, ``quota_exceeded``, a word a
+    future build introduces) must fail rather than bank partial prose. A
+    missing/empty status is left alone — that envelope reports no verdict at
+    all, and other providers emit it.
+    """
+    if str(event.get("type") or "") != "result":
+        return False
+    if "result" in event or "usage" in event:
+        return False
+    status = str(event.get("status") or "").strip().lower()
+    if not status:
+        return False
+    return status not in _RESULT_SUCCESS_STATUSES
 
 
 def _usage_snapshot_from_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -1231,6 +1544,33 @@ def _usage_snapshot_from_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]
                 model_usage = event.get("modelUsage")
                 if isinstance(model_usage, dict) and model_usage:
                     model = str(next(iter(model_usage)))
+            return {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_read_input_tokens": cached_input,
+                "cache_creation_input_tokens": 0,
+                "model": model or "unknown",
+            }
+
+    # Gemini CLI reports usage under ``stats`` on its terminal ``result``
+    # event, not under ``usage``: {input_tokens, output_tokens, cached, input,
+    # total_tokens, models:{<id>:…}}. Shape-keyed on the nested field names.
+    stats = event.get("stats")
+    if isinstance(stats, dict) and (
+        "input_tokens" in stats or "output_tokens" in stats
+    ):
+        input_tokens = int(stats.get("input_tokens", 0) or 0)
+        output_tokens = int(stats.get("output_tokens", 0) or 0)
+        # ``cached`` is a SUBSET of input_tokens — subtract so input matches
+        # Koan accounting (which excludes cache hits).
+        cached_input = clamp_cached_input(
+            int(stats.get("cached", 0) or 0), input_tokens
+        )
+        input_tokens -= cached_input
+        if input_tokens or output_tokens or cached_input:
+            model = str(event.get("model") or "")
+            if not model:
+                model = dominant_stats_model(stats.get("models"))
             return {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
@@ -1332,6 +1672,66 @@ def missing_binary_message(err: "FileNotFoundError", cmd, provider_name: str, mo
     )
 
 
+def _finish_stalled_stream(
+    proc: subprocess.Popen,
+    idle_timeout: Optional[int],
+    saw_terminal_result: bool,
+    text_lines: List[str],
+    usage_snapshot: Optional[Dict[str, Any]],
+) -> str:
+    """Reap a provider group the idle watchdog SIGKILLed, and classify the stall.
+
+    Returns the drained stderr when a terminal envelope had already arrived —
+    the silence is the CLI tearing down (MCP servers, telemetry), not a lost
+    pass, and the caller treats the resulting non-zero exit as its own kill.
+    Raises ``RuntimeError`` when none did: that is the genuine stall this bound
+    exists to report.
+    """
+    from app.subprocess_runner import drain_stream_bounded
+
+    reaped = True
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        reaped = False
+    # What the provider printed before going silent (an expired token, say) is
+    # usually the only clue to *why* it stalled, so a truncated or failed drain
+    # is itself worth reporting rather than degrading to a bare timeout message.
+    #
+    # The drain is bounded on its own terms rather than gated on `reaped`: the
+    # leader is inside the group that was just SIGKILLed and SIGKILL is
+    # uncatchable, so it is reaped on virtually every stall — while the
+    # descendant that matters here is the one that escaped the group (a setsid'd
+    # MCP helper), survives the kill, and still holds the stderr write end. An
+    # unbounded read() would then block forever with the watchdog already
+    # disarmed, re-entering the exact hang this bound exists to end, one pipe
+    # over. `reaped` stays as a corroborating signal in the message.
+    stderr_text, stderr_error = drain_stream_bounded(proc.stderr)
+    if stderr_error and not reaped:
+        stderr_error += " (the group SIGKILL left a process alive)"
+    if saw_terminal_result:
+        # This branch returns stderr as plain text, so a drain that was cut
+        # short is indistinguishable from a clean complete one. Say so rather
+        # than letting the caller read the fragment as everything printed.
+        if stderr_error:
+            print(f"[cli] WARNING:{stderr_error}", file=sys.stderr, flush=True)
+        return stderr_text
+    # Usage is persisted on every other exit; a stall is the run that burned
+    # the most, so dropping it under-counts quota exactly where it matters.
+    _persist_stream_usage_snapshot(usage_snapshot)
+    # Carry whatever the pass streamed before going silent, same as the
+    # cancelled-end path: a stall after most findings were printed must stay
+    # diagnosable from the error alone.
+    partial = "\n".join(text_lines).strip()
+    suffix = f" Partial output: {partial[:200]}" if partial else ""
+    detail = (stderr_text or "").strip()
+    # Both can be present now that the drain is bounded rather than skipped: a
+    # truncated read still carries whatever reached the pipe first, and the
+    # caller must not read that fragment as the whole of what was printed.
+    err = f" stderr: {detail[-500:]}{stderr_error}" if detail else stderr_error
+    raise RuntimeError(f"CLI stalled — no output for {idle_timeout}s{suffix}{err}")
+
+
 def run_command_streaming(
     prompt: str,
     project_path: str,
@@ -1343,6 +1743,9 @@ def run_command_streaming(
     max_turns_source: Optional[str] = "skill_max_turns",
     project_name: str = "",
     mcp_configs: Optional[List[str]] = None,
+    project_context: bool = True,
+    idle_timeout: Optional[int] = None,
+    effort: str = "",
 ) -> str:
     """Build and run a CLI command, streaming progress to stdout in real time.
 
@@ -1367,6 +1770,33 @@ def run_command_streaming(
     ``config.mcp_configs_for_role(role, project_name)`` so the per-role
     allowlist and kill switch apply.
 
+    ``project_context=False`` suppresses project-scope settings, ``CLAUDE.md``
+    and skills loaded from ``project_path``. Pass it whenever *project_path* is
+    untrusted — a reviewed branch can carry a ``.claude/settings.json`` that
+    defines hooks, which is code execution on this host.
+
+    ``effort`` pins the provider's reasoning-effort flag for this call. The
+    default ``""`` omits the flag, leaving the provider's own default — the
+    historical behavior for every caller on this path. Each provider validates
+    the level and drops an unknown one.
+
+    ``idle_timeout`` bounds **inactivity**, and is the only bound that reaches
+    the read loop. ``timeout`` is applied by the ``proc.wait()`` *after* stdout
+    EOF, so a provider that prints its session banner and then goes silent
+    forever blocks in ``for line in proc.stdout`` and is never bounded by it;
+    only run.py's outer skill-runner watchdog ends such a run, by SIGKILLing
+    the whole runner. With ``idle_timeout`` set, every consumed line heartbeats
+    a :class:`~app.subprocess_runner.LivenessWatchdog` and a stall raises
+    ``RuntimeError`` the caller can attribute and degrade on — unless a terminal
+    envelope already arrived (:func:`_is_terminal_result_event`, text-carrying
+    or not), in which case the silence is the CLI tearing down and the result is
+    returned normally. A wall-clock cap would be the wrong instrument — a
+    healthy long pass streams progress for many minutes. Default ``None`` keeps
+    the historical unbounded behavior; an opted-in caller must pick a value
+    strictly below the outer skill-runner budget that governs *its* dispatch
+    path (``first_output_timeout``, or ``rebase_first_output_timeout`` under
+    ``/rebase``) or the outer watchdog still wins.
+
     Raises:
         RuntimeError: If the command exits with non-zero code (except
             max-turns, which returns partial output).
@@ -1385,6 +1815,9 @@ def run_command_streaming(
         output_format="stream-json" if use_stream_json else "",
         mcp_configs=mcp_configs,
         provider=provider,
+        read_only=model_key in READ_ONLY_ROLES,
+        project_context=project_context,
+        effort=effort,
     )
     last_message_path: Optional[str] = None
     if provider.supports_last_message_file():
@@ -1410,16 +1843,21 @@ def run_command_streaming(
     # text_lines IS the fallback return value when no result event arrives —
     # it must stay unbounded or long sessions would silently lose output.
     # Block-style providers (Claude, Haze segments) append full segments and
-    # are joined with newlines. Delta-style providers (Grok Build text/data)
-    # buffer into text_delta_parts and flush as one segment so "hel"+"lo"
-    # becomes "hello", not "hel\\nlo".
+    # are joined with newlines. Delta-style providers (Grok Build text/data,
+    # Gemini assistant message deltas — see _is_text_delta_event) buffer into
+    # text_delta_parts and flush as one segment so "hel"+"lo" becomes "hello",
+    # not "hel\\nlo".
     text_lines: List[str] = []  # fallback return value when no result event
     text_delta_parts: List[str] = []
     final_result: Optional[str] = None
     usage_snapshot: Optional[Dict[str, Any]] = None
     saw_max_turns_event = False
     saw_cancelled_end = False
+    failed_result_status = ""
+    failed_result_error = ""
     stderr_text = ""
+    stalled_after_result = False
+    saw_terminal_result = False
 
     def _flush_text_deltas() -> None:
         if text_delta_parts:
@@ -1427,6 +1865,19 @@ def run_command_streaming(
             text_delta_parts.clear()
 
     try:
+        bounded = bool(idle_timeout and idle_timeout > 0)
+        spawn_kwargs = {}
+        if bounded:
+            # Only when the watchdog is armed. The watchdog group-kills, and a
+            # child sharing Kōan's group would make that kill land on the
+            # daemon itself — so an armed watchdog *requires* session
+            # isolation. But isolation is not free: run.py's skill-runner
+            # teardown and mission_scope's fallback both reap by process
+            # group, and a child in its own session is outside both. Applying
+            # it unconditionally would put every non-opted-in caller's provider
+            # beyond that teardown, buying nothing (no watchdog to protect) and
+            # letting a stuck provider outlive the runner that spawned it.
+            spawn_kwargs["start_new_session"] = True
         try:
             proc, cleanup = popen_cli(
                 cmd,
@@ -1436,19 +1887,49 @@ def run_command_streaming(
                 encoding="utf-8",
                 errors="replace",
                 cwd=project_path,
+                **spawn_kwargs,
             )
         except FileNotFoundError as e:
             raise RuntimeError(
                 missing_binary_message(e, cmd, provider.name, model_key)
             ) from e
+        # Captured now, while the leader is unreaped: a process group outlives
+        # its leader, but its id cannot be recovered once the pid is gone (see
+        # the teardown in the finally below). Under start_new_session the pgid
+        # *is* the pid; getpgid confirms that rather than assuming it.
+        child_pgid = 0
+        if bounded:
+            with contextlib.suppress(OSError):
+                child_pgid = os.getpgid(proc.pid)
+        idle_watchdog = None
         # Every print() in this loop is the load-bearing watchdog signal —
         # run.py's skill-runner liveness watchdog (600s) resets on each line
         # emitted to stdout. Do not silence these prints; doing so reintroduces
         # the silent-CLI hang this PR fixes (see PR #1372).
         try:
+            if bounded:
+                # Armed inside this try, not before it: the child is already
+                # spawned, so a failure here (Timer.start() under thread
+                # exhaustion) must still reach the finally that closes the
+                # pipes and runs cleanup(), or the CLI is left unreaped.
+                from app.subprocess_runner import LivenessWatchdog
+
+                # graceful=False: SIGTERM-then-escalate stops escalating once
+                # the leader exits, so a descendant that ignores SIGTERM
+                # survives while still holding the inherited stdout write end.
+                # The read loop below would then never see EOF, never reach the
+                # `fired` check, and hang exactly as it did before this
+                # watchdog existed.
+                idle_watchdog = LivenessWatchdog(
+                    proc, idle_timeout, graceful=False,
+                ).start()
             for line in proc.stdout:
                 stripped = line.rstrip("\n")
                 raw_lines.append(stripped)
+                # Every consumed line is activity, blank ones included — the
+                # `continue` below skips rendering, not liveness.
+                if idle_watchdog is not None:
+                    idle_watchdog.heartbeat()
                 if not stripped:
                     continue
                 event: Optional[Dict[str, Any]] = None
@@ -1469,10 +1950,7 @@ def run_command_streaming(
                     # kill, SIGPIPE) still returns whatever the provider managed
                     # to print, instead of silently returning "".
                     chunks = _extract_assistant_text_chunks(event)
-                    if (
-                        event.get("type") == "text"
-                        and isinstance(event.get("data"), str)
-                    ):
+                    if _is_text_delta_event(event):
                         text_delta_parts.extend(chunks)
                     else:
                         _flush_text_deltas()
@@ -1480,10 +1958,20 @@ def run_command_streaming(
                     result_text = _extract_result_text(event)
                     if result_text is not None:
                         final_result = result_text
+                    # Tracked separately from final_result: a terminal envelope
+                    # that carries no text (Grok's `end`, a text-less `result`)
+                    # leaves final_result None, and keying the post-result stall
+                    # exemption off that would report a finished pass on those
+                    # providers as a stall.
+                    if _is_terminal_result_event(event):
+                        saw_terminal_result = True
                     if _is_stream_json_max_turns(event):
                         saw_max_turns_event = True
                     if _is_cancelled_end_event(event):
                         saw_cancelled_end = True
+                    if _is_failed_result_event(event):
+                        failed_result_status = str(event.get("status") or "")
+                        failed_result_error = _error_message(event.get("error"))
                 else:
                     # Non-JSON: provider doesn't speak stream-json or a stray
                     # warning slipped in. Print and remember for the fallback.
@@ -1491,13 +1979,81 @@ def run_command_streaming(
                     print(stripped, flush=True)
                     text_lines.append(stripped)
             _flush_text_deltas()
-            stderr_text = proc.stderr.read() if proc.stderr else ""
-            proc.wait(timeout=timeout)
+            if idle_watchdog is not None:
+                # Disarm the moment the read loop ends. `stderr.read()` and
+                # `proc.wait()` below emit no heartbeats, so a watchdog still
+                # armed across them would SIGKILL a run that already completed
+                # and surface as an opaque exit -9 — past the `fired` check,
+                # so not even attributable. mark_completed() is what actually
+                # closes it: Timer.cancel() is a no-op once `_fire` has begun,
+                # and the graceful=False kill has no poll() guard.
+                idle_watchdog.mark_completed()
+                idle_watchdog.cancel()
+            if idle_watchdog is not None and idle_watchdog.fired:
+                # The watchdog already SIGKILLed the group, which is what ended
+                # the read loop. Reap and classify rather than letting it
+                # surface as an opaque exit -9 further down; returning normally
+                # means a terminal envelope had arrived, so the exit code below
+                # is our own kill and not a provider crash.
+                stderr_text = _finish_stalled_stream(
+                    proc, idle_timeout, saw_terminal_result, text_lines, usage_snapshot,
+                )
+                stalled_after_result = True
+            else:
+                # Bounded here too, not only on the stall branch: the watchdog
+                # was just disarmed, so for an opted-in caller this read is the
+                # one place left with no bound in force. A helper the CLI
+                # spawned with its own session and stdout=DEVNULL keeps the
+                # inherited stderr fd through the leader's *normal* exit — the
+                # read loop still sees EOF, `fired` is False, and an unbounded
+                # read() would block here forever, with `proc.wait(timeout=…)`
+                # below it never reached. That is the same "declared bound sits
+                # after a blocking read" shape this change removed from stdout.
+                from app.subprocess_runner import drain_stream_bounded
+
+                stderr_text, stderr_error = drain_stream_bounded(proc.stderr)
+                if stderr_error:
+                    print(f"[cli] WARNING:{stderr_error}", file=sys.stderr, flush=True)
+                proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired as e:
             proc.kill()
             proc.wait()
             raise RuntimeError(f"CLI invocation timed out after {timeout}s") from e
         finally:
+            # An opted-in child is session-isolated, so it is outside run.py's
+            # skill-runner teardown and mission_scope's process-group reap, and
+            # cleanup() below only closes stdin and releases the invocation
+            # lock — it never kills. Disarming the watchdog without killing
+            # first (an exception raised mid-loop: BrokenPipeError on our own
+            # stdout, a malformed event) would therefore orphan the provider
+            # with nothing left that can reach it, burning quota while the next
+            # mission takes the lock this is about to release.
+            #
+            # Unconditional, not gated on the leader still being alive: the
+            # leader exiting says nothing about its descendants, and a helper
+            # the CLI left behind in the isolated session is reachable from
+            # nowhere else. That is what kill_orphaned_process_group is for —
+            # it takes the *pgid captured while the leader was alive*, because
+            # once proc.wait() has reaped the leader os.getpgid(proc.pid) can no
+            # longer recover it and the kill silently degrades to a no-op on a
+            # dead pid. It also refuses `pgid <= 1` and our own group, which
+            # keeps "an armed bound implies start_new_session=True" structural
+            # rather than a property of this comment, and warns when a group
+            # survives instead of leaving a still-running provider invisible to
+            # the next mission — which takes the invocation lock cleanup()
+            # releases three lines below.
+            if bounded and child_pgid:
+                from app.subprocess_runner import kill_orphaned_process_group
+
+                kill_orphaned_process_group(child_pgid)
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=5)
+            # The loop-exit path above already disarmed; this covers an
+            # exception raised mid-loop. A live timer outliving this call could
+            # group-kill a recycled PID.
+            if idle_watchdog is not None:
+                idle_watchdog.mark_completed()
+                idle_watchdog.cancel()
             if proc.stdout:
                 proc.stdout.close()
             if proc.stderr:
@@ -1534,7 +2090,13 @@ def run_command_streaming(
                 f"{suffix}"
             )
 
-        if proc.returncode != 0:
+        # ``stalled_after_result`` means the non-zero code is our own idle
+        # watchdog's SIGKILL, fired after the terminal envelope — not a provider
+        # failure. Skipping only this block (rather than returning early) keeps
+        # the failed_result_status raise and the max-turns warning below in
+        # force: a session that reported status=failed and *then* hung in
+        # teardown must still surface as the headless-permission error it is.
+        if proc.returncode != 0 and not stalled_after_result:
             # Max-turns is a graceful limit — return partial output so callers
             # can extract useful results from an incomplete session.
             if hit_max_turns:
@@ -1542,8 +2104,27 @@ def run_command_streaming(
                 from app.claude_step import strip_cli_noise
                 _persist_stream_usage_snapshot(usage_snapshot)
                 return strip_cli_noise(return_text.strip())
+            # Checked BEFORE the failed-result envelope: _format_cli_error is
+            # the only path that carries stderr and the exit code to the
+            # caller, and quota/auth classification is text-based on that
+            # payload (RESOURCE_EXHAUSTED / 429 / 401 live on stderr).
             raise RuntimeError(
                 _format_cli_error(proc.returncode, raw_stdout, stderr_text)
+            )
+
+        if failed_result_status:
+            # Same hole as the cancelled-end case above, reported through a
+            # terminal ``result`` envelope instead of an ``end`` event: exit 0
+            # plus partial prose.
+            _persist_stream_usage_snapshot(usage_snapshot)
+            detail = (return_text or "").strip()
+            suffix = f" Partial output: {detail[:200]}" if detail else ""
+            reason = f" ({failed_result_error})" if failed_result_error else ""
+            raise RuntimeError(
+                f"CLI session ended with status={failed_result_status}{reason} — "
+                "often a headless permission denial. Set skip_permissions: true "
+                "so tool calls are not left waiting on a confirmation prompt."
+                f"{suffix}"
             )
 
         if hit_max_turns:

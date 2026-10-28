@@ -197,6 +197,17 @@ def is_command(text: str) -> bool:
     return text.startswith("/")
 
 
+# `!cmd` is an alias for `/cmd` on every provider (Slack users who move to
+# Telegram keep their muscle memory). A bang before a non-letter — `!!`, `!42` —
+# is ordinary text, not a command.
+_BANG_COMMAND_RE = re.compile(r"![a-zA-Z]")
+
+
+def normalize_bang_command(text: str) -> str:
+    """Rewrite a leading ``!command`` to ``/command``; return text unchanged otherwise."""
+    return "/" + text[1:] if _BANG_COMMAND_RE.match(text) else text
+
+
 def promote_bare_skill_command(text: str) -> Optional[str]:
     """Promote a bare core-skill word to its slash form.
 
@@ -527,7 +538,16 @@ def handle_chat(text: str):
             quarantine_mission(text, guard_result.reason, source="telegram-chat")
 
     chat_tools_list = get_chat_tools().split(",")
-    models = get_model_config()
+    # Take the `chat` CLI so a `cli:` binary override applies (resolved once
+    # here, not per retry), and resolve the model against THAT provider's
+    # section so a cross-flavor role override (e.g. chat→codex) gets codex's
+    # model, not the global provider's — a provider spawned with a foreign
+    # model fails.
+    from app.provider import get_provider_for_role
+    chat_provider = get_provider_for_role("chat")
+    models = get_model_config(
+        role_providers={"chat": chat_provider.name, "fallback": chat_provider.name},
+    )
 
     # Run chat from KOAN_ROOT so paths line up with the rest of the system
     # (reflection, agent loop). Chat only needs to read state under
@@ -575,6 +595,7 @@ def handle_chat(text: str):
                 fallback=models["fallback"],
                 max_turns=5,
                 project_context=False,
+                provider=chat_provider,
             )
 
             try:
@@ -585,6 +606,7 @@ def handle_chat(text: str):
                         cmd,
                         capture_output=True, text=True, timeout=timeout,
                         cwd=chat_cwd,
+                        provider=chat_provider,
                     )
             except subprocess.TimeoutExpired:
                 # Timeout is a retryable contention symptom.
@@ -688,33 +710,34 @@ def _format_outbox_message(raw_content: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Worker lanes — chat replies and background tasks run independently so a
-# long background task never blocks an interactive reply, and neither ever
-# blocks the Telegram poll loop.  One in-flight task per lane (back-pressure).
+# Worker lanes — chat replies, user-triggered background tasks, and maintenance
+# run independently, so none can block the Telegram poll loop. One in-flight
+# task per lane provides back-pressure.
 # ---------------------------------------------------------------------------
 
-_WORKER_LANES = ("chat", "bg")
+_WORKER_LANES = ("chat", "bg", "maintenance")
 _worker_threads: Dict[str, Optional[threading.Thread]] = {
     lane: None for lane in _WORKER_LANES
 }
 _worker_lock = threading.Lock()
 
-# The chat lane tells the user when it is busy; the bg lane stays silent so
-# background work (worker skills like /review, /rebase) never spams the channel.
+# The chat lane tells the user when it is busy; background and maintenance work
+# stay silent so internal work never spams the channel.
 _LANE_BUSY_MSG: Dict[str, Optional[str]] = {
     "chat": "⏳ Busy with a previous message. Try again in a moment.",
     "bg": None,
+    "maintenance": None,
 }
 
 
 def _run_in_worker(fn, *args, lane: str = "chat") -> bool:
     """Run fn(*args) in a background thread on a named lane.
 
-    Two lanes exist: ``"chat"`` (interactive replies) and ``"bg"``
-    (background tasks such as worker skills typed in chat — ``/review``,
-    ``/rebase``, etc.).  Each lane allows one worker at a time, but the lanes run
-    concurrently, so a background task never blocks a chat reply and vice
-    versa.  The Telegram poll loop is never blocked by either.
+    The ``"chat"`` lane handles interactive replies, ``"bg"`` runs worker
+    skills typed in chat (for example ``/review``), and ``"maintenance"`` runs
+    internal housekeeping. Each lane allows one worker at a time, but the lanes
+    run concurrently, so internal work never blocks an interactive reply or the
+    Telegram poll loop.
 
     Captures the current reply context so that send_telegram() calls inside
     the worker thread reply to the correct message in groups.
@@ -790,16 +813,25 @@ def _build_bridge_memory_monitor():
 
 
 def _workers_idle() -> bool:
-    """True when no worker lane has a live thread.
+    """True when no *user-facing* worker lane has a live thread.
 
     Reuses the pre-existing module globals ``_worker_threads`` and
     ``_worker_lock`` — the same ones ``_run_in_worker`` uses for
     back-pressure. Introduces no new lock.
+
+    The maintenance lane is deliberately excluded. It carries internal,
+    idempotent, restart-safe housekeeping (the worktree sweep — a half-removed
+    worktree is pruned on the next pass), and unlike chat/bg it is not tied to a
+    human waiting on a reply. A wedged sweep — a git child stuck in
+    uninterruptible I/O outlives its Python-level timeout — would otherwise
+    disable the memory watchdog permanently and silently, trading a clean
+    re-exec for the OOM kill the watchdog exists to prevent.
     """
     with _worker_lock:
         return all(
             t is None or not t.is_alive()
-            for t in _worker_threads.values()
+            for lane, t in _worker_threads.items()
+            if lane != "maintenance"
         )
 
 
@@ -814,6 +846,111 @@ def _bridge_should_restart(monitor) -> bool:
     if not monitor.sample():
         return False
     return _workers_idle()
+
+
+# How often to sweep for leaked agent-created worktrees. Hourly: a stray worktree costs
+# disk, not correctness, and reap_foreign_worktrees() ignores anything touched in the last
+# two days anyway, so sweeping more often would find nothing new.
+WORKTREE_REAP_INTERVAL = 3600
+
+# Last time the "maintenance lane still busy" warning was emitted (throttle state).
+_worktree_reap_busy_logged_at = 0.0
+
+
+def _reap_worktrees() -> None:
+    """Reclaim leaked review worktrees across known projects off the poll loop.
+
+    Agents check revisions out ad hoc during PR review (`git worktree add /tmp/review-<sha>`)
+    and never remove them. On a large checkout each is hundreds of megabytes, so they fill
+    the disk; on 2026-07-30 this took the `koan` host's root filesystem to 100% and
+    crash-looped this service. reap_foreign_worktrees() only touches worktrees registered
+    outside the project, unlocked, untouched for days, and free of unpushed commits.
+
+    This runs detached on the maintenance lane, where nothing catches an escaping
+    exception: threading's excepthook would print to stderr and leave no koan log entry at
+    all, making a permanently broken sweep look exactly like an idle one. Hence the blanket
+    guard around the whole sweep rather than around its parts.
+    """
+    try:
+        _sweep_foreign_worktrees()
+    except Exception as e:
+        log("error", f"periodic worktree reap failed: {e}")
+
+
+def _sweep_foreign_worktrees() -> None:
+    """Sweep every known project for leaked foreign worktrees within one time budget."""
+    from app.project_explorer import get_projects
+    from app.worktree_manager import (
+        FOREIGN_WORKTREE_REAP_BUDGET_SECONDS,
+        reap_foreign_worktrees,
+    )
+
+    started = time.monotonic()
+    deadline = started + FOREIGN_WORKTREE_REAP_BUDGET_SECONDS
+    reaped_count = 0
+    log("health", f"Starting periodic foreign-worktree reap (budget {FOREIGN_WORKTREE_REAP_BUDGET_SECONDS:.0f}s)")
+    projects = sorted(get_projects())
+
+    # Rotate projects hourly so a large first project cannot starve the rest.
+    if projects:
+        rotation = int(time.time() // WORKTREE_REAP_INTERVAL) % len(projects)
+        projects = projects[rotation:] + projects[:rotation]
+
+    # Per-project isolation: one unreadable repo must not stop the others being swept.
+    for projects_checked, (_name, path) in enumerate(projects, start=1):
+        if time.monotonic() >= deadline:
+            log("health", f"Foreign-worktree reap budget reached after {projects_checked - 1} project(s)")
+            break
+        try:
+            reaped = reap_foreign_worktrees(
+                path,
+                deadline=deadline,
+                start_index=int(time.time() // WORKTREE_REAP_INTERVAL),
+            )
+        except Exception as e:
+            log("error", f"worktree reap failed for {path}: {e}")
+            continue
+        if reaped:
+            count = len(reaped)
+            reaped_count += count
+            log("health", f"Reclaimed {count} leaked worktree(s) in {path}")
+    elapsed = time.monotonic() - started
+    log("health", f"Finished periodic foreign-worktree reap: {reaped_count} reclaimed in {elapsed:.1f}s")
+
+
+def _maybe_reap_worktrees(last_reap: float, interval: int = WORKTREE_REAP_INTERVAL) -> float:
+    """Start a due worktree reap without blocking bridge message processing.
+
+    The full sweep runs on the single-flight maintenance lane. If a previous
+    sweep is still active, retain ``last_reap`` so the next poll starts one as
+    soon as the lane becomes available instead of delaying cleanup for an hour.
+
+    A wedged sweep thread (a Git call blocked past its timeout on an unresponsive
+    mount) would otherwise make this retry silently every poll forever, which looks
+    exactly like a healthy idle system. Once a whole extra interval has passed with
+    the lane still busy, say so — throttled to once per interval so a permanently
+    stuck lane does not flood the log every 3 s.
+    """
+    global _worktree_reap_busy_logged_at
+    if not interval:
+        return last_reap
+    now = time.time()
+    if (now - last_reap) < interval:
+        return last_reap
+    if _run_in_worker(_reap_worktrees, lane="maintenance"):
+        return now
+    if (
+        (now - last_reap) >= 2 * interval
+        and (now - _worktree_reap_busy_logged_at) >= interval
+    ):
+        _worktree_reap_busy_logged_at = now
+        log(
+            "error",
+            "Worktree reap has not started for "
+            f"{(now - last_reap) / 60:.0f} min: the maintenance lane is still busy "
+            "(previous sweep may be stuck)",
+        )
+    return last_reap
 
 
 def _maybe_periodic_compact(last_compact: float, interval: int) -> float:
@@ -937,7 +1074,7 @@ def _handle_reaction_update(update: dict):
 
 
 def handle_message(text: str):
-    text = text.strip()
+    text = normalize_bang_command(text.strip())
     if not text:
         return
 
@@ -1113,6 +1250,9 @@ def _bridge_loop():
     bridge_monitor = _build_bridge_memory_monitor()
     compact_interval = get_conversation_compact_interval()
     last_compact = startup_time
+    # Reap on the first cycle rather than after a full interval, so a restart triggered by
+    # a full disk reclaims space immediately instead of an hour later.
+    last_worktree_reap = 0.0
 
     # Purge stale heartbeat so health_check doesn't report STALE on restart
     heartbeat_file = KOAN_ROOT / HEARTBEAT_FILE
@@ -1304,6 +1444,9 @@ def _bridge_loop():
 
             # --- Periodic conversation-history compaction (#2354) ---
             last_compact = _maybe_periodic_compact(last_compact, compact_interval)
+
+            # --- Reclaim leaked agent-created review worktrees ---
+            last_worktree_reap = _maybe_reap_worktrees(last_worktree_reap)
 
             # --- Bridge memory watchdog (#2354) ---
             # Sample once per cycle; restart only when idle so an in-flight

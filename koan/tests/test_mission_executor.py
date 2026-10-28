@@ -65,10 +65,12 @@ class TestMaybeRetryMission:
         import app.run as _run
         _run._last_mission_timed_out = False
         _run._last_mission_aborted = False
+        _run._last_mission_memory_cap = ""
         _run._last_mission_stagnated.clear()
         yield
         _run._last_mission_timed_out = False
         _run._last_mission_aborted = False
+        _run._last_mission_memory_cap = ""
         _run._last_mission_stagnated.clear()
 
     def _call(self, **overrides):
@@ -109,6 +111,19 @@ class TestMaybeRetryMission:
         with patch("app.run.log"):
             exit_code, _, _ = self._call()
         assert exit_code == 1
+
+    def test_skips_on_memory_cap_hit(self):
+        """Re-running an oversubscribed build just repeats the meltdown."""
+        import app.run as _run
+        _run._last_mission_memory_cap = "exceeded memory cap (5.9G of 5.75G)"
+        try:
+            with patch("app.run.log"), \
+                 patch("app.run.run_claude_task") as retry:
+                exit_code, _, _ = self._call()
+        finally:
+            _run._last_mission_memory_cap = ""
+        assert exit_code == 1
+        retry.assert_not_called()
 
     def test_skips_non_retryable(self, tmp_path):
         from app.cli_errors import ErrorCategory
@@ -502,6 +517,43 @@ class TestHandleSkillDispatchMatched:
         assert any("exception" in str(c).lower() for c in mock_log.call_args_list)
 
 
+    @pytest.mark.parametrize("stdout, notified", [
+        # Old-style runner that already told the user it skipped: no loop message.
+        ("PR #1 is already merged — skipping squash.\n", False),
+        # A runner that handed its outcome over told no one yet: the loop sends it.
+        ("PR #1 is already merged — skipping squash.\nKOAN_OUTCOME_OK: 1\n"
+         "KOAN_OUTCOME_URL: https://x/pull/1\n", True),
+    ])
+    def test_skip_shortcut_respects_handed_over_outcome(self, tmp_path, stdout, notified):
+        skill_result = {"exit_code": 0, "stdout": stdout, "stderr": "",
+                        "quota_exhausted": False, "quota_info": None}
+        with contextlib.ExitStack() as stack:
+            for target, kw in [
+                ("app.skill_dispatch.dispatch_skill_mission", {"return_value": ["claude", "/review"]}),
+                ("app.skill_dispatch.cleanup_skill_temp_files", {}),
+                ("app.loop_manager.create_pending_file", {}),
+                ("app.core_files.snapshot_core_files", {"return_value": set()}),
+                ("app.core_files.check_core_files", {"return_value": []}),
+                ("app.run._run_skill_mission", {"return_value": skill_result}),
+                ("app.run._provider_identity", {"return_value": ("claude", "Claude")}),
+                ("app.run._classify_and_handle_cli_error", {"return_value": False}),
+                ("app.run._probe_exit0_quota", {"return_value": False}),
+                ("app.run._finalize_mission", {}),
+                ("app.run._commit_instance", {}),
+                ("app.run._sleep_between_runs", {}),
+                ("app.run.set_status", {}),
+                ("app.run._notify", {}),
+                ("app.run.log", {}),
+                ("app.mission_executor._maybe_escalate_to_debug", {}),
+            ]:
+                stack.enter_context(patch(target, **kw))
+            notify_end = stack.enter_context(patch("app.run._notify_mission_end"))
+            self._call(str(tmp_path))
+        assert notify_end.called is notified
+        if notified:
+            assert notify_end.call_args.kwargs["pr_url"] == "https://x/pull/1"
+
+
 # ---------------------------------------------------------------------------
 # _maybe_escalate_to_debug — duplicate-insert path
 # ---------------------------------------------------------------------------
@@ -522,3 +574,169 @@ class TestEscalateDuplicate:
             )
         assert result is False
         assert any("duplicate" in str(c).lower() for c in mock_log.call_args_list)
+
+
+# ---------------------------------------------------------------------------
+# _handle_skill_dispatch — repo-config mission hooks wiring (011, US1)
+# ---------------------------------------------------------------------------
+
+class TestSkillDispatchMissionHooks:
+
+    def _call(self, instance):
+        from app.mission_executor import _handle_skill_dispatch
+        return _handle_skill_dispatch(
+            mission_title="/review https://x/pull/1",
+            project_name="koan",
+            project_path="/tmp/proj",
+            koan_root="/tmp/koan",
+            instance=instance,
+            run_num=1,
+            max_runs=10,
+            autonomous_mode="implement",
+            interval=60,
+        )
+
+    def _common_patches(self, stack, skill_result):
+        stack.enter_context(patch(
+            "app.skill_dispatch.dispatch_skill_mission",
+            return_value=["claude", "/review"]))
+        stack.enter_context(patch("app.skill_dispatch.cleanup_skill_temp_files"))
+        stack.enter_context(patch("app.loop_manager.create_pending_file"))
+        stack.enter_context(patch("app.core_files.snapshot_core_files", return_value=set()))
+        stack.enter_context(patch("app.core_files.check_core_files", return_value=[]))
+        stack.enter_context(patch("app.run._provider_identity", return_value=("claude", "Claude")))
+        stack.enter_context(patch("app.run._classify_and_handle_cli_error", return_value=False))
+        stack.enter_context(patch("app.run._probe_exit0_quota", return_value=False))
+        stack.enter_context(patch("app.run._notify_mission_end"))
+        stack.enter_context(patch("app.run._finalize_mission"))
+        stack.enter_context(patch("app.run._commit_instance"))
+        stack.enter_context(patch("app.run._sleep_between_runs"))
+        stack.enter_context(patch("app.run.set_status"))
+        stack.enter_context(patch("app.run._notify"))
+        stack.enter_context(patch("app.run.log"))
+        stack.enter_context(patch("app.mission_executor._maybe_escalate_to_debug"))
+
+    def test_pre_and_post_hooks_fire_on_success(self, tmp_path):
+        skill_result = {"exit_code": 0, "stdout": "done", "stderr": "",
+                        "quota_exhausted": False, "quota_info": None}
+        with contextlib.ExitStack() as stack:
+            self._common_patches(stack, skill_result)
+            stack.enter_context(patch("app.run._run_skill_mission", return_value=skill_result))
+            pre = stack.enter_context(patch("app.mission_hooks.run_pre_hooks"))
+            post = stack.enter_context(patch("app.mission_hooks.run_post_hooks"))
+            handled, _ = self._call(str(tmp_path))
+
+        assert handled is True
+        pre.assert_called_once_with("/tmp/proj", "koan", "review")
+        post.assert_called_once_with("/tmp/proj", "koan", "review", True)
+
+    def test_post_hook_fires_failure_when_runner_raises(self, tmp_path):
+        with contextlib.ExitStack() as stack:
+            self._common_patches(stack, None)
+            stack.enter_context(patch(
+                "app.run._run_skill_mission", side_effect=RuntimeError("kaboom")))
+            pre = stack.enter_context(patch("app.mission_hooks.run_pre_hooks"))
+            post = stack.enter_context(patch("app.mission_hooks.run_post_hooks"))
+            handled, _ = self._call(str(tmp_path))
+
+        assert handled is True
+        pre.assert_called_once_with("/tmp/proj", "koan", "review")
+        # Runner blew up → exit_code stays 1 → success=False, but post still fires.
+        post.assert_called_once_with("/tmp/proj", "koan", "review", False)
+
+    def test_hook_subsystem_error_does_not_break_dispatch(self, tmp_path):
+        skill_result = {"exit_code": 0, "stdout": "done", "stderr": "",
+                        "quota_exhausted": False, "quota_info": None}
+        with contextlib.ExitStack() as stack:
+            self._common_patches(stack, skill_result)
+            stack.enter_context(patch("app.run._run_skill_mission", return_value=skill_result))
+            stack.enter_context(patch(
+                "app.mission_hooks.run_pre_hooks", side_effect=RuntimeError("hook boom")))
+            stack.enter_context(patch(
+                "app.mission_hooks.run_post_hooks", side_effect=RuntimeError("hook boom")))
+            handled, _ = self._call(str(tmp_path))
+
+        assert handled is True  # dispatch survives a hook-subsystem failure
+
+
+# ---------------------------------------------------------------------------
+# Exit-0 JSON failure gate (wiring, not the helper)
+# ---------------------------------------------------------------------------
+
+class TestExitZeroJsonFailureGate:
+    """The gate flips claude_exit for a json envelope reporting an error.
+
+    The helper itself is unit-tested in test_gemini_provider.py; this covers
+    the _run_iteration wiring, which fires for EVERY provider — so the
+    negative case (a non-Gemini success envelope) matters as much as the
+    positive one.
+    """
+
+    def _post_call(self, tmp_path, stdout_payload, provider="claude"):
+        from unittest.mock import MagicMock
+
+        from app.git_prep import PrepResult
+        from app.run import _run_iteration
+
+        from tests.conftest import patched_run_iteration
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance, exist_ok=True)
+
+        def _fake_cli(cmd, stdout_file, stderr_file, **kwargs):
+            with open(stdout_file, "w") as fh:
+                fh.write(stdout_payload)
+            return 0
+
+        post = MagicMock(return_value={})
+        with patched_run_iteration(
+            PrepResult(success=True),
+            extra_patches={
+                "app.run.run_claude_task": MagicMock(side_effect=_fake_cli),
+                "app.mission_runner.run_post_mission": post,
+                "app.provider.get_provider_name": MagicMock(return_value=provider),
+            },
+        ):
+            _run_iteration(
+                koan_root=str(tmp_path), instance=instance,
+                projects=[("testproj", str(tmp_path))],
+                count=0, max_runs=10, interval=30, git_sync_interval=5,
+            )
+        assert post.called, "post-mission pipeline never ran"
+        return post.call_args.kwargs
+
+    def _run(self, tmp_path, stdout_payload):
+        return self._post_call(tmp_path, stdout_payload)["exit_code"]
+
+    def test_error_envelope_flips_exit_to_failure(self, tmp_path):
+        from tests import gemini_samples
+
+        assert self._run(tmp_path, gemini_samples.JSON_OBJECT_ERROR) == 1
+
+    def test_other_provider_success_envelope_stays_zero(self, tmp_path):
+        from tests import haze_samples
+
+        assert self._run(tmp_path, haze_samples.JSON_ENVELOPE_SUCCESS) == 0
+
+    def test_flip_does_not_promote_benign_prose_to_a_quota_pause(self, tmp_path):
+        """The synthetic failure must not re-open stdout quota classification.
+
+        Assistant prose about API rate limiting is not a quota signal: the CLI
+        process exited 0. If the flip were read as "the process failed", the
+        Gemini stdout scan would match and pause the whole daemon.
+        """
+        from tests import gemini_samples
+
+        kwargs = self._post_call(
+            tmp_path,
+            gemini_samples.JSON_OBJECT_ERROR_BENIGN_QUOTA_PROSE,
+            provider="gemini",
+        )
+
+        # Mission still fails (the envelope reported an error) ...
+        assert kwargs["exit_code"] == 1
+        # ... but the real CLI exit is carried through, so the post-mission
+        # quota check keeps stdout untrusted too.
+        assert kwargs["cli_exit_code"] == 0
+        # No quota pause was created for prose that merely mentions 429s.
+        assert not (tmp_path / ".koan-pause").exists()

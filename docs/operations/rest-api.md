@@ -1,10 +1,10 @@
 ---
 type: doc
 title: "REST API"
-description: "Documents Kōan's optional, token-authenticated HTTP control layer (missions, projects, pause/resume, config, admin, usage/metrics/logs endpoints), its generated OpenAPI spec + drift guard, and its security model."
+description: "Documents Kōan's optional, token-authenticated HTTP control layer, including skill discovery, validated mission commands, generated OpenAPI, and its security model."
 tags: [operations]
 created: 2026-05-31
-updated: 2026-07-10
+updated: 2026-09-15
 ---
 
 # REST API
@@ -50,8 +50,39 @@ Alternatively set `api.token` in `config.yaml`, but environment variable takes p
 make api          # standalone foreground server
 make start        # includes API when api.enabled: true
 make stop         # stops all managed processes including API
-make status       # shows API PID when running
+make status       # process status — no API line, see below
 ```
+
+`make start` exits non-zero when the API fails to start, the same as for the
+other managed processes. Before the MCP server landed it only reported the
+failure and still exited 0, so a supervisor or CI script that treats a non-zero
+exit as a failed boot now sees API startup problems it used to ignore.
+
+Under `pid_manager`, `make start`, `make stop` and `make restart` all report an
+`api:` line. `make status` does not — `format_status_all()` has no API branch,
+so the API is the one managed process it never lists. It is started and managed
+all the same; confirm it with `ss -tlnp | grep 8420` or `tail -3 logs/api.log`.
+
+### systemd hosts need a third unit
+
+`api.enabled: true` tells **Kōan's own process manager** (`pid_manager`, the
+default) to include the API among the processes it starts. A host running under
+`KOAN_SERVICE_MANAGER=systemd` or `systemd-user` does not use that manager — its
+units invoke entrypoints directly — and `koan/systemd/install-service.sh`
+installs only `koan.service` and `koan-awake.service`. **There, the config flag
+alone does nothing**: no listener appears and nothing warns you.
+
+Write a third unit with `ExecStart=<venv>/bin/python app/api/server.py`, copying
+`koan.service`'s `User=`/`Group=`/`Environment=`/`EnvironmentFile=` lines, and
+add `Wants=koan-api.service` to `koan.service`'s `[Unit]` so a restart of the
+parent brings it back — `PartOf=` propagates stop and restart, never start.
+
+Carry `User=` and `Group=` over on a **system-scope** unit: without them systemd
+runs the API as root while the agent loop runs as the installer's unprivileged
+user. Omit both in a `systemd --user` unit: the only value systemd accepts there
+is the account the user manager already runs as. The MCP page walks through
+every step, and its fourth unit is the same shape:
+[systemd hosts need their own unit](mcp-server.md#systemd-hosts-need-their-own-unit).
 
 ---
 
@@ -69,6 +100,21 @@ Authorization: Bearer <your-token>
 | `403` | Token present but incorrect |
 
 Token comparison uses `hmac.compare_digest` to prevent timing attacks. If no token is configured, **all authenticated requests return 403** — the server never accepts unauthenticated control requests.
+
+---
+
+## Command-line client
+
+[`bin/koan-cli`](../../bin/koan-cli) is the checkout-local REST client. It
+reads this repository's committed OpenAPI document at runtime, supports all
+documented operations, and retains generic JSON/query flags while body and
+query schemas are being enriched. See the
+[Kōan REST CLI](../users/koan-cli.md) guide for secure profiles, examples,
+output guarantees, and exit codes.
+
+Kōan also provides an opt-in [stdio MCP server](mcp-server.md) over this same
+OpenAPI-driven HTTP client. MCP requires this REST API to remain enabled and
+running; it shares the bearer token and audit trail.
 
 ---
 
@@ -125,10 +171,19 @@ but **only when an API-defining file changes** (`koan/app/api/**`, `koan/openapi
 CI time on it. If the check
 fails, the log tells you to run `make openapi` and commit the result.
 
-> **Scope (iteration 1):** the document precisely covers **paths, methods, path parameters,
-> and bearer-auth security** for every route. Per-operation request/response **body** schemas
-> are a planned enrichment and are not yet included. Two known non-`200` successes are
-> reflected: `POST /v1/missions` → `202`, `POST /v1/projects` → `201`.
+> **Request coverage:** the generated document covers paths, methods, path
+> parameters, bearer-auth security, JSON request bodies, and query parameters
+> for every current route. Body schemas and query declarations live beside
+> their Flask views through `openapi_operation()`, while
+> `app.api.openapi_gen` reads those declarations from the registered route.
+> Response body schemas remain a planned enrichment and are not included in
+> this iteration. Two known non-`200` successes remain explicit:
+> `POST /v1/missions` → `202` and `POST /v1/projects` → `201`.
+>
+> **Destructive operations** declare themselves the same way: a view marked
+> `openapi_operation(destructive=True)` emits `x-koan-destructive: true`, which
+> clients (the CLI) use to decide what needs confirmation. Like the auth marker,
+> it lives beside the route and never in a client-side path list.
 
 ---
 
@@ -213,16 +268,83 @@ case — a recorded-but-dead PID is always flagged immediately. Live parallel
 sessions also suppress the flag. The same cross-check backs the `make status`
 `execution:` line.
 
+### Skills
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/v1/skills` | yes | List core skills explicitly exposed for REST/MCP use, including command usage, aliases, and flags |
+
+Response:
+
+```json
+[
+  {
+    "name": "review",
+    "description": "Queue a code review mission (ex: /review https://github.com/owner/repo/pull/42)",
+    "group": "code",
+    "emoji": "🔍",
+    "commands": [
+      {
+        "name": "/review",
+        "description": "Queue a code review for one or more PRs/issues. Flags include --architecture and --force.",
+        "usage": "/review [--now] <github-pr-or-issue-url> [context] [--force]",
+        "aliases": ["/rv", "/rereview", "/re_review"]
+      }
+    ]
+  }
+]
+```
+
+Only core skills carrying `api_exposed: true` appear. Private instance skills
+remain absent even if they declare that flag. Restart the API and MCP processes
+after changing exposure metadata.
+
 ### Missions
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/v1/missions` | yes | List API-queued missions. Query params: `?status=pending\|in_progress\|done\|failed\|removed`, `?project=name` |
+| `GET` | `/v1/missions` | yes | List missions from the mission store (all queue sources: Slack/GitHub/API/dashboard). Query params: `?status=pending\|in_progress\|done\|failed`, `?project=name`, `?limit=N` |
 | `POST` | `/v1/missions` | yes | Queue a new mission |
 | `GET` | `/v1/missions/{id}` | yes | Get mission by id (reconciles vs missions.md) |
 | `PATCH` | `/v1/missions/{id}` | yes | Edit a pending mission's text (409 if not pending) |
 | `DELETE` | `/v1/missions/{id}` | yes | Cancel a pending mission (409 if already started) |
 | `POST` | `/v1/missions/reorder` | yes | Reorder a pending mission in the queue |
+
+The list endpoint reads the authoritative mission store — the same source as
+`GET /v1/status`'s counts — so every queued mission is visible regardless of
+how it was created. `?status` filters to a store state (`pending`,
+`in_progress`, `done`, `failed`); unknown values return `422`. `?limit=N`
+caps the rows returned **per state** (terminal states can be large), so a
+`?limit` with no `?status` can return up to four times that many rows; a
+non-integer or `< 1` value returns `422` rather than silently meaning
+"unlimited". The single-mission detail and result endpoints
+(`GET /v1/missions/{id}`, `/result`) still operate on API-queued records
+only.
+
+Rows are grouped by state in `pending`, `in_progress`, `done`, `failed`
+order — queue order (oldest first) within the live states, most-recent-first
+within the terminal ones. The list is **not** globally newest-first.
+
+Each row carries two identities:
+
+- `id` — the API sidecar id, the handle the single-mission routes accept. It
+  is `null` for a mission queued outside the API (Telegram, Slack, GitHub,
+  the dashboard), which has no sidecar record and is therefore not
+  addressable via `GET`/`PATCH`/`DELETE /v1/missions/{id}`, `/result`, or
+  `/v1/missions/reorder`.
+- `store_id` — the mission store's own identifier. It is stable and useful
+  for correlation, but the single-mission routes do **not** accept it.
+
+> **Backward-compatibility note.** The list previously returned sidecar
+> records carrying `result`/`result_ref`/`usage`/`created` and a `removed`
+> status for API-queued missions. Now that the list is store-backed, those
+> fields are no longer present and `removed` is not a valid `?status`
+> filter. Consumers that need result or cancellation state should use
+> `GET /v1/missions/{id}` and `GET /v1/missions/{id}/result`. Two further
+> changes: `id` is now `null` for missions that were not queued through the
+> API (it was previously always a sidecar id, because only API-queued
+> missions were listed at all), and `project` reports the store's `default`
+> for an untagged mission where the sidecar reported `null`.
 
 **POST /v1/missions** body:
 ```json
@@ -232,7 +354,26 @@ sessions also suppress the flag. The same cross-check backs the `make status`
   "urgent": false
 }
 ```
-Use `command` for slash commands or `text` for free-form missions. `project` adds a `[project:name]` tag. `urgent` inserts at the top of the queue.
+Prefer `command` when an exposed skill covers the work. An advertised alias
+resolves to its canonical verb (`/rv` → `/review`). The `/v1/skills` catalogue
+is the *advertised* surface, not an accept-list: any slash command the agent
+understands is still accepted — including dotted (`/claude.md`, `/core.plan`)
+and non-ASCII (`/français`) verbs — so existing callers keep working. Full
+command strings can include arguments.
+
+One thing about `command` changed when validation was added, and it is a
+narrowing a pre-existing caller can notice: a value that is not shaped like a
+slash command — no leading `/`, empty after the verb, or a verb containing
+whitespace or `/` — now returns `422` instead of being queued verbatim. The
+leading slash is the only signal separating "dispatch this skill" from
+free-form work, so `{"command": "fix the login bug"}` is rejected rather than
+silently routed to the `fix` skill runner. Put free-form work in `text`, which
+stays unrestricted.
+
+`project` adds a `[project:name]` tag. `urgent` inserts at the top of the queue
+and must be a real boolean — `"false"` and `0` return `422` rather than being
+coerced, because `bool("false")` is `true` and would jump the queue the caller
+asked not to jump.
 
 Response (202):
 ```json
@@ -530,6 +671,7 @@ Tokens are never written to the log.
 
 ## See also
 
+- [`docs/operations/mcp-server.md`](mcp-server.md) — curated stdio MCP front-end
 - [`docs/operations/dashboard.md`](dashboard.md) — web dashboard (separate process, same config pattern)
 - [`instance.example/config.yaml`](../../instance.example/config.yaml) — documented `api:` section
 - [`koan/openapi.yaml`](../../koan/openapi.yaml) — generated OpenAPI 3.1 document (`make openapi`) · [render in Swagger Editor](https://editor.swagger.io/?url=https://raw.githubusercontent.com/Anantys-oss/koan/main/koan/openapi.yaml)

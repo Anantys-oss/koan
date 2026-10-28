@@ -30,6 +30,7 @@ openapi: 3.1.0
 paths:
   /v1/config:
     get:
+      description: The response also includes the configured project names and local paths.
       operationId: admin_get_config_get
       responses:
         '200':
@@ -52,11 +53,16 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Get config
+      summary: Get the effective configuration with secrets masked.
       tags:
       - admin
+      x-koan-mcp: true
+      x-koan-mcp-description: Use to inspect effective settings and known projects. Secret-looking values are masked and cannot be recovered through this tool.
   /v1/health:
     get:
+      description: 'This public endpoint returns the service name and version without
+
+        checking authentication or agent execution state.'
       operationId: health_get
       responses:
         '200':
@@ -68,12 +74,44 @@ paths:
                 $ref: '#/components/schemas/Error'
           description: Error response
       security: []
-      summary: Health
+      summary: Check whether the REST API is alive.
       tags:
       - health
+      x-koan-mcp: true
+      x-koan-mcp-description: Use this only to check REST API reachability. Use `koan_status` for normal orientation and agent readiness.
   /v1/logs:
     get:
+      description: 'Returns bounded run, bridge, or combined log lines without following the
+
+        files continuously.'
       operationId: observability_logs_get
+      parameters:
+      - description: Log source to read.
+        in: query
+        name: source
+        required: false
+        schema:
+          default: all
+          enum:
+          - run
+          - awake
+          - all
+          type: string
+      - description: Maximum lines returned per source.
+        in: query
+        name: limit
+        required: false
+        schema:
+          default: 200
+          maximum: 2000
+          minimum: 1
+          type: integer
+      - description: Case-insensitive substring filter.
+        in: query
+        name: q
+        required: false
+        schema:
+          type: string
       responses:
         '200':
           description: Successful response
@@ -95,12 +133,31 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Logs
+      summary: Tail recent agent logs, optionally filtered by source.
       tags:
       - observability
+      x-koan-mcp: true
+      x-koan-mcp-description: Use for recent diagnostic context. Keep `limit` small first, then narrow with `source` or the case-insensitive `q` filter.
   /v1/metrics:
     get:
+      description: An optional project filter returns project-specific metrics and trend.
       operationId: observability_metrics_get
+      parameters:
+      - description: Lookback window; values are clamped to the documented range.
+        in: query
+        name: days
+        required: false
+        schema:
+          default: 30
+          maximum: 365
+          minimum: 0
+          type: integer
+      - description: Return metrics and trend for one project.
+        in: query
+        name: project
+        required: false
+        schema:
+          type: string
       responses:
         '200':
           description: Successful response
@@ -122,12 +179,54 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Metrics
+      summary: Report mission throughput and success metrics over a window.
       tags:
       - observability
+      x-koan-mcp: true
+      x-koan-mcp-description: Use for throughput, success-rate, trend, and security-block measurements rather than raw token consumption.
   /v1/missions:
     get:
+      description: 'The store is the same source ``GET /v1/status`` counts, so a mission
+
+        queued from Slack/GitHub/dashboard is visible here even when it was never
+
+        recorded in the API sidecar. Rows are grouped by state in
+
+        ``pending``/``in_progress``/``done``/``failed`` order — queue order within
+
+        the live states, most-recent-first within the terminal ones. ``?status``
+
+        filters to one state, ``?project`` to one project, and ``?limit`` caps the
+
+        rows returned *per state* (so a limit with no ``?status`` can return up to
+
+        four times that many rows).'
       operationId: missions_list_missions_route_get
+      parameters:
+      - description: Restrict results to one mission-store state.
+        in: query
+        name: status
+        required: false
+        schema:
+          enum:
+          - pending
+          - in_progress
+          - done
+          - failed
+          type: string
+      - description: Restrict results to one project.
+        in: query
+        name: project
+        required: false
+        schema:
+          type: string
+      - description: Cap the rows returned per state. Omit for unlimited; a non-integer or < 1 value is rejected with 422.
+        in: query
+        name: limit
+        required: false
+        schema:
+          minimum: 1
+          type: integer
       responses:
         '200':
           description: Successful response
@@ -149,11 +248,70 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: List missions route
+      summary: List missions from the authoritative mission store.
       tags:
       - missions
+      x-koan-mcp: true
+      x-koan-mcp-description: Use this to browse or filter queues. Do not poll it for one mission's completion; use `koan_missions_get` with that mission id.
     post:
+      description: 'The mission is appended to the pending queue for a later agent cycle.
+
+        Setting `urgent` inserts it at the front instead.'
       operationId: missions_create_mission_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - properties:
+                  command:
+                    pattern: \S
+                required:
+                - command
+              - properties:
+                  text:
+                    pattern: \S
+                required:
+                - text
+              properties:
+                command:
+                  anyOf:
+                  - enum:
+                    - /audit
+                    - /brief
+                    - /ci_check
+                    - /digest
+                    - /doc
+                    - /docs
+                    - /explain
+                    - /fix
+                    - /gh_request
+                    - /impl
+                    - /implement
+                    - /plan
+                    - /rb
+                    - /re_review
+                    - /rebase
+                    - /rereview
+                    - /review
+                    - /rv
+                    - /xp
+                    type: string
+                  - pattern: ^/(?:audit|brief|ci_check|digest|doc|docs|explain|fix|gh_request|impl|implement|plan|rb|re_review|rebase|rereview|review|rv|xp)(?:\s+[\s\S]+)?$
+                    type: string
+                  description: Slash-command mission; prefer this for work covered by an existing Kōan skill. Append arguments to the selected verb, for example "/review https://github.com/owner/repo/pull/42". Use text only when no exposed skill covers the work.
+                project:
+                  description: Optional project name added as a project tag.
+                  type: string
+                text:
+                  description: Free-form mission text for work no exposed skill covers.
+                  type: string
+                urgent:
+                  default: false
+                  description: Insert the mission at the front of the pending queue.
+                  type: boolean
+              type: object
+        required: true
       responses:
         '202':
           description: Successful response
@@ -175,12 +333,33 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Create mission
+      summary: Queue a new mission.
       tags:
       - missions
+      x-koan-mcp: true
+      x-koan-mcp-description: Prefer `command` for anything an existing Kōan skill does. Pass the slash command with its arguments, for example "/review https://github.com/owner/repo/pull/42". Call `koan_skills_list` for the full catalogue, usage, aliases, and per-command flags. Use `text` only for work no exposed skill covers. The returned id identifies queued work, not a completed result. Poll `koan_missions_get`, then call `koan_missions_result` after status becomes `done`.
   /v1/missions/reorder:
     post:
+      description: Reordering changes queue priority without editing the mission text.
       operationId: missions_reorder_mission_route_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                mission_id:
+                  description: Identifier of the pending mission to move.
+                  pattern: \S
+                  type: string
+                target_position:
+                  description: One-indexed position in the pending queue.
+                  minimum: 1
+                  type: integer
+              required:
+              - mission_id
+              - target_position
+              type: object
+        required: true
       responses:
         '200':
           description: Successful response
@@ -202,14 +381,18 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Reorder mission route
+      summary: Move a pending mission to a new position.
       tags:
       - missions
+      x-koan-mcp: true
+      x-koan-mcp-description: Only pending missions can be reordered. Obtain the mission id from `koan_missions_list` and use a one-indexed target position.
   /v1/missions/{mission_id}:
     delete:
+      description: The mission is removed from the queue and its API record is cancelled.
       operationId: missions_delete_mission_delete
       parameters:
-      - in: path
+      - description: Mission identifier returned when the mission was queued.
+        in: path
         name: mission_id
         required: true
         schema:
@@ -235,13 +418,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Delete mission
+      summary: Remove a pending mission.
       tags:
       - missions
+      x-koan-mcp: true
+      x-koan-mcp-description: This destructive tool is available only when `mcp.tools_allow_destructive` is enabled, and it accepts pending missions only.
     get:
+      description: 'Returns lifecycle state, outcome metadata, result references, and
+
+        aggregated usage for the selected mission.'
       operationId: missions_get_mission_route_get
       parameters:
-      - in: path
+      - description: Mission identifier returned when the mission was queued.
+        in: path
         name: mission_id
         required: true
         schema:
@@ -267,9 +456,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Get mission route
+      summary: Fetch one mission by id.
       tags:
       - missions
+      x-koan-mcp: true
+      x-koan-mcp-description: Use this to poll one queued mission. When its status is `done`, fetch the complete structured result with `koan_missions_result`.
     patch:
       operationId: missions_edit_mission_patch
       parameters:
@@ -278,6 +469,18 @@ paths:
         required: true
         schema:
           type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                text:
+                  pattern: \S
+                  type: string
+              required:
+              - text
+              type: object
+        required: true
       responses:
         '200':
           description: Successful response
@@ -299,14 +502,18 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Edit mission
+      summary: Change a pending mission.
       tags:
       - missions
   /v1/missions/{mission_id}/result:
     get:
+      description: 'Inline and spilled results use the same HTTP response, so clients never
+
+        need filesystem access.'
       operationId: missions_get_mission_result_route_get
       parameters:
-      - in: path
+      - description: Mission identifier returned when the mission was queued.
+        in: path
         name: mission_id
         required: true
         schema:
@@ -332,12 +539,27 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Get mission result route
+      summary: Fetch a finished mission's result.
       tags:
       - missions
+      x-koan-mcp: true
+      x-koan-mcp-description: Call this after `koan_missions_get` reports `done`. It returns the complete structured result and reports not found when no structured result is available.
   /v1/pause:
     post:
+      description: 'Supported durations include `2h`, `30m`, and combined forms such as
+
+        `1h30m`.'
       operationId: admin_pause_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                duration:
+                  description: Duration such as 2h, 30m, or 1h30m; omit for indefinite.
+                  type: string
+              type: object
+        required: false
       responses:
         '200':
           description: Successful response
@@ -359,11 +581,16 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Pause
+      summary: Pause the agent indefinitely or for a relative duration.
       tags:
       - admin
+      x-koan-mcp: true
+      x-koan-mcp-description: Omit `duration` for an indefinite pause. A timed retry computes a fresh deadline and can extend the pause, so do not retry it automatically after an ambiguous timeout.
   /v1/projects:
     get:
+      description: 'Returns each configured project name, local path, and GitHub URL when one
+
+        is available.'
       operationId: projects_list_projects_get
       responses:
         '200':
@@ -386,11 +613,27 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: List projects
+      summary: List watched projects.
       tags:
       - projects
+      x-koan-mcp: true
+      x-koan-mcp-description: Use the returned project names as `project` values when creating or filtering missions.
     post:
       operationId: projects_add_project_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                github_url:
+                  pattern: \S
+                  type: string
+                name:
+                  type: string
+              required:
+              - github_url
+              type: object
+        required: true
       responses:
         '201':
           description: Successful response
@@ -412,7 +655,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Add project
+      summary: Add a project to watch.
       tags:
       - projects
   /v1/projects/{name}:
@@ -445,7 +688,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Delete project
+      summary: Remove a watched project.
       tags:
       - projects
     patch:
@@ -456,6 +699,47 @@ paths:
         required: true
         schema:
           type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                patch:
+                  additionalProperties: false
+                  properties:
+                    autoreview:
+                      type: boolean
+                    cli_provider:
+                      type: string
+                    devcontainer:
+                      type: boolean
+                    exploration:
+                      type: boolean
+                    focus:
+                      type: boolean
+                    git_auto_merge.base_branch:
+                      type: string
+                    git_auto_merge.enabled:
+                      type: boolean
+                    git_auto_merge.strategy:
+                      enum:
+                      - squash
+                      - merge
+                      - rebase
+                      type: string
+                    github_url:
+                      type: string
+                    max_open_prs:
+                      type: integer
+                    max_pending_branches:
+                      type: integer
+                    rtk:
+                      type: boolean
+                  type: object
+              required:
+              - patch
+              type: object
+        required: true
       responses:
         '200':
           description: Successful response
@@ -477,7 +761,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Patch project
+      summary: Update a watched project's configuration.
       tags:
       - projects
   /v1/restart:
@@ -504,11 +788,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Restart
+      summary: Request a full agent restart.
       tags:
       - admin
+      x-koan-destructive: true
   /v1/resume:
     post:
+      description: Removes the active pause marker and leaves queued missions unchanged.
       operationId: admin_resume_post
       responses:
         '200':
@@ -531,9 +817,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Resume
+      summary: Resume the agent after a pause.
       tags:
       - admin
+      x-koan-mcp: true
+      x-koan-mcp-description: Use after a manual or timed pause when work should resume. Repeating this call has no additional effect.
   /v1/shutdown:
     post:
       operationId: admin_shutdown_post
@@ -558,11 +846,45 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Shutdown
+      summary: Gracefully stop the agent.
       tags:
       - admin
+      x-koan-destructive: true
+  /v1/skills:
+    get:
+      description: Returns only skills that explicitly opt into remote discovery.
+      operationId: skills_list_skills_route_get
+      responses:
+        '200':
+          description: Successful response
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Missing or malformed bearer token
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Invalid bearer token
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Error response
+      summary: List API-exposed core skills.
+      tags:
+      - skills
+      x-koan-mcp: true
+      x-koan-mcp-description: Use this to discover API-exposed slash commands, their usage, aliases, and flags before queueing a skill-backed mission.
   /v1/status:
     get:
+      description: 'Combines execution state, queue counts, signal flags, pause details, and
+
+        attention count in one response.'
       operationId: status_status_get
       responses:
         '200':
@@ -585,9 +907,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Status
+      summary: Get current agent state, execution and mission counters.
       tags:
       - status
+      x-koan-mcp: true
+      x-koan-mcp-description: Use this inexpensive call first to orient yourself before choosing a mission, observability, or control tool.
   /v1/update:
     post:
       operationId: admin_update_post
@@ -612,9 +936,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Update
+      summary: Pull upstream changes and restart.
       tags:
       - admin
+      x-koan-destructive: true
   /v1/update_release:
     post:
       operationId: admin_update_release_post
@@ -639,12 +964,58 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Update release
+      summary: Check out the latest tagged release and restart.
       tags:
       - admin
+      x-koan-destructive: true
   /v1/usage:
     get:
+      description: 'Results can be bucketed by day, week, or month and optionally split or
+
+        filtered by project.'
       operationId: observability_usage_get
+      parameters:
+      - description: Window length; values are clamped to the documented range.
+        in: query
+        name: days
+        required: false
+        schema:
+          default: 7
+          maximum: 100
+          minimum: 1
+          type: integer
+      - description: Shift the window back by this many granularity units.
+        in: query
+        name: offset
+        required: false
+        schema:
+          default: 0
+          minimum: 0
+          type: integer
+      - description: Series bucketing granularity.
+        in: query
+        name: granularity
+        required: false
+        schema:
+          default: day
+          enum:
+          - day
+          - week
+          - month
+          type: string
+      - description: Include a per-project series breakdown.
+        in: query
+        name: stacked
+        required: false
+        schema:
+          default: false
+          type: boolean
+      - description: Restrict totals and series to one project.
+        in: query
+        name: project
+        required: false
+        schema:
+          type: string
       responses:
         '200':
           description: Successful response
@@ -666,18 +1037,27 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: Usage
+      summary: Report agent usage totals over a configurable window.
       tags:
       - observability
+      x-koan-mcp: true
+      x-koan-mcp-description: Use for token and cost accounting. Choose a bounded window and add `project` only when a per-project breakdown is needed.
 security:
 - bearerAuth: []
 servers:
 - description: Default loopback bind
   url: http://127.0.0.1:8420
 tags:
-- name: admin
-- name: health
-- name: missions
-- name: observability
-- name: projects
-- name: status
+- description: Config, pause/resume, restart, update and shutdown
+  name: admin
+- description: Liveness probe (no token required)
+  name: health
+- description: Queue, inspect, reorder and delete missions
+  name: missions
+- description: Logs, metrics and usage
+  name: observability
+- description: List, add, update and remove watched projects
+  name: projects
+- name: skills
+- description: Current agent state, execution and mission counters
+  name: status

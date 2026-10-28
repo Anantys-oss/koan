@@ -1,0 +1,20 @@
+{
+  "id": "structural_growth",
+  "name": "Feature-specific branch bolted into a shared helper — must name the structural remedy, still LGTM",
+  "skill": "review",
+  "description": "Structural-quality lens guard: a correct change that adds a feature-specific special case (and a one-off boolean flag) to a general-purpose formatting helper every caller shares. The structural-quality partial should surface this as a 'suggestion' naming the restructuring (move the invoice-specific rendering out of the shared helper / dispatch on type), while the verdict stays lgtm: true because nothing here risks concrete harm.",
+  "diff": "--- a/formatting.py\n+++ b/formatting.py\n@@ -1,6 +1,12 @@\n-def render_row(record):\n+def render_row(record, invoice_mode=False):\n     \"\"\"Render one record as a display row.\"\"\"\n+    if invoice_mode:\n+        if record.kind == \"invoice\":\n+            return f\"INV-{record.id} | {record.total:.2f} | {record.due_date}\"\n+        if record.kind == \"credit_note\":\n+            return f\"CRN-{record.id} | -{record.total:.2f} | {record.due_date}\"\n     return f\"{record.id} | {record.label}\"\n",
+  "expect": {
+    "expect_lgtm": true,
+    "min_findings": 1,
+    "require_valid_json": true,
+    "expect_findings": [
+      {
+        "file": "formatting.py",
+        "keywords": ["structur", "shared", "helper", "invoice_mode", "flag", "dispatch"],
+        "severity_in": ["suggestion"]
+      }
+    ],
+    "forbidden_files": []
+  }
+}

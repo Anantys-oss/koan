@@ -177,12 +177,21 @@ def format_message(raw_content: str, soul: str, prefs: str,
     try:
         from app.cli_exec import run_cli
 
-        models = get_model_config()
+        # Take the `lightweight` CLI so a `cli:` binary override is honored, and
+        # resolve the model against THAT provider's section so a cross-flavor
+        # role override (e.g. lightweight→codex) gets codex's model, not the
+        # global provider's — spawning a provider with a foreign model fails.
+        from app.provider import get_provider_for_role
+        provider = get_provider_for_role("lightweight")
+        models = get_model_config(
+            role_providers={"lightweight": provider.name, "fallback": provider.name},
+        )
         # Outbox formatting runs at KOAN_ROOT — suppress contributor tooling (#2379).
         cmd = build_full_command(
             prompt=prompt,
             model=models["lightweight"],
             project_context=False,
+            provider=provider,
         )
         result = run_cli(
             cmd,
@@ -190,7 +199,8 @@ def format_message(raw_content: str, soul: str, prefs: str,
             capture_output=True,
             text=True,
             timeout=30,
-            check=False
+            check=False,
+            provider=provider,
         )
 
         if result.returncode == 0 and result.stdout.strip():

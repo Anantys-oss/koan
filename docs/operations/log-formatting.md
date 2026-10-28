@@ -4,7 +4,7 @@ title: "make logs formatting"
 description: "Documents the display-side [cli] log formatter (log_fmt.py) behind make logs, its glyph legend, tool-input previews, accumulating thinking dots, and the raw=1 escape hatch."
 tags: [operations, observability, logs]
 created: 2026-07-13
-updated: 2026-07-17
+updated: 2026-08-17
 ---
 
 # Pretty `make logs`
@@ -24,7 +24,7 @@ presentational — the log **files** and the `[cli]` grammar emitted by
 | `assistant — text: <preview>`       | `🧠 <preview>` (preview skips leading code fences / bare brackets, e.g. ```` ```json ```` → first real line) |
 | `assistant — tool_use: Bash: <cmd>` | `💻 Bash <cmd…>` (per-tool icon + dim, first-line input preview: command / file path / pattern / url, truncated with `…`; `🔧` default) |
 | `tool_result …`                     | *(suppressed — adds no signal)* |
-| `tool_result … (error)`             | `❌ tool error` (high-signal; never suppressed) |
+| `tool_result … (error)[: <reason>]` | `❌ tool error[: <reason>]` (bounded first-line diagnostic when the provider supplies one, else the bare label; never suppressed) |
 | `result: success (12s)`             | `✅ result: success (12s)` |
 | `retry …`, `context_overflow …`, `rate_limit_rejected …` | `⚠ …` |
 

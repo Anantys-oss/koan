@@ -72,6 +72,10 @@ Analyze the code changes and produce a structured review. Focus on:
 3. **Architecture** — Design issues, coupling, abstraction level, naming
 4. **Maintainability** — Readability, complexity, test coverage gaps
 5. **YAGNI** — Code added without clear callers or usage
+6. **Structural quality** — Whether the change makes the surrounding code simpler
+   or messier, and whether a reframing would remove the complexity outright.
+
+{@include review-structural-quality}
 
 When a finding depends on how surrounding code behaves, verify by reading the
 actual files. Flag unverifiable claims explicitly.

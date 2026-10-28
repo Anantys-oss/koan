@@ -119,9 +119,7 @@ def run_fix(
             issue_url, project_name=project_name, project_path=project_path,
         )
     except UnresolvedJiraProjectError as e:
-        msg = str(e)
-        notify_fn(f"❌ {msg}")
-        return False, msg
+        return False, str(e)
     except Exception as e:
         return False, f"Failed to fetch issue: {str(e)[:300]}"
 
@@ -263,9 +261,9 @@ def run_fix(
             review_skill_dir=_REVIEW_SKILL_DIR,
         )
         gate_note = format_gate_note(gate_result)
-        notify_fn(
-            f"✅ Fix applied to existing PR branch `{branch}`"
-            f"{context_label}{gate_note}"
+        _report_fix(
+            project_name, project_path, notify_fn, url=issue_url,
+            detail=f"Applied to the existing PR branch `{branch}`{context_label}{gate_note}",
         )
         return (
             True,
@@ -283,10 +281,11 @@ def run_fix(
         review_skill_dir=_REVIEW_SKILL_DIR,
     )
     gate_note = format_gate_note(gate_result)
+    issue_note = f"Issue {label}{context_label}"
     if pr_url:
-        notify_fn(
-            f"✅ Fix complete for issue {label}"
-            f"{context_label}\nDraft PR: {pr_url}{gate_note}"
+        _report_fix(
+            project_name, project_path, notify_fn, url=pr_url,
+            detail=f"{issue_note}{gate_note}",
         )
         summary = (
             f"Fix complete for {label}{context_label}"
@@ -297,21 +296,22 @@ def run_fix(
             " (PR creation skipped)" if provider != "github"
             else " (PR creation failed — see prior message for details)"
         )
-        notify_fn(
-            f"✅ Fix complete for issue {label}"
-            f"{context_label}\nBranch: {branch}{skip_reason}"
+        _report_fix(
+            project_name, project_path, notify_fn,
+            detail=f"{issue_note}\nBranch: {branch}{skip_reason}",
         )
         summary = (
             f"Fix complete for {label}{context_label}"
             f"\nBranch: {branch}"
         )
     else:
-        notify_fn(
-            f"⚠️ Fix complete for issue {label}"
-            f"{context_label} — changes landed on the base branch "
-            f"`{branch}`, no PR created. The skill failed to create a "
-            "feature branch; move the commits onto a feature branch "
-            "manually before pushing."
+        _report_fix(
+            project_name, project_path, notify_fn,
+            detail=(
+                f"{issue_note}\n⚠️ Changes landed on the base branch `{branch}`, "
+                "no PR created. The skill failed to create a feature branch; move "
+                "the commits onto a feature branch manually before pushing."
+            ),
         )
         summary = (
             f"Fix complete for {label}{context_label}"
@@ -319,6 +319,14 @@ def run_fix(
         )
 
     return True, summary
+
+
+def _report_fix(project_name, project_path, notify_fn, url="", detail=""):
+    from app.messaging_level import report_outcome
+    report_outcome(
+        "fix", True, project=project_name, project_path=project_path,
+        url=url, detail=detail, send_fn=notify_fn,
+    )
 
 
 def _build_issue_body(body: str, comments: List[dict]) -> str:
@@ -593,6 +601,12 @@ def main(argv=None):
         instance_dir=cli_args.instance_dir,
     )
     print(summary)
+    if not success:
+        from app.messaging_level import report_failure_unless_reported
+        report_failure_unless_reported(
+            "fix", summary, project=cli_args.project_name or "",
+            project_path=cli_args.project_path, url=cli_args.issue_url,
+        )
     return 0 if success else 1
 
 

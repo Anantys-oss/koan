@@ -4,7 +4,7 @@ title: "Component Spec — Git & GitHub"
 description: "Design contract for everything touching git history or the GitHub API: branch/PR creation, sync, webhook/notification handling, and rebase/recreate/CI-fix workflows."
 tags: [git-github]
 created: 2026-06-27
-updated: 2026-07-16
+updated: 2026-09-10
 ---
 
 # Component Spec — Git & GitHub
@@ -12,7 +12,8 @@ updated: 2026-07-16
 **Modules:** `git_sync.py`, `git_auto_merge.py`, `github.py`, `github_url_parser.py`,
 `github_skill_helpers.py`, `github_config.py`, `github_notifications.py`,
 `github_command_handler.py`, `github_webhook.py`, `rebase_pr.py`, `recreate_pr.py`,
-`claude_step.py`, `remote_rename_detector.py`, `head_tracker.py`, `git_prep.py`
+`claude_step.py`, `remote_rename_detector.py`, `head_tracker.py`, `git_prep.py`,
+`force_push_guard.py`
 
 ## Purpose
 
@@ -31,12 +32,14 @@ workflows.
 | `git_sync.py` | Branch tracking, sync awareness, time-throttled cleanup (24h/project), orphan-branch detection → outbox. |
 | `github_webhook.py::maybe_start_from_config()` | Opt-in HMAC-verified push receiver; writes `.koan-check-notifications` to collapse poll latency 60-180s → ~10s. Polling remains the fallback. |
 | `github_command_handler.py` | @mention → mission: validate → permission check → react → create mission. Also the assignment fallback (`process_single_notification` processes @mentions first, then `_try_assignment_notification`): `review_requested` → `/review`, `assign` → `/implement`. When `review_draft_skip.enabled` is true, a `review_requested` on a **draft** PR is a soft skip (mark read, no thread/cooldown tracking): because no dedup state is written, any re-surfaced request is re-evaluated fresh. An explicit `/review` once the PR is ready is the remedy — the gate does **not** rely on automatic resume (GitHub does not reliably re-fire `review_requested` on the draft→ready transition), so an info notification is sent on deferral to avoid silent loss; explicit `/review` mentions are never gated. When `review_pause_label` is a non-empty string and a `review_requested` subject's labels include that exact name, soft-skip (mark read, no thread/cooldown, INFO notify). Empty `review_pause_label` disables the check. Labels are fetched free on the existing `_fetch_subject_info` call. |
+| `claude_step.py::run_claude_step()` | Runs one agent step, then decides whether it produced a commit. `commit_if_changes` (dirty worktree ⇒ runner commit) **or** a HEAD move the agent made itself — same ref, different SHA, no ancestry claim so `--amend` counts — sets `StepResult.committed`; the agent-authored case also sets `self_committed`. The HEAD snapshot is best-effort: an unavailable pre- or post-snapshot falls back to worktree-only detection, never blocks the step. Not credited: a commit on a *different* ref (the pipeline restores the expected branch), or a HEAD that only moved backwards along its own history (`git reset --hard HEAD~1` drops commits rather than producing work; the ancestry probe fails open, leaving `force_push_guard` as the net). |
 | `claude_step.py::run_ci_fix_loop()` | Shared CI-fix loop; `use_polling` toggles polling vs single-shot recheck; caller supplies `prompt_builder`. |
 | `claude_step.py::_rebase_onto_target()` | Strict PR rebase: target is **only** `{base_remote}/{base}` (the remote matching the PR's base repo, resolved by `rebase_pr._find_remote_for_repo`); fails closed when no remote matches or the target fetch fails; always a plain `git rebase` (never `--onto`); post-rebase sanity gate before any push. Structured failure codes via `result_meta` (`no_base_remote` / `fetch_failed` / `rebase_failed` / `sanity_check_failed`). |
 | `claude_step.py::_verify_rebase_result()` | Post-rebase gate: branch must sit on the target's current tip and its unique-commit count (`rev-list --count target..HEAD`) must not grow vs the pre-rebase baseline. On violation the branch is hard-reset to its pre-rebase commit and the rebase reported failed — nothing is pushed. |
+| `force_push_guard.py` | Post-force-push content-preservation harness for the rebase pipeline. `observe_remote_head()` snapshots the remote branch tip (and fetches its objects) immediately before **every** pipeline push (main push and private-gate re-pushes — the gate feeds its observations back via `push_state`) and again on a `--force-with-lease` rejection, so the tip the plain `--force` fallback clobbers is still nameable; it returns `None` (not `""`) when the lookup itself failed, so "could not look" stays distinguishable from "nothing was there" and surfaces as an unverified check; observations are scoped to the remote whose push succeeded; `verify_content_preserved()` compares the pre-rebase PR head against the **required last successfully pushed SHA** (never bare local HEAD; absent ⇒ guard skipped): `git cherry` patch-id screening plus a separate `rev-list --merges` pass for merge commits (invisible to `cherry`, dropped by a plain rebase — screened through their `--cc` combined diff), each refined by content-level cross-checks (byte-identical files at both heads, or an old→pushed diff that removes none of the commit's added lines — so upstream squash-merges and context-line drift count as preserved, while identical text elsewhere in a file cannot mask a revert), a file-level dropped-changes check, clobbered mid-pipeline pushes, and a post-push `ls-remote` race check. Anything unverifiable (git failure, deletion-only commit) is reported, never cleared. Per-commit analysis is capped (`_MAX_ANALYZED`) with the cap reported, never silent. `build_push_warning()` renders the findings as one amber/red `build_alert()` callout with the recoverable pre-rebase SHA (full SHA, actual push remote) and a shell-quoted, SHA-derived recovery command carrying no PR-controlled text. Best-effort by contract: any internal failure degrades to "no findings" and never blocks a push or fails the mission. |
 | `head_tracker.py` | Detects remote HEAD change (master→main), throttled 12h, state in `.head-tracker.json`. |
 | `github_url_parser.py` | Single PR/issue URL parsing path. |
-| `git_prep.py::prepare_project_branch()` | Pre-mission: fetch → **self-heal interrupted merge/rebase** → stash → checkout base → ff-only/reset to `<remote>/<base>`. Non-fatal; returns `PrepResult`. |
+| `git_prep.py::prepare_project_branch()` | Pre-mission: **resolve base branch** → fetch → **self-heal interrupted merge/rebase** → stash → checkout base → ff-only/reset to `<remote>/<base>`. Non-fatal; returns `PrepResult`. |
 
 ## Invariants
 
@@ -57,11 +60,101 @@ workflows.
   mission is recoverable; a polluted force-push is not (incident: PR #2309 — a rebase
   onto a 4-days-stale ref with the fork's 1,889-commits-behind `main` as cut point
   resurrected 33 already-merged commits and force-pushed them unchecked).
+- **Every rebase-pipeline force-push is followed by a content-preservation check.**
+  A force-push rewrites the PR branch; the guard (`force_push_guard.py`) verifies —
+  *after* the final push of the pipeline, gate re-pushes included — that every
+  change present on the pre-rebase PR head survived. "Survived" is judged at the
+  content level, not by patch-id alone: a commit with no patch-id equivalent still
+  counts as preserved when its files are byte-identical at both heads (upstream
+  squash-merge) or when the old→pushed diff does not *remove* any line it added
+  (context-line drift on a clean rebase). The comparison is against the removed
+  side of that diff, never a "does this text exist somewhere at the pushed head"
+  lookup — identical text elsewhere in the same file must never mask a reverted
+  change. **Merge commits are screened separately**: `git cherry` never emits
+  them and a plain rebase replays only first-parent commits, so any
+  conflict-resolution content unique to a merge would vanish unseen; each merge
+  of the pre-rebase range is checked through its combined diff (`--cc`), which by
+  construction holds exactly the lines that differ from every parent (a trivial
+  merge yields nothing and is skipped). **The guard never converts its own blind
+  spot into a clean bill of health**: an unreadable file list, an unverifiable
+  commit (deletion-only, binary), or any git failure is reported as unverified
+  content, not silently cleared. The guard also verifies that no commits pushed by
+  others mid-pipeline were clobbered (each push is preceded by an `ls-remote` +
+  fetch observation, including the private gate's re-pushes, **and repeated when
+  `--force-with-lease` is rejected** — the rejection means the remote moved and
+  the plain `--force` fallback is about to overwrite whatever moved it).
+  Observations are **scoped to the remote actually pushed to**: `_push_with_fallback`
+  tries several remotes, and a tip observed on one whose push then failed was
+  never overwritten — feeding it to the clobber check would raise a red alert
+  over commits that are still there. A check that could not run (either
+  `ls-remote`, an unreadable commit) is reported as an **unverified check** in the
+  alert, never folded into the clean case. It also verifies that
+  the remote still points at the last SHA Kōan actually pushed (post-push
+  `ls-remote` final check against the recorded pushed SHA, never bare local HEAD —
+  the race window Kōan cannot close, only detect). That pushed SHA is **required**:
+  it is captured before the push and retained only on success, and without it the
+  guard reports itself skipped rather than comparing against a local HEAD that may
+  carry commits the remote never received. Any finding is surfaced as a single amber/red
+  `build_alert()` callout at the top of the rebase PR comment, always naming the
+  full pre-rebase head SHA and the actual push remote so the previous state is
+  recoverable with the printed command. That command is **pasted into a human's
+  shell**, so nothing PR-controlled may reach it: ref names legally contain
+  `$()`, backticks, `;` and `&`, so every argument is shell-quoted and the backup
+  branch is derived from the validated SHA, never from the branch name; every
+  attacker-influenced string in the callout (subjects, paths, branch) renders
+  inside a code span it cannot escape. The alert reaches chat through the
+  **un-gated outcome channel** (`notify_outcome`), not the progress notifier — a
+  safety finding must not be invisible in normal messaging mode — and a delivery
+  failure is logged, never swallowed. The guard **detects and warns; it never
+  blocks**: it runs best-effort after the push, degrades on its own errors, and
+  never fails the mission (design agreed with the humans on incident review:
+  recoverability + loud detection, not a new hard gate). Because it runs *after*
+  the branch has been rewritten, the entire guard call site is inside that
+  boundary — `rebase_pr._run_force_push_guard()` catches every exception, logs
+  it, appends a "guard skipped" action and returns "", so an unexpected guard
+  bug can never report a completed rebase as a failed mission or skip the PR
+  comment and CI enqueue that follow it. The same holds for the guard code that
+  runs on the **live push path** (the pre-push observation, and the
+  re-observation the lease-failure hook triggers): it is wrapped where it is
+  called, so a guard failure degrades to `observation_failed` — never to a push
+  that does not happen, or one diverted to a fallback remote. Origin: confirmed
+  incidents where a bot rebase force-push dropped content from the original PR
+  (cpanel-plugins PR #2771 discussion).
 - **Self-heal precedes stash.** An interrupted merge/rebase/cherry-pick/revert
   (or bare unmerged paths / stale `index.lock`) is auto-aborted before stashing,
   because git cannot stash a conflicted tree and the next step resets to the
   remote base anyway. A **conflict-free** dirty tree is never discarded — the
   stash data-loss guard still holds for genuine uncommitted work.
+- **Base-branch resolution never dead-ends on one candidate.** When nothing configured
+  a base branch, prep MAY resolve the remote's real default before fetching rather than
+  paying for a doomed fetch of the generic `main` fallback — but that resolution reads
+  `refs/remotes/<remote>/HEAD` without touching the network, so an upstream rename leaves
+  it pointing at a branch that no longer exists. Prep MUST therefore still try the value
+  it started from when the resolved branch's fetch fails. A resolution step that can only
+  narrow the candidates turns a stale local ref into every-mission prep failure until
+  `head_tracker.py` refreshes it (throttled to 12h). A failed resolution stays `None` and
+  is never promoted to an override of a configured branch.
+- **A held base branch is recoverable, not fatal.** Git checks a branch out in at
+  most one worktree, so any other worktree holding the base branch blocks the main
+  checkout for as long as it holds it. Prep MUST detect this and **detach** the
+  holding worktree — freeing the branch without deleting anything or disturbing its
+  uncommitted work — then retry the checkout once. Reclaiming that worktree's disk is
+  the bridge sweep's job, not prep's: prep runs unattended before every mission, so a
+  false positive must never be able to destroy an agent's in-flight work. A worktree
+  git reports as `locked` is never touched.
+- **What prep cannot heal, `/doctor` MUST report.** A `locked` holder is the one
+  collision no automation resolves — every mission for that project keeps failing —
+  so the diagnostic reports it as a non-fixable error naming the unlock command,
+  while `--fix` still leaves it alone. The same applies when the base branch cannot
+  be resolved from local refs: the check is skipped, and the skip is reported. A
+  diagnostic that stays green on a project where nothing can run is worse than no
+  diagnostic.
+- **The first checkout error is never discarded.** When `git checkout <base>` fails and
+  a fallback runs, the fallback's stderr MUST NOT overwrite the original. A branch held
+  by another worktree and a branch missing locally are different faults with different
+  fixes, and only the first message names the holding path. Origin: 92 logged prep
+  failures reported `a branch named 'X' already exists` — the fallback's error — while
+  the real cause, `is already used by worktree at ...`, never once reached the log.
 
 ### Mission status indicators (koan/mission)
 

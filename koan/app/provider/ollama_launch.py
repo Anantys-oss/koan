@@ -106,6 +106,7 @@ class OllamaLaunchProvider(ClaudeProvider):
         effort: str = "",
         resume_session_id: str = "",
         project_context: bool = True,
+        read_only: bool = False,
     ) -> List[str]:
         """Build: ollama launch claude --model X -- <claude-flags>.
 
@@ -127,7 +128,7 @@ class OllamaLaunchProvider(ClaudeProvider):
         # Claude Code part — same ordering as base CLIProvider.build_command()
         if resume_session_id and self.supports_session_resume():
             cmd.extend(self.build_resume_args(resume_session_id))
-        cmd.extend(self.build_permission_args(skip_permissions))
+        cmd.extend(self.build_permission_args(skip_permissions, read_only=read_only))
         cmd.extend(self.build_project_context_args(project_context))
 
         # System prompt: file mode takes precedence over inline content.
@@ -141,11 +142,19 @@ class OllamaLaunchProvider(ClaudeProvider):
                 prompt = system_prompt + "\n\n" + prompt
 
         cmd.extend(self.build_prompt_args(prompt))
-        cmd.extend(self.build_tool_args(allowed_tools, disallowed_tools))
+        # Same derivation as CLIProvider.build_command -- this override
+        # re-implements assembly, so it must forward the restriction too or a
+        # read-only role would fail open here while holding elsewhere.
+        cmd.extend(self.build_tool_args(
+            allowed_tools, disallowed_tools,
+            restrict_tools=self._read_only_tool_restriction(read_only),
+        ))
         cmd.extend(self.build_model_args(model, fallback))
         cmd.extend(self.build_output_args(output_format))
         cmd.extend(self.build_max_turns_args(max_turns))
         cmd.extend(self.build_mcp_args(mcp_configs))
+        cmd.extend(self.build_mcp_isolation_args(read_only))
+        cmd.extend(self.build_agent_settings_args(read_only))
         cmd.extend(self.build_plugin_args(plugin_dirs))
         cmd.extend(self.build_effort_args(effort))
         return cmd

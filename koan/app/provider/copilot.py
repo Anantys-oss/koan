@@ -4,7 +4,7 @@ import re
 import shutil
 import subprocess
 import sys
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from app.provider.base import CLIProvider, CLAUDE_TOOLS, TOOL_NAME_MAP
 
@@ -77,6 +77,7 @@ class CopilotProvider(CLIProvider):
         self,
         allowed_tools: Optional[List[str]] = None,
         disallowed_tools: Optional[List[str]] = None,
+        restrict_tools: Optional[Sequence[str]] = None,
     ) -> List[str]:
         flags: List[str] = []
 

@@ -12,10 +12,13 @@ Note: load_config() itself lives in utils.py to avoid circular imports.
 Functions here call it via import to ensure mocks propagate correctly.
 """
 
+import logging
 import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+log = logging.getLogger("koan.config")
 
 
 def _load_config() -> dict:
@@ -383,7 +386,7 @@ def get_model_config(
 _CLI_ROLES = ("mission", "chat", "lightweight", "review_mode", "reflect")
 
 
-def _parse_cli_value(raw: str) -> Tuple[str, str]:
+def _parse_cli_value(raw: str, warn: bool = True) -> Tuple[str, str]:
     """Parse a ``cli:`` value (``flavor`` or ``flavor:path``) into ``(flavor, path)``.
 
     Splits on the FIRST colon so absolute paths containing extra colons survive.
@@ -392,6 +395,10 @@ def _parse_cli_value(raw: str) -> Tuple[str, str]:
     global provider (a typo must never crash the agent loop). The path is
     returned RAW — the provider resolves it (absolute / KOAN_ROOT-relative /
     bare) in ``binary()`` via the shared ``_resolve_binary_path`` helper.
+
+    Set ``warn=False`` when a caller re-parses a value it has already reported
+    on, so a bad setting is logged once per resolution instead of once per
+    lookup.
     """
     raw = str(raw or "").strip()
     if not raw:
@@ -402,13 +409,36 @@ def _parse_cli_value(raw: str) -> Tuple[str, str]:
     from app.provider import is_known_provider
 
     if not is_known_provider(flavor):
-        print(
-            f"[config] cli: unknown provider flavor {flavor!r} (value {raw!r}); "
-            "ignoring and using the global provider",
-            file=sys.stderr,
-        )
+        if warn:
+            print(
+                f"[config] cli: unknown provider flavor {flavor!r} (value {raw!r}); "
+                "ignoring and using the global provider",
+                file=sys.stderr,
+            )
         return ("", "")
     return (flavor, path)
+
+
+def get_global_cli_spec(warn: bool = True) -> Tuple[str, str]:
+    """Resolve the global ``cli_provider`` key into ``(flavor, path)``.
+
+    ``cli_provider`` accepts the same ``flavor`` / ``flavor:path`` grammar as the
+    per-role ``cli:`` entries, so a deployment that routes Claude Code through a
+    wrapper binary can set it once globally instead of repeating the path for
+    every role. Parsing goes through :func:`_parse_cli_value`, so an unknown
+    flavor warns and yields ``("", "")`` — the caller then falls back to the
+    built-in default rather than crashing.
+
+    Returns ``("", "")`` when unset or unparseable. The env var
+    (``KOAN_CLI_PROVIDER``) is deliberately NOT handled here: it stays
+    flavor-only, because ``KOAN_CLAUDE_CLI_PATH`` already covers "custom binary
+    from the environment" and a second spelling would only invite drift.
+
+    A config-loading failure PROPAGATES — ``provider.get_provider_name`` owns
+    that error path and logs it, so catching it here would only swallow the
+    diagnostic and duplicate the handler.
+    """
+    return _parse_cli_value(_load_config().get("cli_provider", ""), warn=warn)
 
 
 def get_cli_config(project_name: str = "") -> Dict[str, Tuple[str, str]]:
@@ -484,8 +514,13 @@ def get_mcp_configs(project_name: str = "") -> List[str]:
 
     Resolution order:
     1. projects.yaml mcp list for the project (replaces global if set)
-    2. config.yaml mcp list
+    2. config.yaml mcp.configs list (or legacy top-level mcp list)
     3. Empty list (no MCP servers)
+
+    ``mcp`` accepts either a legacy list of config JSON paths or (since the MCP
+    server settings arrived) a mapping whose ``configs`` key holds those paths.
+    Kōan's own opt-in MCP server settings (``mcp.enabled``,
+    ``mcp.tools_allow_destructive``) live beside it in the same mapping.
 
     Args:
         project_name: Optional project name for per-project overrides.
@@ -495,7 +530,20 @@ def get_mcp_configs(project_name: str = "") -> List[str]:
     """
     config = _load_config()
     result = config.get("mcp", [])
+    if isinstance(result, dict):
+        client_configs = result.get("configs", [])
+        if not isinstance(client_configs, list):
+            log.warning(
+                "mcp.configs should be a list, got %s; treating as empty",
+                type(client_configs).__name__,
+            )
+            client_configs = []
+        result = client_configs
     if not isinstance(result, list):
+        log.warning(
+            "mcp should be a list or mapping, got %s; treating as empty",
+            type(result).__name__,
+        )
         result = []
 
     # Per-project override replaces global list entirely
@@ -505,6 +553,66 @@ def get_mcp_configs(project_name: str = "") -> List[str]:
         result = project_mcp if isinstance(project_mcp, list) else []
 
     return [entry for entry in result if isinstance(entry, str) and entry]
+
+
+def _get_mcp_server_config() -> dict:
+    value = _load_config().get("mcp", {})
+    if not isinstance(value, dict):
+        return {}
+    return value
+
+
+def get_mcp_enabled() -> bool:
+    """Whether Kōan's opt-in stdio MCP server may run (mcp.enabled)."""
+    value = _get_mcp_server_config().get("enabled", False)
+    return value is True
+
+
+def get_mcp_tools_allow_destructive() -> bool:
+    """Whether MCP may reach destructive operations (mcp.tools_allow_destructive).
+
+    Gates both surfaces: the named mission-delete tool's presence in
+    ``tools/list`` and ``exec_operation``'s reach into the deny-listed admin and
+    project-mutation operations.
+    """
+    value = _get_mcp_server_config().get("tools_allow_destructive", False)
+    return value is True
+
+
+MCP_TRANSPORTS = frozenset({"stdio", "http"})
+
+
+def get_mcp_transport_setting() -> str:
+    """The configured ``mcp.transport`` value, normalised but not validated.
+
+    Callers that must tell "unset/valid" from "typo" use this; everything that
+    just needs a transport to run uses :func:`get_mcp_transport`.
+    """
+    return str(_get_mcp_server_config().get("transport", "stdio")).strip().lower()
+
+
+def get_mcp_transport() -> str:
+    """Which MCP transport is selected (mcp.transport). Defaults to ``stdio``.
+
+    Unknown or malformed values fall back to ``stdio`` so provider-side legacy
+    configuration never silently launches a network listener. The fallback is
+    not silent: ``pid_manager`` refuses to start the stack's MCP daemon on an
+    unrecognised value and names it, rather than reporting success for a
+    listener that was never bound.
+    """
+    value = get_mcp_transport_setting()
+    return value if value in MCP_TRANSPORTS else "stdio"
+
+
+def get_mcp_host() -> str:
+    """HTTP bind host (mcp.host). Defaults to loopback ``127.0.0.1``."""
+    value = str(_get_mcp_server_config().get("host", "127.0.0.1")).strip()
+    return value or "127.0.0.1"
+
+
+def get_mcp_port() -> int:
+    """HTTP listen port (mcp.port). Defaults to ``8421``."""
+    return _safe_int(_get_mcp_server_config().get("port", 8421), 8421)
 
 
 # Named role identifiers for MCP opt-in. Call sites must use these constants
@@ -786,6 +894,52 @@ def get_cleanup_min_tmp_age_seconds() -> float:
         return max(0.0, float(raw))
     except (TypeError, ValueError):
         return 600.0
+
+
+# Mission containment defaults. Enabled by default: a mission that leaks a
+# daemon (Gradle's build daemon re-parents to PID 1 with its own session, so no
+# process group can reach it) otherwise raises the host's idle baseline for the
+# rest of the day. See app/mission_scope.py for the full causal chain.
+_MISSION_LIMITS_DEFAULTS = {
+    "enabled": True,
+    "memory_reserve": "2G",
+    "memory_min": "1G",
+    "memory_max": None,
+}
+
+
+def get_mission_limits_config() -> dict:
+    """Per-mission cgroup-scope limits (``mission_limits:``). Enabled by default.
+
+    ``memory_reserve`` is what is left for the OS, Kōan's own ~500 MB baseline
+    and any day job sharing the host; ``memory_min`` floors the resulting cap so
+    a small, swapless host can still run a mission. A reserve-with-floor rather
+    than a percentage of RAM: Kōan's baseline is roughly constant, so a
+    percentage under-reserves on the small hosts. ``memory_max`` overrides both
+    verbatim when set.
+
+    Size values are parsed by :func:`app.mission_scope.parse_size` (``2G``,
+    ``512M``, or a bare byte count), so they are passed through as-is here.
+
+    An explicitly null key falls back to the default rather than to ``None``:
+    ``_get_config_with_overrides`` merges as ``{**defaults, **section}``, so a
+    bare ``enabled:`` would otherwise read as False and silently turn
+    containment off, and a bare ``memory_reserve:`` would drop the reserve and
+    hand a mission all of RAM. ``memory_max`` is the one key where null is the
+    documented value ("no absolute override"), and it defaults to null anyway.
+    """
+    section = _get_config_with_overrides("mission_limits", _MISSION_LIMITS_DEFAULTS)
+
+    def _or_default(key):
+        value = section.get(key)
+        return _MISSION_LIMITS_DEFAULTS[key] if value is None else value
+
+    return {
+        "enabled": bool(_or_default("enabled")),
+        "memory_reserve": _or_default("memory_reserve"),
+        "memory_min": _or_default("memory_min"),
+        "memory_max": section.get("memory_max"),
+    }
 
 
 def get_start_on_pause() -> bool:
@@ -1121,6 +1275,51 @@ def is_ci_check_enabled() -> bool:
     return True
 
 
+def is_mission_hooks_enabled() -> bool:
+    """Whether repo-config-driven mission hooks may run (operator opt-in).
+
+    Mission hooks execute shell commands declared in a *target repo's*
+    ``.koan/config.yaml`` (``pre_hooks``/``post_hooks``). Because that is a
+    repo-controlled file, running it is a remote-code-execution surface on the
+    operator's host, so it is **disabled by default** and must be explicitly
+    enabled by the operator here. A per-project override may further narrow this
+    (see ``projects_config.get_project_mission_hooks``).
+
+    Config key: mission_hooks.enabled (default: False). Fail-safe: any
+    unexpected shape defaults to disabled.
+    """
+    config = _load_config()
+    cfg = config.get("mission_hooks", {})
+    if isinstance(cfg, dict):
+        return bool(cfg.get("enabled", False))
+    if isinstance(cfg, bool):
+        return cfg
+    return False
+
+
+def is_hook_skills_enabled() -> bool:
+    """Whether repo-declared hook skills may queue missions (operator opt-in).
+
+    ``hooks.<event>`` in a *target repo's* ``.koan/config.yaml`` names skills
+    Kōan should run when a lifecycle event fires, and each honored name queues a
+    **write-capable** mission on the operator's host and quota. Like
+    ``mission_hooks``, the value comes from a repo-controlled file, so the
+    mechanism is **disabled by default** and must be enabled by the operator
+    here. A per-project override may narrow or widen it (see
+    ``projects_config.get_project_hook_skills``).
+
+    Config key: hook_skills.enabled (default: False). Fail-safe: any unexpected
+    shape defaults to disabled.
+    """
+    config = _load_config()
+    cfg = config.get("hook_skills", {})
+    if isinstance(cfg, dict):
+        return bool(cfg.get("enabled", False))
+    if isinstance(cfg, bool):
+        return cfg
+    return False
+
+
 def get_running_indicator_config() -> dict:
     """Resolve the GitHub "Running" indicator config.
 
@@ -1387,20 +1586,24 @@ def get_bash_foreground_timeout_ms() -> int:
     keeps a buffer to read the result and write its conclusion before the
     mission watchdog SIGTERMs the process group.
 
-    Config key: bash_foreground_timeout (seconds, default: 900 — 15 min).
+    Config key: bash_foreground_timeout (seconds). Unset defaults to the
+    mission ceiling (``mission_timeout`` minus a 120s buffer; 3600s when the
+    watchdog is disabled) so any command that fits the mission fits one
+    foreground call — a fixed lower default made a 20-min test suite time
+    out and get auto-backgrounded by the CLI (#2249).
     Returns 0 to signal "leave the CLI default" when explicitly disabled.
     """
     config = _load_config()
-    requested_s = _safe_int(config.get("bash_foreground_timeout", 900), 900)
+    mission_s = get_mission_timeout()
+    # Keep a 120s reporting buffer under the mission watchdog; never exceed it.
+    # mission_timeout: 0 disables the watchdog — no ceiling to keep a buffer under.
+    ceiling_s = max(60, mission_s - 120) if mission_s > 0 else None
+    default_s = ceiling_s or 3600
+    requested_s = _safe_int(config.get("bash_foreground_timeout", default_s), default_s)
     if requested_s <= 0:
         return 0
-    mission_s = get_mission_timeout()
-    if mission_s <= 0:
-        # Mission watchdog disabled (unlimited mission time) — no ceiling to
-        # keep a buffer under, so honor the requested value as-is.
+    if ceiling_s is None:
         return requested_s * 1000
-    # Keep a 120s reporting buffer under the mission watchdog; never exceed it.
-    ceiling_s = max(60, mission_s - 120)
     return min(requested_s, ceiling_s) * 1000
 
 
@@ -1646,7 +1849,7 @@ _DEFAULT_EFFORT_MAP = {
 }
 
 # Valid effort levels (matches Claude CLI --effort flag).
-_VALID_EFFORT_LEVELS = {"low", "medium", "high", "max", ""}
+_VALID_EFFORT_LEVELS = {"low", "medium", "high", "xhigh", "max", ""}
 
 
 def _resolve_effort_dict(
@@ -2495,6 +2698,69 @@ def get_review_reflect_config() -> dict:
     except (TypeError, ValueError):
         threshold = defaults["threshold"]
     return {"threshold": max(0, min(10, threshold))}
+
+
+def get_review_effort(project_name: str = "") -> str:
+    """Reasoning effort for the review path.
+
+    The ``effort:`` section only reaches missions built by the main agent
+    loop; ``/review`` runs in its own runner, so review depth was not
+    configurable at all. This key covers every review call — main pass,
+    reflect, error hunter, bot triage.
+
+    Config key: review_effort (string)
+      - A level the provider accepts (``low``/``medium``/``high``/
+        ``xhigh``/``max``).
+      - ``""`` (the default) omits the flag and keeps the provider default.
+
+    Per-project overrides are honored, so one repo can review deeper than
+    the rest. An invalid override is ignored and the global value applies,
+    the way an invalid ``effort:`` pin falls through.
+
+    Returns:
+        The configured level, or ``""`` when unset or invalid.
+    """
+    if project_name:
+        overrides = _load_project_overrides(project_name)
+
+        # A bare `review_effort:` (YAML null) counts as unset.
+        if overrides.get("review_effort") is not None:
+            level = _normalize_review_effort(
+                overrides["review_effort"], f"projects.yaml ({project_name})",
+            )
+
+            if level is not None:
+                return level
+
+    level = _normalize_review_effort(
+        _load_config().get("review_effort", ""), "config.yaml",
+    )
+
+    if level is None:
+        return ""
+
+    return level
+
+
+def _normalize_review_effort(value: object, source: str) -> Optional[str]:
+    """Return a valid review_effort level, or None (with a warning) when invalid."""
+    if value is None:
+        return ""
+
+    if isinstance(value, str):
+        level = value.strip().lower()
+
+        if level in _VALID_EFFORT_LEVELS:
+            return level
+
+    valid = ", ".join(sorted(x for x in _VALID_EFFORT_LEVELS if x))
+    print(
+        f"[config] review_effort in {source}: invalid level {value!r} "
+        f"(valid: {valid}); ignoring",
+        file=sys.stderr,
+    )
+
+    return None
 
 
 def get_review_consistency_config(project_name: str = "") -> dict:

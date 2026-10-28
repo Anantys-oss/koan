@@ -166,6 +166,7 @@ class HazeProvider(CLIProvider):
         self,
         allowed_tools: Optional[List[str]] = None,
         disallowed_tools: Optional[List[str]] = None,
+        restrict_tools: Optional[Sequence[str]] = None,
     ) -> List[str]:
         if allowed_tools or disallowed_tools:
             self._warn_unsupported_once(
@@ -231,6 +232,7 @@ class HazeProvider(CLIProvider):
         effort: str = "",
         resume_session_id: str = "",
         project_context: bool = True,
+        read_only: bool = False,
     ) -> List[str]:
         """Build ``haze [-m <sel>] [--output <fmt>] -p <prompt>``.
 

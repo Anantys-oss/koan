@@ -4,7 +4,7 @@ title: "Claude Code CLI Provider"
 description: "Setup and configuration guide for Kōan's default Claude Code CLI provider, including models, tools, per-role CLI config, MCP, and devcontainer mode."
 tags: [providers]
 created: 2026-05-28
-updated: 2026-07-17
+updated: 2026-09-09
 ---
 
 # Claude Code CLI Provider
@@ -204,6 +204,14 @@ same as `models:`: `mission`, `chat`, `lightweight`, `review_mode`, `reflect`.
 role selects `claude` without an explicit path, and `cli_provider` /
 `KOAN_CLI_PROVIDER` remain the global default provider.
 
+`cli_provider` additionally accepts the same `flavor:path` grammar as `cli:`, so
+`cli_provider: "claude:/root/.local/bin/lmpanel-claude"` makes **every**
+un-overridden role spawn that wrapper instead of bare `claude` — including the
+paths that do not resolve a role (chat, rituals, outbox formatting). A path here
+wins over `KOAN_CLAUDE_CLI_PATH`, matching how a per-role `claude:path` behaves.
+`KOAN_CLI_PROVIDER` stays flavor-only; use `KOAN_CLAUDE_CLI_PATH` to pin a binary
+from the environment.
+
 > Tip: the ready-made wrappers in `bin/` (`zai-claude`, `oc-claude`,
 > `ollama-claude`) make good `claude:path` targets when you want a role to run a
 > Claude-compatible backend.
@@ -234,7 +242,8 @@ databases, APIs). Add MCP config file paths to `config.yaml`:
 ```yaml
 # config.yaml — global MCP servers for all projects
 mcp:
-  - "/path/to/mcp-config.json"
+  configs:
+    - "/path/to/mcp-config.json"
 ```
 
 Per-project overrides are supported in `projects.yaml` — a project-level
@@ -248,6 +257,11 @@ projects:
     mcp:
       - "/path/to/project-specific-mcp.json"
 ```
+
+Legacy `mcp: ["/path/to/mcp-config.json"]` syntax remains accepted. Mapping
+syntax permits these provider inputs to coexist with Kōan's own opt-in
+[MCP server](../operations/mcp-server.md), whose settings are `mcp.enabled` and
+`mcp.tools_allow_destructive`.
 
 The MCP config files use the standard Claude Code JSON format (same as
 `~/.claude/mcp.json` or `--mcp-config` flag).
@@ -309,14 +323,14 @@ output under `permission_denials`.
 **Setup checklist for each project using MCP:**
 
 1. Add the MCP config path to `projects.yaml` (under the project's
-   `mcp:` key) or globally in `config.yaml`
+   `mcp:` key) or globally under `mcp.configs` in `config.yaml`
 2. Create `<project-path>/.claude/settings.local.json` with the
    tool allowlist
 3. Restart Koan (`systemctl restart koan.service`)
 
 ### Per-role MCP access (`mcp_roles`)
 
-MCP servers listed under `mcp:` are loaded per **execution role**, controlled by
+MCP servers listed under `mcp.configs` are loaded per **execution role**, controlled by
 `mcp_roles` (default `["mission", "contemplative", "plan"]`). This lets, e.g.,
 `@bot plan` consult Jira/internal-docs MCP servers while conversational replies
 stay isolated.
@@ -330,8 +344,27 @@ stay isolated.
 - **Excluded by default**: `chat` and `github_reply` handle untrusted input and
   are opt-in only — add them to `mcp_roles` to enable.
 
-Secondary planning sub-agents (critic/improve/review/assumptions) stay
-local-read-only by design; only primary plan generation loads MCP.
+Secondary planning sub-agents (critic/improve/review/assumptions) get no MCP by
+design; only primary plan generation loads it. Note they are *intended* to be
+read-only but are not enforced as such unless the role resolves into
+`READ_ONLY_ROLES` — passing a narrow `tools:` list pre-approves, it does not
+withhold. See `specs/components/providers.md`.
+
+### Read-only roles
+
+A role in `READ_ONLY_ROLES` (currently `review_mode`, used by `/review`) is
+built with:
+
+| Flag | Purpose |
+| --- | --- |
+| `--tools Read,Glob,Grep,Bash` | Positive allowlist. Everything unnamed — `Write`, `Edit`, `MultiEdit`, `Task`, `Skill` — is withheld by construction. |
+| `--disallowedTools Write,Edit,NotebookEdit` | Second layer, for a pinned older binary that ignores `--tools`. `Bash` is excluded here because the allowlist grants it deliberately. |
+| `--strict-mcp-config` | `--tools` covers built-ins only; without this the role inherits the operator's user-level MCP servers. |
+| `--settings <path>` | Installs the `PreToolUse` gate from `app.review_bash_guard`. `Bash` is never added to `--allowedTools`, so if the gate fails to load there is simply no shell. |
+| `--setting-sources user` | The reviewed repository's `.claude/` and `CLAUDE.md` are untrusted and are not loaded. |
+
+`--dangerously-skip-permissions` is never emitted for these roles, regardless of
+`skip_permissions`, because it would bypass all of the above.
 
 ### Max Turns
 

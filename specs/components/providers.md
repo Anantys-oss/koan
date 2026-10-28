@@ -1,16 +1,16 @@
 ---
 type: component-spec
 title: "Component Spec — CLI Provider Abstraction"
-description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok) behind one `CLIProvider` contract."
+description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok, Gemini) behind one `CLIProvider` contract."
 tags: [providers]
 created: 2026-06-27
-updated: 2026-07-17
+updated: 2026-09-15
 ---
 
 # Component Spec — CLI Provider Abstraction
 
 **Package:** `koan/app/provider/` (`base.py`, `claude.py`, `cline.py`, `codex.py`,
-`copilot.py`, `fake.py`, `haze.py`, `grok.py`, `__init__.py`) + `cli_provider.py` (legacy re-export facade)
+`copilot.py`, `fake.py`, `haze.py`, `grok.py`, `gemini.py`, `__init__.py`) + `cli_provider.py` (legacy re-export facade)
 
 ## Purpose
 
@@ -30,7 +30,8 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
        ├─ copilot.py   → CopilotProvider (with tool-name mapping)
        ├─ fake.py      → FakeProvider (fail-closed test/dev stub; never a real LLM)
        ├─ haze.py      → HazeProvider (haze ≥0.7.0 headless stream-json)
-       └─ grok.py      → GrokProvider (xAI Grok Build headless streaming-json)
+       ├─ grok.py      → GrokProvider (xAI Grok Build headless streaming-json)
+       └─ gemini.py    → GeminiProvider (Google Gemini CLI headless stream-json)
 ```
 
 ## Key types & functions
@@ -77,6 +78,10 @@ tools — MCP tools must still be allowlisted via qualified names
   **CLI flag boundary**, not by relocating tracked files on disk.
 - **One invocation lock per uid.** Provider auth state is per-user, so the subprocess
   lock lives under `koan_tmp_dir()` (per-uid), not a fixed `/tmp` path.
+  The wait for it MUST poll (`LOCK_EX | LOCK_NB` + `LOCK_POLL_INTERVAL` sleep), never
+  block in `LOCK_EX`: contention is unbounded (a peer Kōan holds it for a whole
+  mission), and a thread parked in a blocking flock cannot run Python-level signal
+  handlers, which would make the runner deaf to `/abort` and `/restart --force`.
 - **Provider resolution has a fixed precedence** (env → config → default) for the
   GLOBAL provider. Per-role selection (`cli.<role>`) layers on top via
   `get_provider_for_role`; it does not introduce a second GLOBAL resolution path.
@@ -175,7 +180,16 @@ tools — MCP tools must still be allowlisted via qualified names
   (`inputTokens`/`outputTokens`/`cacheReadTokens`/`cacheWriteTokens`/`reasoningTokens`);
   Grok Build reports **snake_case** `usage` on the terminal ``end`` event
   (`input_tokens`/`output_tokens`/`cache_read_input_tokens`/…) plus optional
-  `modelUsage` map (camelCase per model id). Shared extractors are shape-keyed
+  `modelUsage` map (camelCase per model id); Gemini CLI reports usage on the
+  terminal `result` event under **`stats`** (not `usage`) as
+  `input_tokens`/`output_tokens`/`cached`/`total_tokens` plus a per-model-id
+  `models` map (json mode nests the counts as
+  `stats.models.<id>.tokens.{prompt,candidates,thoughts,tool,cached}` instead).
+  A `cached` count is a SUBSET of input and is clamped to it before
+  subtraction — an inconsistent count is logged once, never double-counted, and
+  a `stats.cached` that collides with an explicit `usage` cache field is logged
+  once rather than dropped in silence. Shared extractors
+  are shape-keyed
   on field names. Detectors read the summary stream, not assistant text.
 - **`tool_use` summary grammar carries an optional input preview.**
   `_summarize_stream_event()` renders a `tool_use` block as
@@ -189,6 +203,135 @@ tools — MCP tools must still be allowlisted via qualified names
   `", "` part delimiter — `_summarize_stream_event()` collapses it to a bare
   comma (`_drop_part_sep`) so the display splitter (`log_fmt._PART_SEP`) can
   never mis-split a preview into a spurious part.
+- **`tool_result` summary grammar carries an optional failure reason.**
+  `_summarize_stream_event()` renders a failed tool result as
+  `[cli] tool_result <id> (error)[: <reason>]`. The optional `: <reason>` suffix
+  is a bounded first-line excerpt of the result content (`_tool_result_preview`,
+  120 chars) emitted only when the provider supplies one, so consumers keying
+  off `tool_result` or `(error)` (substring) are unaffected. Like the `tool_use`
+  preview it is `_drop_part_sep`-cleaned, so it can never carry the `", "` part
+  delimiter. Both display surfaces split the reason off the first `": "` through
+  one shared helper (`log_fmt._tool_error_reason`) so `make logs` and the
+  dashboard timeline cannot drift. Successful `tool_result` lines stay
+  suppressed on the display side; error lines are never suppressed.
+- **A read-only execution role is enforced by a POSITIVE tool allowlist, with
+  denial as a second layer.** `allowed_tools` is a pre-approval list —
+  `--allowedTools Read,Glob,Grep` leaves `Bash` fully usable (verified on Claude
+  CLI 2.1.234; the CLI's own reference says *"To restrict which tools are
+  available, use `--tools` instead"*). Roles in `READ_ONLY_ROLES` are therefore
+  restricted to `READ_ONLY_TOOLS` via `--tools` when the provider declares
+  `supports_tool_restriction()`, **and** have `SIDE_EFFECT_TOOLS` added to
+  `disallowed_tools`. `read_only` is also forwarded to `build_permission_args`
+  so a provider with a sandbox can express the posture directly. `read_only`
+  **overrides** `skip_permissions`, because `--dangerously-skip-permissions` /
+  `--dangerously-bypass-approvals-and-sandbox` would bypass both.
+
+  The allowlist is the primary mechanism because it is **total by
+  construction**: anything not named — `MultiEdit`, `Task` and `Skill` (either
+  of which can spawn a write-capable subagent), and every built-in tool a future
+  CLI release adds — is withheld without anyone having to enumerate it.
+  Enumerated denial is a treadmill that fails open on each new tool.
+  `SIDE_EFFECT_TOOLS` is retained anyway, deliberately: an operator may pin an
+  older binary via `cli.review_mode: claude:/path` that ignores an unknown
+  `--tools`, and two independent mechanisms that each fail closed are the right
+  posture for a security boundary. **Do not "simplify" by removing either.**
+
+  Measured on Claude CLI 2.1.235 — under `--tools "Read,Glob,Grep"` the model
+  reports only those three, and both a `Bash` and a `Write` call produce no
+  filesystem effect. Note the measurement was made against the *filesystem*: two
+  separate runs asked the model to enumerate its own tools and disagreed with
+  each other, one of them hallucinating `Write`. A self-report is a claim; only
+  the side effect is evidence.
+
+  Capability is declared per provider by three predicates —
+  `supports_tool_restriction()` (positive allowlist), `supports_tool_denial()`
+  (deny by name) and `supports_read_only_sandbox()` (OS-level sandbox) —
+  combined by `enforces_read_only()`. Claude and ollama-launch restrict and
+  deny; Codex ignores tool arguments entirely and is instead pinned to
+  `--sandbox read-only`. Every other adapter declares none of the three
+  and is therefore refused — **but the reason differs per provider, and the
+  predicate is a claim about Kōan's adapter, not about the vendor CLI**:
+  - `cline` and `haze` genuinely cannot: `build_tool_args` returns `[]` and
+    haze's docstring states headless runs with full tool access.
+  - `copilot`'s adapter emits no deny flag. The Copilot CLI itself does have
+    `--deny-tool`; wiring it up is unclaimed work, not an upstream limitation.
+  - `grok` **does** emit `--tools` / `--disallowed-tools`, so the flags exist —
+    but two things block the claim. Kōan has never verified that they *withhold*
+    rather than merely pre-approve, which is precisely the assumption this whole
+    invariant exists to disprove (the Claude behaviour above is asserted only
+    because it was measured). And `GrokProvider.build_permission_args` returns
+    `--always-approve` **unconditionally**, ignoring `read_only` — a blanket
+    auto-approve of exactly the kind a read-only role refuses to honour on
+    Claude and Codex. Enabling grok requires measuring the flags AND making
+    `--always-approve` conditional, in that order.
+  - `gemini` has `--approval-mode plan` and `--sandbox`, and its `--allowed-tools`
+    is *deprecated upstream* in favour of the Policy Engine — a pre-approval
+    list, not a withholding one, which is exactly the shape this invariant
+    exists to distrust. Kōan's adapter emits neither, so the predicate is
+    False. Enabling it means wiring the Policy Engine (or a measured
+    `--approval-mode plan`) and recording the measurement.
+  - `fake` is test-only and refuses instantiation outright.
+
+  Do not flip a `supports_*` predicate because a flag exists. Flip it because
+  the behaviour was measured, and record the measurement.
+- **A read-only role never inherits ambient MCP servers.** `--tools` restricts
+  the *built-in* set only. Measured on Claude CLI 2.1.235: under
+  `--tools "Read,Glob,Grep"` every MCP tool from the operator's user-level
+  configuration was still present, including write-capable ones. A read-only
+  invocation therefore also passes `--strict-mcp-config` and no `--mcp-config`,
+  which reduces the exposed MCP tool count to zero. Without this the positive
+  allowlist is not total and the boundary is only as narrow as whatever the
+  operator happens to have installed.
+- **A read-only role does not load the target repo's agent configuration — on
+  providers with a real isolation mechanism.** The review path passes
+  `project_context=False`, which suppresses `<cwd>/.claude/settings.json`,
+  `<cwd>/CLAUDE.md` and `<cwd>/.claude/skills/`. This matters because a reviewed
+  branch is untrusted input: a `.claude/settings.json` in a hostile PR can define
+  `SessionStart` / `PreToolUse` hooks, which is arbitrary code execution on the
+  review host triggered by opening a pull request. Measured on 2.1.235: with a
+  planted `SessionStart` hook in the working directory, `--setting-sources user`
+  suppressed it while a hook supplied via `--settings` still fired.
+
+  **This suppression is Claude-specific and is NOT delivered on every provider
+  the docs endorse for `/review`.** The mechanism is ``--setting-sources user``,
+  emitted only by `ClaudeProvider.build_project_context_args` (and, by
+  inheritance, `ollama-launch`). `CodexProvider.build_command` accepts
+  `project_context` "for API parity" but emits nothing, so a review run on codex
+  **still loads the reviewed branch's `AGENTS.md`** from the untrusted worktree —
+  the "a pull request must not configure the agent that judges it" boundary is
+  not held there until a first-class codex flag exists (see
+  `docs/providers/codex.md` § Project-context isolation). Until then, either
+  treat the codex review path as failing open for this one property, or scope
+  codex reviews behind a provider that suppresses repo configs. Repo conventions
+  still reach the model — `review_runner` injects them into the prompt
+  explicitly, fenced as untrusted.
+- **A read-only role that cannot be enforced FAILS CLOSED.** When `read_only` is
+  True and the resolved provider reports `enforces_read_only() is False`,
+  `build_full_command` raises `ReadOnlyUnenforceable` (a `RuntimeError`) naming
+  the provider and the config key to change. It never builds the command. There
+  is no advisory middle ground: a read-only role is a security boundary, and
+  degrading it to a prompt-level suggestion would hand a review write access to
+  the live project clone. The check runs **after** provider resolution, so a
+  `cli.fallback` swap into an unenforceable provider is refused too. Providers
+  that can enforce nothing remain fully usable for every non-read-only role —
+  the refusal is scoped to the invocation, not the provider.
+- **The enforcement reaches `read_only` invocations, NOT every `READ_ONLY_ROLES`
+  consumer.** Both mechanisms above are driven by the `read_only` argument to
+  `build_full_command`, which only the `run_command` / `run_command_streaming`
+  helpers set (from `model_key in READ_ONLY_ROLES`). `build_full_command_managed`
+  takes no `read_only` argument, so the mission path
+  (`mission_runner.build_mission_command`, which resolves the `review_mode` role
+  for `autonomous_mode == "review"`) is **not** covered: it passes a
+  `Read`/`Glob`/`Grep` allowlist only, which does not withhold anything. Closing
+  that gap is a separate decision about the autonomous mission path — it is a
+  known, deliberate limitation of this contract, not an oversight, and must not
+  be read as enforced.
+- **A new `READ_ONLY_ROLES` caller inherits the refusal.** `/review` is the only
+  `read_only` caller today. Any future call site that adopts a role listed in
+  `READ_ONLY_ROLES` gets the fail-closed check for free — and must catch
+  `ReadOnlyUnenforceable` explicitly and surface the configuration message,
+  rather than letting it surface as a generic failure that sends the operator
+  debugging the wrong thing.
 - **Shared stream parsers extend by event SHAPE, never by provider name.** The
   central summarizer/text/usage extractors in `provider/__init__.py` (and the
   mission-stdout path in `token_parser.py`) branch on field presence
@@ -266,6 +409,282 @@ tools — MCP tools must still be allowlisted via qualified names
   empty scratch dir. Invocation lock: `grok-cli` (shared `~/.grok/` state).
   Recorded samples: `koan/tests/grok_samples.py`. Operator docs:
   `docs/providers/grok.md`.
+- **Gemini CLI headless contract (documented, not yet measured).**
+  `GeminiProvider` targets Google Gemini CLI headless mode: `gemini -p <prompt>`
+  with `--output-format stream-json`. NDJSON event vocabulary is shape-keyed:
+  `init` (`session_id`/`model`), `message` (`role`/`content`, `delta: true` for
+  assistant chunks), `tool_use` (`tool_name`/`tool_id`/`parameters`),
+  `tool_result` (`tool_id`/`status`/`output`/`error`), `error`
+  (`severity`/`message`), and a terminal `result` (`status` + `stats`). Final
+  text is the concatenation of assistant `message.content` deltas (joined with
+  `""`, not newlines) — the terminal `result` carries stats, **not** the
+  assistant body. `--output-format json` — the shape the **mission path**
+  builds — returns one object with top-level `response` + `stats`; both are
+  consumed shape-keyed: `response` joins the `result`/`content`/`text` key list
+  in `parse_claude_output`, and its `stats.models.<id>.tokens`
+  (`prompt`/`candidates`/`thoughts`/`tool`/`cached`, the nested SessionMetrics
+  shape) is summed across models by `token_parser`, so json-mode runs record
+  usage rather than zero. Bucket mapping follows the Gemini API `usageMetadata`
+  fields these counters mirror: `thoughts` is billed **output** (thinking
+  models spend a large share there) and `tool` is prompt-side **input**.
+  When a `models` map names more than one id, tokens are attributed to
+  the **dominant** entry — ranked by those same counters, so attribution and
+  reported totals cannot disagree — never the first key: a session that
+  fell back pro→flash must not be mis-priced.
+  **A terminal `result` whose `status` is not a success value is a hard
+  failure** (`RuntimeError` naming `skip_permissions`), not a soft return of
+  partial text: a headless run that could not answer a confirmation prompt
+  exits 0 with prose and would otherwise be reported as a complete mission with
+  no branch and no commit. `stats` is **optional** on that envelope — a session
+  that aborts before any model call emits `status` + `error` only — so the
+  guard is keyed on the *text-less* terminal shape, leaving text-bearing
+  `result` envelopes (haze) with their existing behavior. The failure is
+  reported **after** the exit-code branch: a non-zero exit still raises
+  `_format_cli_error(...)`, which is the only payload carrying stderr and the
+  exit code, and quota/auth classification is text-matched on it.
+  "Success value" is an **allowlist** (`success`/`succeeded`/`complete`/
+  `completed`/`ok`), never a list of known failure words: a status this adapter
+  has not seen (`timeout`, `quota_exceeded`, a word a future build adds) must
+  fail closed. A missing/empty `status` reports no verdict and is left alone.
+  **Both** stream consumers enforce this — `run_command_streaming` and
+  `claude_step.run_claude` (which drives the post-mission commit step) — so a
+  failed session cannot become a commit subject on either path.
+  The **json mission path** applies the same rule from the other end: a json
+  object carrying a non-empty top-level `error` fails the mission
+  (`mission_runner.json_output_reports_failure`), so partial `response` prose
+  is never banked as completed work on an exit-0 abort. That synthetic failure
+  is **finalization-only**: it must never be fed to the text classifiers as
+  evidence that the CLI *process* failed. `mission_executor` snapshots the real
+  exit code and passes it as `trust_stdout` / the quota handler's `exit_code`
+  (including through `run_post_mission`'s `cli_exit_code`), preserving the
+  invariant that stdout is scanned for quota/auth only after a genuine process
+  failure — otherwise assistant prose about rate limits would pause the daemon
+  for every project on a mission that merely hit an approval prompt.
+  **`error` events are advisory.** `severity` is recorded in the vocabulary but
+  deliberately not a failure trigger: upstream emits `error` events for
+  recoverable conditions (a failed tool call the model then works around), and
+  the authoritative session verdict is the terminal `result` status plus the
+  exit code. Making a mid-stream `error` fatal would abort sessions that
+  recover. Revisit only with a measured stream showing a fatal `severity:
+  "error"` with no terminal `result`.
+  **Permissions:** Kōan emits `--approval-mode yolo` **only** when
+  `skip_permissions` is set. With permissions on, no approval flag is emitted
+  and a once-per-process warning states that headless runs cannot answer a
+  confirmation prompt — deliberately *not* Grok's unconditional auto-approve:
+  a provider adapter must not escalate beyond what the operator configured.
+  **Unsupported inputs** (per-tool allow/deny, max turns, MCP config paths,
+  plugin dirs, reasoning effort, fallback model, system-prompt file) warn once
+  and are skipped, never silently accepted. `--allowed-tools` is deprecated
+  upstream (Policy Engine) and is deliberately **not** emitted.
+  **Models:** Claude tier aliases (`haiku`/`sonnet`/`opus`/`claude-*`) are never
+  passed as `-m` — warn once and omit, so Gemini's own default (`auto`) applies.
+  **Prompt delivery** rides argv as `-p`; stdin passing stays off (Gemini
+  *appends* `-p` to piped stdin rather than replacing it, so the base marker
+  rewrite would corrupt the prompt) and there is no `--prompt-file` flag.
+  Quota/auth: stderr trusted; stdout only on non-zero exit with an error-marker
+  gate. Pre-flight probe uses `--output-format json -p ok` from an empty scratch
+  dir. Invocation lock: `gemini-cli` (shared `~/.gemini/` state).
+  **Not measured:** unlike the Grok and Haze contracts above, this one is
+  derived from upstream documentation and source (`packages/core/src/output/
+  types.ts`), not from a live run on a Kōan host. Exit codes `42` (input error)
+  and `53` (turn limit) are documented but not mapped to Kōan's max-turns
+  handling. Recorded samples: `koan/tests/gemini_samples.py`. Operator docs:
+  `docs/providers/gemini.md`.
+- **The streaming read loop must be inactivity-bounded, and the child must be
+  session-isolated.** `run_command_streaming` consumes `proc.stdout` with a
+  blocking `for line in ...`. Its `timeout` argument reaches only the
+  `proc.wait(timeout=...)` that runs **after** stdout EOF, so a provider that
+  opens the pipe, prints its session banner and then goes silent forever is not
+  bounded by it at all — the loop simply blocks. The only thing that ever ended
+  such a run was run.py's outer skill-runner liveness watchdog
+  (`first_output_timeout`, default 600s), which SIGKILLs the whole runner
+  mid-pipeline: the mission dies with a generic "Skill runner timed out", no
+  partial result is written, and the stall is not attributable to the pass that
+  caused it. A hard wall-clock bound is the wrong instrument here — a healthy
+  long pass emits progress events for many minutes and must not be capped — so
+  the bound is on **inactivity**: callers opt in with `idle_timeout`, a
+  `LivenessWatchdog` heartbeats on every consumed line, and a stall raises
+  `RuntimeError` that the caller can attribute and degrade on. `idle_timeout`
+  defaults to `None`, which preserves the historical (unbounded) behavior for
+  callers that have not opted in. An opted-in caller MUST pick a value strictly
+  below **the outer budget that governs its own dispatch path**, otherwise the
+  outer watchdog still wins and the inner bound is decorative. That budget is
+  not a single constant: run.py arms the outer watchdog from
+  `rebase_first_output_timeout` for a `/rebase` mission and from
+  `first_output_timeout` otherwise, and a review pass is reachable under both
+  (`rebase_pr` → `private_review_gate` → `review_runner`). Deriving the inner
+  value from `first_output_timeout` unconditionally would ignore the very knob
+  an operator uses to widen a rebase's silence budget, killing gate passes well
+  inside the configured allowance; the derivation MUST therefore select the
+  same budget run.py selected, keyed off the canonical `KOAN_MISSION_COMMAND`
+  the runner exports. On the review path the two clocks are the *same*
+  clock — run.py's watchdog resets on the read loop's per-event `print()`,
+  which is what heartbeats the inner one — so the inner value MUST be derived
+  as a small fixed margin below that budget (`outer - 60`), never a
+  fraction of it: halving it would not add a bound where none existed, it
+  would halve the silence the pass was always allowed and kill legitimate long
+  turns.
+- **Session isolation is scoped to the armed watchdog, and the watchdog's kill
+  is SIGKILL-to-the-group.** These two follow from the bound above and are as
+  load-bearing as it is.
+  `start_new_session=True` is passed **only when `idle_timeout` is set**. An
+  armed watchdog requires it — the kill is a group kill, and a child sharing
+  Kōan's process group would make it SIGKILL the daemon itself. But isolation
+  is not free in the other direction: `run.py`'s skill-runner teardown and
+  `mission_scope`'s fallback path both reap by process group, and a child in
+  its own session is outside both. Isolating unconditionally would put every
+  non-opted-in caller's provider beyond that teardown with no watchdog to
+  justify it, so a stuck provider could outlive a skill timeout, an abort, or
+  the outer liveness kill while still burning quota.
+  The kill must be `force_kill_process_group` (`graceful=False`), not the
+  SIGTERM-then-escalate default: escalation stops as soon as the *leader*
+  exits, so a descendant that handles or ignores SIGTERM survives it — and a
+  survivor holding the inherited stdout write end keeps the reader blocked,
+  never reaching the fired check. That is the same hang the watchdog exists to
+  end, re-entered through the kill path.
+  Residual, accepted: an opted-in child is outside the outer group teardown, so
+  an abort or `skill_timeout` that fires while the provider is *actively
+  streaming* leaves it running. Its idle watchdog does **not** bound it there —
+  that watchdog is a `threading.Timer` inside the skill-runner process, and the
+  teardown kills that process, taking the timer with it. What bounds it is
+  narrower: a streaming provider takes `EPIPE`/`SIGPIPE` on its next write once
+  the read end closes, and on a systemd host the mission cgroup still contains
+  it (session isolation does not escape a cgroup). Neither holds for a manual
+  abort during a *silent* window on a non-systemd host (macOS, where
+  `mission_scope` degrades to `start_new_session=True` plus a process-group
+  kill), where the child survives unbounded. Closing it fully needs the outer
+  teardown to track isolated provider sessions.
+  Within `run_command_streaming` itself the same reasoning makes one kill
+  mandatory: because the opted-in child is outside every group teardown and
+  `popen_cli`'s `cleanup()` only closes stdin, deletes the prompt file and
+  releases the invocation lock, an **exception raised mid-loop** (a
+  `BrokenPipeError` on Kōan's own stdout, a malformed event) MUST force-kill the
+  group before disarming the watchdog. Disarming first leaves nothing that can
+  reach the provider: it outlives the call, keeps burning quota, and the next
+  mission takes the invocation lock `cleanup()` just released — running two
+  providers concurrently against the serialization that lock exists to enforce.
+- **An inactivity watchdog must be disarmed when the read loop ends, not when
+  the call returns.** `proc.stderr.read()` and `proc.wait()` run after stdout
+  EOF and emit no heartbeats, so a watchdog still armed across them kills a run
+  that already streamed everything — and past the `fired` check, so the kill
+  surfaces as an opaque `exit -9` instead of an attributable stall. Disarming
+  MUST use `mark_completed()` as well as `cancel()`: `threading.Timer.cancel()`
+  is a no-op once `_fire` has begun, and the `graceful=False` kill path has no
+  `poll()` guard, so a late fire would `killpg` a possibly recycled PID. This
+  governs the two `LivenessWatchdog`s that bound a provider pipe read loop —
+  `run_command_streaming` and `cli_exec.stream_with_timeout` (the `/rebase`
+  review and CI phases) — where a graceful kill would make
+  `rebase_review_idle_timeout` ineffective against a SIGTERM-surviving
+  descendant and misattribute the resulting hang to
+  `rebase_review_max_duration`.
+  **Known exception: `run.py`'s outer skill-runner watchdog** (`run.py`,
+  `first_output_timeout`) also feeds a pipe read loop (`_pump_skill_stdout`)
+  and deliberately keeps the graceful default. Its group is the whole skill
+  runner plus whatever build tooling `/review`, `/fix` and `/implement` spawn,
+  and SIGTERM-first is what lets that tooling release git index locks and
+  containers before dying; the `TimeoutExpired` path that follows escalates
+  with its own `_kill_process_group`. The same SIGTERM-survivor hang is
+  therefore reachable there — a descendant that ignores SIGTERM and inherited
+  the runner's stdout keeps `_pump_skill_stdout` blocked after the leader
+  exits. Converting it means bounding that read loop independently of the kill
+  mode, which is a change to the agent loop's teardown rather than to this
+  component's contract.
+- **A stall detected after the terminal envelope MUST NOT be reported as a
+  stall.** The read loop drains to EOF rather than breaking on the result
+  event, so a CLI that emits its verdict and then goes silent tearing down (MCP
+  servers, telemetry) trips the same watchdog. Raising there would demote a
+  finished pass to a truncated error string, so the result is returned and the
+  resulting `exit -9` is recognised as the watchdog's own kill. "A terminal
+  envelope arrived" MUST be decided on the **event shape**, not on whether a
+  result *string* was extracted: Grok Build's `end` and any text-less `result`
+  close the stream while deliberately yielding no text, so inferring it from
+  the extracted result would report a completed pass on those providers as a
+  stall — the same demotion, reached through a different envelope shape.
+  That shape test MUST be an **explicit whitelist of terminal types**, never a
+  `.completed` / `.done` suffix match. The looser suffix rule is safe where it
+  has always lived — deciding whether an event *might carry* the final text,
+  where a false positive only overwrites a string the next write replaces — but
+  the exemption is a one-way latch, so the first match disarms the bound for
+  the rest of the run. Codex emits `item.completed` per stream item (its
+  terminal envelope is `turn.completed`) and `response.output_text.done` is an
+  assistant *text* event, so a suffix rule would let a Codex-shaped stream go
+  silent for the whole idle window and still return its truncated output as a
+  finished verdict, with no usage recorded — a quieter failure than the hang
+  this bound replaced. Adding a provider whose stream closes on a new type
+  means adding that type to the whitelist.
+  Recognising the kill MUST also not bypass the rest of the exit handling: a
+  session that reported a **failed** terminal status and *then* hung in
+  teardown MUST still surface as that failure, not as a successful partial
+  result. A genuine stall (no terminal envelope) MUST persist the usage
+  snapshot before raising — it is the run that burned the most — and MUST carry
+  the drained stderr, which is usually the only statement of *why* the provider
+  went silent; when that drain itself fails, the error MUST say so rather than
+  degrade to a bare timeout message.
+  That drain MUST itself be bounded, and the bound MUST NOT be inferred from
+  the leader's exit. `read()` returns only at EOF, so whoever still holds the
+  write end decides when it returns — and after the group SIGKILL that can be a
+  descendant which escaped the group (its own session, e.g. a `setsid`'d MCP
+  helper) and survives the kill holding the inherited fd. The leader proves
+  nothing about that survivor: SIGKILL is uncatchable and the leader is inside
+  the killed group, so the post-kill `wait()` succeeds on virtually every stall.
+  Gating the drain on that wait would therefore leave the escaped-descendant
+  case — the very one it is written for — draining unbounded, re-entering one
+  pipe over the same unbounded read this invariant removed from the stdout loop.
+  The bound MUST NOT be implemented by blocking a helper thread inside the
+  stream object either: the caller closes that stream in its `finally`, and
+  `close()` on a buffered stream waits for the reader still inside it, which
+  moves the hang rather than removing it. A truncated drain MUST be reported
+  **alongside** whatever bytes it did collect, on both the raising and the
+  returning branch — on the latter the drain result is plain text, so a
+  truncated read is otherwise indistinguishable from a complete one, and on
+  either branch a fragment presented alone reads as the whole of what the
+  provider printed. An expired `wait()` MAY corroborate that report; it is not
+  what decides it.
+- **Every post-EOF stderr drain in an opted-in call MUST be bounded, including
+  the one on the success path** — in `run_command_streaming` and in
+  `cli_exec.stream_with_timeout`, the two call sites the disarm invariant above
+  governs, through one shared helper
+  (`subprocess_runner.drain_stream_bounded`). The watchdog is disarmed the
+  moment the read loop ends, so that drain is the one read left with nothing in
+  force — and the
+  escaped-descendant shape does not require a stall to reach it: a helper
+  spawned with its own session and `stdout=DEVNULL` keeps the inherited stderr
+  fd through the leader's entirely *normal* exit, so stdout still reaches EOF,
+  nothing fires, and an unbounded `read()` blocks with the `proc.wait(timeout=…)`
+  below it never reached. That is the same "the declared bound sits after a
+  blocking read" shape this invariant removed from the stdout loop, and for an
+  opted-in caller it is worse than before: the outer watchdog's eventual kill no
+  longer reaches the session-isolated provider. The bound MUST be on
+  **inactivity**, not total duration, for the same reason the stdout bound is —
+  a child still printing is not the hazard, a silent holder of the write end is,
+  and a total cap would truncate a slow but healthy stderr dump.
+- **The mandatory kill above MUST NOT be gated on the leader still running.**
+  The leader exiting says nothing about its descendants, and a helper the CLI
+  left behind in the isolated session is reachable from nowhere else — not from
+  `run.py`'s skill-runner teardown, not from `mission_scope`'s fallback. It
+  MUST also be a kill **by a process-group id captured while the leader was
+  alive**, not one derived from the leader at teardown time: a group outlives
+  its leader, but once `proc.wait()` has reaped that leader its pid is gone, so
+  a `getpgid(proc.pid)` lookup fails and silently degrades to a no-op
+  single-process kill. That is exactly the contract of
+  `subprocess_runner.kill_orphaned_process_group(pgid)`, which this path MUST
+  use rather than hand-rolling `os.killpg`: it refuses `pgid <= 1` and the
+  caller's own group, keeping "an armed bound implies `start_new_session=True`"
+  structural rather than a property of a comment, and it *reports* a group that
+  survived instead of leaving a still-running provider invisible — which matters
+  because `cleanup()` releases the invocation lock immediately afterwards, and a
+  surviving provider plus the next mission's is the concurrency that lock
+  exists to prevent.
+  That refusal is not belt-and-braces, and `force_kill_process_group` (the
+  watchdog's own kill) MUST make it too: a group id that was not captured from
+  a live child is a *failed capture*, not something to signal. `killpg(0, …)`
+  means "the caller's group", `getpgid` reports 0 for a process with no group
+  of its own, and a fixture whose pid is a `MagicMock` indexes to 1 — so the
+  unguarded form turns an invariant violation into a SIGKILL of Kōan's own
+  group or of init's. Kōan has already paid that once: an unguarded
+  `os.killpg(proc.pid, …)` reached by a mock-backed test SIGKILLed process
+  group 1 on a CI runner, which surfaced as the runner losing contact with its
+  server and the job's logs never being uploaded.
 
 ## Integration points
 

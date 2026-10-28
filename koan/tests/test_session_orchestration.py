@@ -117,6 +117,40 @@ class TestParallelReapSessions:
         mock_fail.assert_not_called()
         mock_notify.assert_called_once()
 
+    def test_reap_reports_the_sessions_own_cap_not_the_loops(self, instance_dir, koan_root):
+        """The parallel path owns its cap verdict; app.run's global is another
+        mission's and must never be stamped on a session."""
+        import app.run as run_mod
+        from app.session_manager import SessionResult
+
+        session = _make_session("s1", exit_code=137)
+        session.status = "failed"
+        run_mod._live_sessions["s1"] = session
+
+        completed_result = SessionResult(
+            session=session, exit_code=137, stdout="", stderr="",
+            memory_cap_detail="exceeded memory cap (5.9G of 5.75G)",
+        )
+
+        run_mod._last_mission_memory_cap = "exceeded memory cap (1G of 2G)"
+        try:
+            with patch("app.run._get_session_registry", return_value=MagicMock()), \
+                 patch("app.session_manager.poll_sessions", return_value=[completed_result]), \
+                 patch("app.mission_runner.run_post_mission",
+                       return_value={"success": False, "quota_exhausted": False}) as mock_post, \
+                 patch("app.missions.complete_mission_by_session"), \
+                 patch("app.missions.fail_mission_by_session", return_value="updated"), \
+                 patch("app.run.atomic_write"), \
+                 patch("app.run._notify_mission_end"), \
+                 patch("app.run._commit_instance"):
+                _parallel_reap_sessions(instance_dir, koan_root, 1, 10)
+        finally:
+            run_mod._last_mission_memory_cap = ""
+
+        assert mock_post.call_args.kwargs["memory_cap_detail"] == (
+            "exceeded memory cap (5.9G of 5.75G)"
+        )
+
     def test_completed_session_reaped_failure(self, instance_dir, koan_root):
         import app.run as run_mod
         from app.session_manager import SessionResult

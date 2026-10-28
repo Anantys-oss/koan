@@ -50,6 +50,13 @@ DEBUG_LOG_FILE = ".koan-debug.log"
 
 CHECK_NOTIFICATIONS_FILE = ".koan-check-notifications"
 
+# -- Mission containment -------------------------------------------------------
+
+# Directory of live per-mission cgroup scopes (one file per scope, so
+# registering and de-registering are a create and an unlink with no
+# read-modify-write for parallel sessions to race on). See app/mission_scope.py.
+MISSION_SCOPES_DIR = ".koan-mission-scopes"
+
 # -- Misc ----------------------------------------------------------------------
 
 ONBOARDING_FILE = ".koan-onboarding.json"
@@ -59,3 +66,16 @@ LAST_CLEANUP_FILE = ".koan-last-cleanup"
 def pid_file(process_name: str) -> str:
     """Return the signal file name for a PID file, e.g. ``.koan-pid-run``."""
     return f".koan-pid-{process_name}"
+
+
+def ready_file(process_name: str) -> str:
+    """Return the readiness marker file name, e.g. ``.koan-ready-mcp``.
+
+    A pidfile proves a process exists; this marker proves it got as far as
+    serving. The MCP HTTP daemon claims its pidfile early — so a slow SDK
+    import is not reported as a launch failure — and touches this only once
+    the transport is about to accept requests, so the launcher can tell
+    "alive" from "serving" instead of reporting every post-pidfile startup
+    failure as a healthy boot.
+    """
+    return f".koan-ready-{process_name}"

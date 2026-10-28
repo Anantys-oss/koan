@@ -61,6 +61,21 @@ class TestPackageStructure:
         from app.provider.copilot import CopilotProvider
         assert CopilotProvider.name == "copilot"
 
+    def test_facade_reexports_read_only_unenforceable(self):
+        """The security refusal must stay catchable from the compat facade.
+
+        `app.cli_provider` re-exports under ``# noqa: F401``, so ruff cannot
+        catch the import being dropped, and no production code imports this name
+        from the facade yet. Without this test the re-export can silently
+        regress and a caller wanting to distinguish the read-only refusal from a
+        generic CLI failure would have to reach past the facade.
+        """
+        from app.cli_provider import ReadOnlyUnenforceable as ViaFacade
+        from app.provider.base import ReadOnlyUnenforceable as ViaBase
+
+        assert ViaFacade is ViaBase
+        assert issubclass(ViaFacade, RuntimeError)
+
     def test_local_module_removed(self):
         with pytest.raises(ImportError):
             from app.provider.local import LocalLLMProvider  # noqa: F401
@@ -1203,6 +1218,7 @@ class TestEffortSupport:
         assert p.build_effort_args("high") == ["--effort", "high"]
         assert p.build_effort_args("low") == ["--effort", "low"]
         assert p.build_effort_args("medium") == ["--effort", "medium"]
+        assert p.build_effort_args("xhigh") == ["--effort", "xhigh"]
         assert p.build_effort_args("max") == ["--effort", "max"]
 
     def test_claude_provider_empty_effort(self):
@@ -1453,3 +1469,74 @@ class TestRoleProviderSelection:
         assert "review_mode→claude(deep-claude)" in summary
         assert "fallback→claude" in summary
         assert "mission→" not in summary
+
+
+# ---------------------------------------------------------------------------
+# Global cli_provider with a binary path (flavor:path)
+# ---------------------------------------------------------------------------
+
+class TestGlobalProviderBinaryPath:
+    """`cli_provider` accepts the same flavor:path grammar as `cli:` values.
+
+    Before this, a `flavor:path` value failed the `in _PROVIDERS` membership
+    test and the whole setting was silently discarded — every path that used the
+    global provider spawned the bare binary.
+    """
+
+    def setup_method(self):
+        import app.provider as provider
+        import os
+        os.environ.pop("KOAN_CLI_PROVIDER", None)
+        os.environ.pop("CLI_PROVIDER", None)
+        provider.reset_provider()
+
+    def teardown_method(self):
+        import app.provider as provider
+        provider.reset_provider()
+
+    @patch("app.utils.load_config", return_value={"cli_provider": "claude:/opt/bin/wrap-claude"})
+    def test_path_reaches_the_global_provider(self, mock_config):
+        assert get_provider_name() == "claude"
+        assert get_provider().binary() == "/opt/bin/wrap-claude"
+
+    @patch("app.utils.load_config", return_value={"cli_provider": "claude"})
+    def test_flavor_only_is_unchanged(self, mock_config):
+        # Backward compatibility: the documented form must behave exactly as before.
+        assert get_provider_name() == "claude"
+        assert get_provider().binary() == "claude"
+
+    @patch("app.utils.load_config", return_value={"cli_provider": "codex:/opt/bin/codex"})
+    def test_works_for_non_claude_flavors(self, mock_config):
+        assert get_provider_name() == "codex"
+        assert get_provider().binary() == "/opt/bin/codex"
+
+    @patch("app.utils.load_config", return_value={"cli_provider": "bogus:/x"})
+    def test_unknown_flavor_falls_back_and_warns_once(self, mock_config, capsys):
+        assert get_provider().binary() == "claude"
+        # One line per resolution, not one per internal lookup.
+        assert capsys.readouterr().err.count("unknown provider flavor") == 1
+
+    def test_cache_is_keyed_on_the_path_too(self):
+        """Two values sharing a flavor must not share a cached instance."""
+        import app.provider as provider
+        with patch("app.utils.load_config", return_value={"cli_provider": "claude:/first"}):
+            assert get_provider().binary() == "/first"
+        with patch("app.utils.load_config", return_value={"cli_provider": "claude:/second"}):
+            assert get_provider().binary() == "/second"
+        provider.reset_provider()
+
+    @patch("app.provider.get_provider_name", return_value="codex")
+    @patch("app.utils.load_config", return_value={"cli_provider": "claude:/opt/bin/wrap-claude"})
+    def test_patched_name_does_not_inherit_another_flavors_path(self, mock_config, mock_name):
+        """A patched/overridden flavor must not pick up a path configured for
+        a different flavor — and the 164 existing get_provider_name mocks must
+        keep steering get_provider()."""
+        p = get_provider()
+        assert p.name == "codex"
+        assert p.binary() == "codex"
+
+    @patch.dict("os.environ", {"KOAN_CLI_PROVIDER": "codex"})
+    @patch("app.utils.load_config", return_value={"cli_provider": "claude:/opt/bin/wrap-claude"})
+    def test_env_var_still_wins_and_carries_no_path(self, mock_config):
+        assert get_provider_name() == "codex"
+        assert get_provider().binary() == "codex"

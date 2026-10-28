@@ -4,7 +4,7 @@ title: "Component Spec — Skills System"
 description: "Documents the skills system that discovers, routes, and executes `/command` skills (SKILL.md contract, dispatch, the new-skill checklist, and the eval harness)."
 tags: [skills]
 created: 2026-06-27
-updated: 2026-07-22
+updated: 2026-09-11
 ---
 
 # Component Spec — Skills System
@@ -53,6 +53,7 @@ koan/skills/core/<name>/
 | `worker: true` | Blocking skill (Claude/API) → runs in a background thread. |
 | `github_enabled: true` | Triggerable via GitHub @mention (Jira reuses it; no separate `jira_enabled`). |
 | `github_context_aware: true` | Accepts extra context after the command. |
+| `api_exposed: true` | Publish this core skill through the authenticated REST/MCP catalog. Defaults to `false`. Custom instance skills are never included, even if they declare this flag. |
 | `sub_commands:` | Combo skill — decomposes into multiple sub-missions (discovered by `collect_combo_skills()`). |
 | `forward_result: true` (+ `title_markers:`) | Opt-in result forwarding, resolved dynamically — **the pattern for "core recognizes a custom skill" without hardcoding names**. |
 | `model_key:` | Selects the model tier (e.g. `mission`). |
@@ -60,8 +61,23 @@ koan/skills/core/<name>/
 ## Invariants
 
 - **Names/aliases/dirs use underscores, never hyphens** — Telegram truncates at `-`.
+- **API skill exposure is fail-closed.** Only core skills carrying
+  `api_exposed: true` enter the REST/MCP catalog. Canonical command names,
+  descriptions, aliases, and usage strings are derived from the parsed
+  `commands:` entries; no command list is maintained in Python.
 - **No hardcoded skill-name lists in `koan/app/`.** When core must recognize a specific
   custom skill, drive it off SKILL.md frontmatter flags (see `collect_forward_result_markers`).
+- **A bare `args.split()` may consume a client footer as a positional argument.**
+  Messaging providers may append a footer/signature on the last line (e.g. Slack's
+  `*Sent using* @Claude`). The Telegram ingress (`handle_command`) strips the last line before
+  constructing `SkillContext` only when args span more than one line **and** that line matches
+  the anchored footer shape (`^\s*\*?Sent using\*?\b`), then right-strips the remainder to drop
+  the blank line clients leave in front of the footer. It does **not** blanket-truncate, and a
+  single-line command — or a real final line — that merely mentions the phrase mid-sentence
+  keeps its text. Telegram handlers must not expect footer text in
+  `args`. The in-process GitHub/Jira custom-skill dispatch (`external_skill_dispatch`) does
+  **not** strip — multi-line @mention context and the appended Jira key must still reach the
+  handler unchanged.
 - **Skill stdout is DATA.** Runners emit structured transcripts; `mission_executor`
   passes `trust_stdout=False` so transcripts aren't misread as CLI errors.
 - **No private identifiers leak** into core skills, tests, or docs — use generic
@@ -230,12 +246,17 @@ a large root `KOAN.md` and large per-skill instructions). Prompt-only skills
 (`_execute_prompt` returns raw `prompt_body`) run without a resolved project in
 scope, so they receive no project-scoped injection — by design, not a gap.
 
-Every actual injection is announced on **stderr** (so it lands in `logs/run.log`
-and is visible via `make logs`) through `project_koan.log_context_load(label,
-content)`, which emits `Detected <label>, loaded N chars (~ M tokens)` — `label`
-is `KOAN.md` for the general block and `.koan/skills/<skill>` for the per-skill
-block. `logging.getLogger` output alone is invisible in the run loop (no
-stream handler wired), so the load line is a direct `print`, not `logger.info`.
+Every actual injection is folded in silently via
+`project_koan.record_context_load(label, content)` — `label` is `KOAN.md` for the
+general block and `.koan/skills/<skill>` for the per-skill block.
+`prompts.load_skill_prompt` then calls `project_koan.flush_context_summary()`
+once, at the end of the build, which emits a single `Steering loaded before
+Claude (…)` block on **stderr** (so it lands in `logs/run.log` and is visible via
+`make logs`) listing every recorded file with per-file and total token estimates.
+`logging.getLogger` output alone is invisible in the run loop (no stream handler
+wired), so the summary is a direct `print`, not `logger.info`. Repeated builds
+within one mission that carry the same steering set are deduped (see
+`specs/components/agent-loop.md` § "Steering-context visibility").
 
 ### Repo config file (`.koan/config.yaml`)
 
@@ -246,6 +267,8 @@ from the operator's KOAN_ROOT `instance/config.yaml`). It is a generic, extensib
 per-repo config designed to gain keys over time; this phase ships exactly one key,
 `review.always_check` (see the diff-size contract above), consumed via the typed accessor
 `get_review_always_check(project_path) -> list[str]`.
+A later phase adds a second typed-accessor key, `hooks.<event>`, consumed via
+`get_hook_skills(project_path, event) -> list[str]` (see "Project hook skills" below).
 
 **Fail-safe contract (untrusted-input hardening).** Every malformed shape converges to the
 absent-config no-op — the reader NEVER raises and NEVER aborts a review:
@@ -258,7 +281,210 @@ absent-config no-op — the reader NEVER raises and NEVER aborts a review:
   only non-blank `str` items, and caps at `_MAX_ALWAYS_CHECK_PATTERNS` (100) patterns of
   `_MAX_PATTERN_LEN` (200) chars each, dropping the excess with one diagnostic.
 
+- `get_hook_skills` returns `[]` unless `hooks.<event>` is a list; it keeps only non-blank
+  `str` items matching `^[a-z0-9][a-z0-9-]*$` of at most `_MAX_SKILL_NAME_LEN` (64) chars,
+  de-duplicates, and caps at `_MAX_HOOK_SKILLS` (10) per event, dropping the excess with
+  one diagnostic per reason.
+
 Absent `.koan/config.yaml` (the common case) ⇒ `[]` ⇒ byte-identical review output.
+
+#### Mission hooks (`pre_hooks` / `post_hooks`)
+
+The same `.koan/config.yaml` surface carries optional **mission hooks** — ordered
+lists of shell commands the repo owner wants run **before** (`pre_hooks`) and
+**after** (`post_hooks`) a mission Kōan runs on the repo. They live under a
+mission-type section and a `default` fallback:
+
+```yaml
+default:  { pre_hooks: [...], post_hooks: [...] }   # any mission type
+review:   { pre_hooks: [...], post_hooks: [...] }   # a specific type; also fix/plan/
+                                                    # rebase/refactor/implement/…
+```
+
+- **Resolver.** `project_koan.get_mission_hooks(project_path, mission_type, phase)
+  -> list[str]` returns the resolved list. `phase ∈ {"pre","post"}`;
+  `mission_type` is the canonical command name (`skill_dispatch.mission_command_name`),
+  `""` for a non-skill mission. It reads through the same `read_koan_config` fail-safe
+  path.
+- **Precedence — replace, per phase.** If `<mission_type>.<phase>_hooks` is a
+  present, non-empty list it is used and the `default.<phase>_hooks` list is **not**
+  also run (replace, not merge); otherwise `default.<phase>_hooks`; otherwise `[]`.
+  `pre` and `post` resolve independently. `mission_type == ""` ⇒ only `default`.
+- **Validation / caps.** Non-list ⇒ `[]`; non-string and blank entries dropped;
+  entries over `_MAX_HOOK_CMD_LEN` dropped; list capped at `_MAX_HOOKS_PER_LIST`;
+  one diagnostic on any drop/cap. Never raises. Absent config ⇒ `[]` ⇒ no-op.
+- **Ordering.** Commands within a resolved list run top-to-bottom, sequentially.
+
+Execution, the operator opt-in gate, and the call sites are an **agent-loop
+contract** — see `specs/components/agent-loop.md` → `mission_hooks`. The resolver
+here is a pure reader; it never executes anything.
+
+### Project hook skills (`hooks.<event>`) — contract
+
+A repo MAY name Claude Code skills to run when a Kōan lifecycle event fires. Keys are the
+event names (`session_start`, `session_end`, `pre_mission`, `post_mission`,
+`post_review`); values are lists of skill names.
+
+- `HookRegistry._fire_project_hook_skills` evaluates this after user hooks and automation
+  rules, and ONLY for events whose context carries a `project_path`. Absent
+  `project_path` ⇒ no-op.
+- **Operator opt-in, default off.** The list is repo-controlled and every honored name
+  spends a *write-capable* mission on the operator's host and quota, so registering a
+  project MUST NOT by itself grant that repo this lever. `_fire_project_hook_skills` MUST
+  check `hooks.hook_skills_enabled(project_name)` **before** resolving the repo config and
+  return when it is false, logging the "skipped (not enabled)" diagnostic at most once per
+  process. Resolution mirrors `mission_hooks.hooks_enabled` — the per-project override
+  (`projects_config.get_project_hook_skills`, the `hook_skills:` bool in `projects.yaml`)
+  when set, else the global `config.is_hook_skills_enabled()` (`hook_skills.enabled` in the
+  operator's `instance/config.yaml`, **default `False`**). Both resolvers MUST fail closed:
+  any error ⇒ disabled, never a silent fall-through to the global gate. This is the same
+  containment the sibling `pre_hooks`/`post_hooks` surface has (see
+  `specs/components/agent-loop.md` → "Mission hooks", `docs/security/mission-hooks.md`);
+  the trusted-branch read below bounds *who* may set the value and the name regex bounds
+  *what shape* it takes, but neither bounds whether the operator consented to the
+  mechanism.
+- **Trusted source of the config.** The list MUST be read from the operator-registered
+  checkout for the firing project (resolved from `project_name`, else from `project_path`
+  only when that path IS a registered checkout; anything else ⇒ no-op), NEVER from the
+  `project_path` the event carries. On `post_review` that path is a detached worktree of
+  the **pull request head** (`review_runner.run_review` → `pinned_review_worktree`), so
+  reading it would let any contributor who can open a PR choose which write-capable
+  mission Kōan queues on the operator's quota. `review.always_check` may be read from the
+  PR head because it only reorders a read-only prompt; this key MUST NOT.
+- **Trusted *branch*, not merely a trusted directory.** A registered checkout is a path,
+  and its work tree is not owner-controlled: `rebase_pr._checkout_pr_branch` runs
+  `git checkout -B <branch> <fetch-remote>/<branch>` in that very directory, and a timeout,
+  a stagnation kill, or a crash leaves it parked on the contributor's branch. The list
+  MUST therefore be read from the **committed default branch** of the checkout's trusted
+  remote (`project_koan.read_trusted_koan_config`, i.e. `git show
+  <remote>/<default>:.koan/config.yaml`), NEVER from the work tree, so changing which
+  skills run requires push access rather than an open pull request. The trusted remote is
+  `origin`, else the sole remote of a single-remote repo; several remotes with no `origin`
+  is ambiguous — rebasing a fork PR adds the contributor's fork as a second remote — and
+  MUST read nothing. The work tree MAY be read ONLY where nothing external can land in it:
+  a non-git directory, or a git repo with no remote at all. The default branch MUST be
+  resolved from `refs/remotes/<remote>/HEAD` alone and MUST NOT be guessed from
+  conventional names: a repo whose default branch was renamed keeps a stale — and no
+  longer protected — remote-tracking `main`, so a guess would read the key from a branch
+  anyone with push rights to an abandoned ref controls. An unresolvable default branch
+  ⇒ no-op, logged with the remedy (`git remote set-head <remote> -a`). Consequence for
+  repo owners: a change to `hooks.<event>` takes effect once merged and fetched, not while
+  it sits on a branch.
+- For each honored name, one pending mission is queued. Queuing is per-skill isolated: a
+  failure while queuing one name MUST NOT prevent the remaining names from queuing. The
+  mission is NOT executed inline: handlers run in the firing process, and queuing is what
+  moves the work onto the mission loop, which (unlike the read-only review subprocess)
+  loads the project's own `.claude/skills`, may invoke the `Skill` tool, and is not
+  MCP-stripped.
+- **The repo supplies names; Kōan composes the mission text.** This is a security
+  boundary, not a style choice: `.koan/config.yaml` is committable by anyone who can open
+  a pull request, and the value reaches the prompt of a write-capable agent. The name
+  regex above rejects — rather than sanitizes — anything that could carry an instruction,
+  a path, or a shell fragment. Kōan MUST NOT interpolate repo-supplied free text into a
+  mission.
+- **Idempotent per (skill, event, subject), while the earlier mission is still queued.**
+  `insert_pending_mission` only de-duplicates entries shaped like
+  `/<command> <github-url>`, so this path MUST perform its own check against the pending
+  and in-progress sections, keyed on three delimited tokens stamped into each queued entry:
+  a `[hook-skill:<name>]` marker, a `[hook-event:<event>]` marker, and a
+  `[hook-subject:<subject>]` token (the subject being `pr_url`, else `mission_title`). The
+  match MUST be on all three exact tokens, not on a bare
+  substring of any, so neither a shorter skill name (`docs` masked by an already-queued
+  `docs-lint`) nor a shorter PR URL (`pull/7` masked by `pull/70`) is wrongly treated as
+  already queued. The event MUST be part of the matched identity, not prose only: a repo
+  may legitimately declare one skill on two events (`pre_mission` and `post_mission`), and
+  both fires then share a skill name *and* a subject — an identity that omitted the event
+  would match the first fire's still-pending entry and silently drop the second
+  declaration. Re-firing the same event for the same subject MUST NOT queue the work
+  twice while a prior mission for that subject is still pending or in progress; once that
+  mission has completed, a later re-fire (a new push to the same PR) queues again — the
+  check covers Pending + In Progress only, by design. A different subject MUST queue
+  separately.
+  The check and the insert MUST happen inside one locked read-modify-write of the mission
+  store (`utils.modify_missions_file`), not as a read followed by a separate insert: the
+  review subprocess and the run loop can fire the same event concurrently, and an unlocked
+  read lets both observe "not queued" and both insert.
+  The subject MUST be stamped in the form the store will hold it, and MUST be identical
+  across a mission's whole lifecycle: lifecycle markers (`⏳`/`▶`/`✅`/`❌`), queue-appended
+  system metadata (`[complexity:…]`, `[r:N]`, origin markers) **and the
+  `[verify-failed: …]` requeue tag** stripped, then whitespace collapsed to single spaces.
+  Identity MUST come from `missions.canonical_mission_key` (the repo's single definition of
+  stable mission identity, which covers the requeue tag) composed with
+  `missions.strip_all_lifecycle_markers` (which additionally truncates at a bare `⏳`
+  carrying no parseable timestamp) and `missions.strip_system_metadata` (origin markers).
+  A subject that kept the requeue tag would differ from the first attempt's — post-mission
+  verification re-queues a failed mission as `<title> [verify-failed: …]` by default — and
+  the same work would queue a second time while the first is still pending. Otherwise
+  the *stored* token differs from the token the next fire searches for and every re-fire
+  re-queues — and an embedded `⏳` additionally suppresses `insert_mission`'s fresh queue
+  stamp, so the new mission would inherit the previous mission's `queued_at`.
+- **The subject MUST be length-bounded before it is interpolated.** `pr_url` is short;
+  `mission_title` is not necessarily — a complex `### ` mission reaches the hook as its
+  whole block flattened to one line (`parse_sections` attaches continuation lines to the
+  item, `insert_mission` flattens newlines to spaces). Interpolated verbatim, the queued
+  entry would carry the *previous* mission's full instruction text, and the write-capable
+  agent that picks that entry up reads it as part of its own instruction. Kōan MUST
+  therefore cap the prose subject (currently `hooks._HOOK_SUBJECT_MAX_CHARS` = 120
+  characters, with an ellipsis) and key the dedup token on a bounded, deterministic form
+  of the subject. That form MUST stay exact across distinct subjects — truncation alone
+  is not enough, since two long missions can share their first N characters — so the
+  token appends a hash of the whole subject to the truncated head. The security argument
+  above ("the repo supplies names; Kōan composes the sentence") holds only if every other
+  value interpolated into the composed sentence is bounded and inert too.
+- **An event without a subject MUST queue nothing.** The subject is the dedup key above,
+  so an event carrying neither `pr_url` nor a non-blank `mission_title` has no identity to
+  match against and would append a fresh copy on every fire. Kōan's autonomous and
+  contemplative iterations run through the same `pre_mission`/`post_mission` path as
+  missions with an empty `mission_title` (`mission_executor._run_iteration`), so a project
+  that merely declares `hooks.post_mission` would otherwise alternate autonomous session ⇄
+  hook-skill mission without bound. `_fire_project_hook_skills` MUST normalize the subject
+  once, before resolving the config, and return when it is empty; the dedup below is
+  consequently unconditional. `post_review` (which always carries `pr_url`) and
+  `post_mission` after a real mission are unaffected.
+- **No self-replication.** A mission this mechanism queues carries the `[hook-skill:…]`
+  marker in its own `mission_title`, so its `pre_mission`/`post_mission` would otherwise
+  re-queue the skill without bound. `_fire_project_hook_skills` MUST detect that marker in
+  the firing context and queue nothing — a hook-skill mission does not spawn further hook
+  skills.
+- **A hook-skill mission's PR MUST NOT be auto-reviewed.** Both guards above are blind to a
+  chain that launders itself through a *new subject* each round, and `post_review` is
+  exactly that: it carries no `mission_title`, so the marker guard cannot see it, and every
+  round brings a fresh `pr_url`, so the dedup cannot either. With `autoreview` enabled the
+  chain is reachable from a config on the default branch — hook-skill mission → opens a PR
+  → `mission_runner._maybe_queue_autoreview` queues `/review` → `post_review` fires again —
+  and it costs the operator a mission and a PR per round, indefinitely.
+  `_maybe_queue_autoreview` MUST therefore skip a mission whose title carries the
+  `[hook-skill:…]` marker (via the exported `hooks.is_hook_skill_mission`), cutting the
+  cycle at its one automated link. Such a PR remains reviewable on demand.
+- **A persistent per-(project, event) fire budget MUST bound the total anyway.**
+  `_fire_project_hook_skills` MUST cap fires that actually queue work at
+  `_HOOK_SKILL_MAX_FIRES_PER_WINDOW` per `(project, event)` per
+  `_HOOK_SKILL_FIRE_WINDOW_SECONDS`, so a chain through some *other* path is bounded
+  without depending on which context key the firing event happened to carry. The counter
+  MUST be **persisted** (`instance/.hook-skill-fires.json`, flock-guarded, wall-clock
+  stamps): `post_review` fires from the review subprocess
+  (`review_runner._fire_post_review`), so an in-memory counter like the automation-rule loop
+  guard would reset on every link of the chain it is meant to stop. The window MUST be long
+  relative to a chain link — a link is a whole mission plus a review, so a per-minute or
+  per-hour cap loose enough for legitimate use would never bind. A fire the dedup absorbed
+  queued nothing and MUST NOT spend budget, and the window is rolling, so a repo
+  legitimately merging many PRs recovers.
+  An unwritable or unreadable budget file MUST degrade to an **in-process** counter of the
+  same window rather than to a count of zero: reporting zero fires would make the bound
+  non-binding for exactly as long as the fault lasts, retiring the backstop instead of
+  weakening it. The degradation MUST be logged.
+- **An operational read failure MUST be distinguishable from an absent config.** `run_git`
+  flattens a timeout, a corrupt object store and a missing binary to the same non-zero
+  return as "path not in this ref", so `read_trusted_koan_config` MUST recognize the
+  *expected* conditions by message — git's own "not a git repository", and `git show`'s
+  missing-path error — and treat anything else as an error: log it, and read nothing.
+  In particular an inconclusive repository probe MUST NOT fall through to the work tree,
+  which is the untrusted source the trusted read exists to avoid. Because those messages
+  are translated on a localized host, every git call classified this way MUST pin the
+  message locale (`LC_ALL=C`); otherwise the expected conditions read as operational
+  failures and the log points at the wrong cause.
+- Fail-safe: a malformed config, an unreadable `missions.md`, an unwritable budget file, or
+  any other failure here MUST NOT disturb the event that fired.
 
 ### `add_project` workspace resolution (contract)
 

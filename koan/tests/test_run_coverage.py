@@ -52,17 +52,17 @@ class TestNotifyMissionNormal:
             )
         assert mock_notify.call_args[0][1] == "✅ [proj] 🐞 Fixed https://x/pull/7"
 
-    def test_plan_success_logged_not_pushed(self):
-        """/plan is tracked but the canonical line cannot carry its issue/Jira URL
-        or inline body. The runner already emitted that content (not suppressed),
-        so the loop logs only — no bare '🧠 Planned' row duplicating it (#2153)."""
-        with patch.object(run, "_notify") as mock_notify, \
-             patch("app.run_log.log_safe") as mock_log:
+    def test_plan_success_is_one_verbatim_line(self):
+        """/plan's runner hands its issue URL over, so the loop sends the one
+        '🧠 Planned <issue-url>' row itself (#2153)."""
+        with patch.object(run, "_notify") as mock_notify:
             run._notify_mission_normal(
-                "/inst", "proj", 1, 60, 0, "/plan add dark mode", "",
+                "/inst", "proj", 1, 60, 0, "/plan add dark mode",
+                "https://github.com/o/r/issues/5",
             )
-        mock_notify.assert_not_called()
-        mock_log.assert_called_once()
+        mock_notify.assert_called_once_with(
+            "/inst", "✅ [proj] 🧠 Planned https://github.com/o/r/issues/5", verbatim=True,
+        )
 
     def test_autonomous_run_no_title_is_logged_not_pushed(self):
         with patch.object(run, "_notify") as mock_notify, \

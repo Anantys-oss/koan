@@ -95,6 +95,30 @@ def _handle_skill_dispatch(
         from app.core_files import snapshot_core_files, check_core_files, log_integrity_warnings
         skill_core_snapshot = snapshot_core_files(koan_root, project_path)
 
+        # Repo-config-driven pre/post shell hooks (default off; operator opt-in).
+        # The type key is the mission's canonical command name so a repo can
+        # target review/fix/plan/rebase/… or `default`. Best-effort — the
+        # executor never raises — but wrap defensively so a hook-subsystem bug
+        # can never disturb skill dispatch or finalization.
+        # Resolve the type key first, in its own narrow guard, so a failure here
+        # is distinguishable from a run_pre_hooks failure and is logged loudly —
+        # otherwise _hook_type would silently stay "" and post_hooks (in the
+        # finally below) would resolve against `default` instead of the mission's
+        # type-specific hooks with no diagnostic.
+        _hook_type = ""  # referenced again in the finally
+        try:
+            from app.skill_dispatch import mission_command_name
+            _hook_type = mission_command_name(mission_title)
+        except Exception as e:
+            log("error",
+                f"[mission_hooks] could not resolve mission type from "
+                f"{mission_title!r}; hooks will resolve against 'default': {e}")
+        try:
+            from app.mission_hooks import run_pre_hooks
+            run_pre_hooks(project_path, project_name, _hook_type)
+        except Exception as e:
+            log("error", f"[mission_hooks] pre_hooks error (ignored): {e}")
+
         try:
             with _run.protected_phase(f"Skill: {mission_title[:50]}"):
                 skill_result = _run._run_skill_mission(
@@ -131,6 +155,16 @@ def _handle_skill_dispatch(
         except Exception as e:
             log("error", f"Skill dispatch exception: {e}\n{traceback.format_exc()}")
         finally:
+            # Post-mission shell hooks fire on every exit path (success,
+            # failure, quota early-return, KeyboardInterrupt) with
+            # KOAN_MISSION_STATUS reflecting the resolved exit_code.
+            try:
+                from app.mission_hooks import run_post_hooks
+                run_post_hooks(
+                    project_path, project_name, _hook_type, exit_code == 0,
+                )
+            except Exception as e:
+                log("error", f"[mission_hooks] post_hooks error (ignored): {e}")
             # Clean up temp files created by skill command builders
             from app.skill_dispatch import cleanup_skill_temp_files
             cleanup_skill_temp_files(skill_cmd)
@@ -206,24 +240,24 @@ def _handle_skill_dispatch(
         # Suppress redundant notification when the skill already notified
         # the user directly (e.g. fix_runner sends "⏭ Issue already closed").
         _skill_stdout = skill_result.get("stdout", "")
+        from app.mission_runner import outcome_from_stdout
+        _skill_outcome = outcome_from_stdout(_skill_stdout)
+        # A runner that handed its outcome over (report_outcome) told no one
+        # yet: the loop's message is the only one, skip or not.
         _skill_already_notified = (
             exit_code == 0
             and "— skipping" in _skill_stdout
+            and not _skill_outcome["reported"]
         )
         if not _skill_already_notified:
-            # Tracked skills (/review, /fix, /rebase, /plan, /implement) render a
-            # concise "✅ [project] 🔍 Reviewed <pr-url>" line. The skill runners
-            # emit their transcript (which carries the PR URL) to stdout rather
-            # than pending.md, so extract it here and thread it through —
-            # otherwise the URL falls back to a pending.md-only read that the
-            # skill path rarely populates. Empty result still falls back to the
-            # pending.md re-read inside _notify_mission_end.
-            from app.mission_runner import _extract_pr_url
-            _skill_pr_url = _extract_pr_url(_skill_stdout)
+            # Tracked skills end with one "✅ [project] 🔍 Reviewed <url>" message
+            # sent here. Their runners hand the URL / detail / reason over as
+            # stdout markers (messaging_level.report_outcome); an empty URL still
+            # falls back to the pending.md re-read inside _notify_mission_end.
             _run._notify_mission_end(
                 instance, project_name, run_num, max_runs,
                 exit_code, mission_title,
-                pr_url=_skill_pr_url,
+                **_skill_outcome,
             )
         was_stagnated = _run._last_mission_stagnated.is_set()
         _run._finalize_mission(instance, mission_title, project_name, exit_code)
@@ -373,6 +407,12 @@ def _maybe_retry_mission(
         log("koan", "Skipping retry — mission was killed by stagnation monitor")
         return claude_exit, stdout_file, stderr_file
 
+    # A mission the cgroup scope OOM-killed is not transient: re-running an
+    # oversubscribed build just repeats the meltdown on a host with no swap.
+    if _run._last_mission_memory_cap:
+        log("koan", f"Skipping retry — mission {_run._last_mission_memory_cap}")
+        return claude_exit, stdout_file, stderr_file
+
     # Read output for classification
     try:
         stdout_text = Path(stdout_file).read_text()
@@ -468,6 +508,9 @@ def _maybe_fallback_provider_rerun(
         _run._last_mission_timed_out
         or _run._last_mission_aborted
         or _run._last_mission_stagnated.is_set()
+        # A memory-cap kill is not a launch/auth failure — another provider
+        # would run the same oversubscribed build and hit the same cap.
+        or _run._last_mission_memory_cap
     ):
         return claude_exit, stdout_file, stderr_file
 
@@ -666,6 +709,11 @@ def _run_iteration(
     atomic_write = _run.atomic_write
 
     run_num = count + 1
+
+    # Fresh steering-summary scope per mission: a new mission re-announces its
+    # loaded .md context even when byte-identical to the previous mission's.
+    from app.project_koan import reset_context_load_log
+    reset_context_load_log()
 
     # --- Parallel session reap (Phase 1) ---
     # Poll any active parallel sessions and process completions before planning
@@ -1164,6 +1212,19 @@ def _run_iteration(
     except Exception as e:
         print(f"[hooks] pre_mission hook error: {e}", file=sys.stderr)
 
+    # --- Fire repo-config-driven pre-mission shell hooks (agent-loop path) ---
+    # Skill-dispatched missions ran their hooks in _handle_skill_dispatch and
+    # returned before this point, so this fires only for agent-loop missions
+    # (e.g. /refactor, free-form, autonomous). Default off; best-effort.
+    try:
+        from app.mission_hooks import run_pre_hooks
+        from app.skill_dispatch import mission_command_name
+        run_pre_hooks(
+            project_path, project_name, mission_command_name(mission_title or ""),
+        )
+    except Exception as e:
+        print(f"[mission_hooks] pre_hooks error (ignored): {e}", file=sys.stderr)
+
     # --- Generate mission spec for complex missions ---
     spec_content = ""
     if mission_title and autonomous_mode not in ("review", "wait"):
@@ -1450,6 +1511,34 @@ def _run_iteration(
                 log("koan", f"CLI exited {claude_exit} but JSON output indicates success — overriding to 0")
                 claude_exit = 0
 
+        # --- JSON failure detection (the mirror of the override above) ---
+        # A json-mode envelope can report an error and still exit 0 (Gemini
+        # emits {"response": <partial prose>, "error": {...}} when a tool
+        # confirmation is refused). Without this the mission is finalized as
+        # Done with no branch and no commit.
+        # No timed-out / aborted guard here, unlike the override above: this
+        # branch can only ADD a failure, so acting on partial output from a
+        # killed process is the safe direction.
+        #
+        # The real process exit code is snapshotted first: the text-based
+        # quota/auth classifiers below only trust stdout when the CLI *process*
+        # failed (assistant prose legitimately discusses rate limits). A JSON
+        # envelope error — or a core-file integrity failure — is not evidence of
+        # a process failure, so a synthetic flip must not re-open stdout
+        # scanning and pause the daemon on prose.
+        cli_exit_code = claude_exit
+        if claude_exit == 0:
+            from app.mission_runner import json_output_reports_failure
+            json_failure = json_output_reports_failure(stdout_file)
+            if json_failure:
+                log(
+                    "error",
+                    "CLI exited 0 but JSON output reports a failed session "
+                    f"({json_failure}) — treating as failure. If this is a "
+                    "headless approval prompt, set skip_permissions: true.",
+                )
+                claude_exit = 1
+
         # Verify core files survived the mission (after retry, so result is final)
         log("koan", "Running core file integrity check...")
         integrity_warnings = check_core_files(koan_root, core_snapshot, project_path)
@@ -1516,10 +1605,11 @@ def _run_iteration(
                 project_name=project_name,
                 mission_title=original_mission_title,
                 run_num=run_num,
+                trust_stdout=cli_exit_code != 0,
                 hqe_kwargs=dict(
                     stdout_file=stdout_file,
                     stderr_file=stderr_file,
-                    exit_code=claude_exit,
+                    exit_code=cli_exit_code,
                 ),
             ):
                 return True
@@ -1529,7 +1619,7 @@ def _run_iteration(
             _exit0_hqe = dict(
                 stdout_file=stdout_file,
                 stderr_file=stderr_file,
-                exit_code=claude_exit,
+                exit_code=cli_exit_code,
             )
             if _run._probe_exit0_quota(
                 provider_name=provider_name,
@@ -1574,6 +1664,7 @@ def _run_iteration(
                 project_path=project_path,
                 run_num=run_num,
                 exit_code=claude_exit,
+                cli_exit_code=cli_exit_code,
                 stdout_file=stdout_file,
                 stderr_file=stderr_file,
                 mission_title=mission_title,
@@ -1584,6 +1675,10 @@ def _run_iteration(
                 ),
                 mission_tier=mission_tier,
                 provider_name=provider_name,
+                # This loop owns the sequential mission's cap flag; hand it
+                # over explicitly rather than letting the pipeline read a
+                # global a parallel session would also see.
+                memory_cap_detail=_run._last_mission_memory_cap,
             )
 
             _completion_pr_url = post_result.get("pr_url", "")
@@ -1685,6 +1780,14 @@ def _run_iteration(
                 sys.exit(RESTART_EXIT_CODE)
     except Exception as e:
         log("error", f"Periodic auto-update check failed: {e}")
+
+    # Periodic Codex CLI self-update (throttled to once/day inside; no-op
+    # unless Codex is the active provider)
+    try:
+        from app.codex_update import check_codex_update
+        check_codex_update(koan_root, instance)
+    except Exception as e:
+        log("error", f"Periodic Codex CLI update check failed: {e}")
 
     # Max runs check
     if count + 1 >= max_runs:

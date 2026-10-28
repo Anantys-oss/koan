@@ -27,6 +27,15 @@ review:
     - "*.md"          # all Markdown (docs, references, rules)
     - "docs/api/*"    # everything under a specific directory
 
+  # pre_hooks / post_hooks — shell to run before/after a REVIEW mission
+  # specifically (see the top-level "Mission hooks" section below for the full
+  # contract and the required operator opt-in). Uncomment to use:
+  # pre_hooks:
+  #   - "docker compose up -d db"
+  #   - "./scripts/wait-for-db.sh"
+  # post_hooks:
+  #   - 'echo "review done: $KOAN_MISSION_STATUS"'
+
   # ---------------------------------------------------------------------------
   # Planned keys (NOT yet implemented — shown here to illustrate the surface).
   # Uncommenting them today has no effect.
@@ -49,3 +58,90 @@ review:
 
   # compressor_token_budget — per-repo override of the review diff-size budget.
   # compressor_token_budget: 120000
+
+# ===========================================================================
+# Mission hooks — shell commands run before/after ANY mission (TOP LEVEL).
+#
+# ⚠️ SECURITY: these execute arbitrary shell from THIS repo file on the
+# operator's host. They are IGNORED unless the operator opts in via
+#   mission_hooks: { enabled: true }
+# in their KOAN_ROOT instance/config.yaml (optionally per-project in
+# projects.yaml: `mission_hooks: true|false`). Disabled by default.
+#
+# - Keyed by mission type (review/fix/plan/rebase/refactor/implement/…) plus a
+#   `default` fallback.
+# - A type's list REPLACES `default` for that phase (not merged); `pre` and
+#   `post` resolve independently.
+# - Commands in a list run in order, in the repo's working directory.
+# - post_hooks run on success AND failure with KOAN_MISSION_STATUS
+#   (success|failure) and KOAN_MISSION_TYPE exported to the command.
+# - Best-effort: a failing/timed-out hook is logged, never aborts the mission.
+# ===========================================================================
+
+# default:
+#   pre_hooks:
+#     - "echo setting up"       # before every mission type (unless overridden)
+#   post_hooks:
+#     - "echo done"
+
+# fix:                          # applies to fix on BOTH PRs and issues
+#   pre_hooks:
+#     - "npm ci"
+
+# implement:
+#   pre_hooks: ["make deps"]
+#   post_hooks: ["make clean"]
+
+# ===========================================================================
+# hooks — run a repo's own Claude Code skills when a Kōan lifecycle event fires.
+#
+# ⚠️ SECURITY: each honored name queues a mission that a WRITE-CAPABLE agent
+# executes on the operator's host. Three rules bound that:
+#   0. The mechanism is OFF unless the operator opted in, in their own
+#      instance/config.yaml (`hook_skills: {enabled: true}`) or per-project in
+#      their projects.yaml (`hook_skills: true`). Until then this key is inert
+#      and Kōan logs a "skipped (not enabled)" note.
+#   1. Kōan reads this key from the DEFAULT BRANCH of the checkout the OPERATOR
+#      registered — never from the pull-request worktree a review runs against,
+#      and never from whatever branch that checkout currently has out (Kōan
+#      parks contributor branches there when it rebases a PR). Changing the
+#      skills that run needs push access to the default branch; opening a pull
+#      request is not enough. The flip side: an edit here takes effect once
+#      merged and fetched, not while it sits on a branch or uncommitted.
+#   2. The repo supplies skill NAMES only; Kōan composes the mission sentence
+#      itself. Names must match ^[a-z0-9][a-z0-9-]*$ (≤64 chars, ≤10 per
+#      event); anything that could carry an instruction, a path or a shell
+#      fragment is dropped with a warning rather than sanitized.
+#
+# Keys are Kōan's lifecycle event names: session_start, session_end,
+# pre_mission, post_mission, post_review. Values are a list of skill names.
+#
+# The queued mission is executed by the normal mission loop, which — unlike the
+# read-only review subprocess — loads the project's own `.claude/skills`, can
+# invoke the Skill tool, and can reach an MCP server. So this is how a repo
+# wires follow-up work that a review pass is not allowed to do.
+#
+# Queued, not executed inline: hooks run in the firing process, and a skill
+# pipeline can take minutes. Re-firing the same event for the same subject (the
+# PR URL, or the mission title) does not queue the work again while the earlier
+# mission is still pending or in progress; a skill named under
+# pre_mission/post_mission does not re-trigger itself into a runaway loop.
+#
+# The subject is what that de-duplication keys on, so an event carrying none
+# queues nothing: Kōan's own autonomous and contemplative iterations fire
+# pre_mission/post_mission with no mission title and no PR, and are skipped here.
+#
+# Two more bounds, so a config on your default branch cannot spend the
+# operator's quota in a loop:
+#   - A pull request opened BY one of these missions is not auto-reviewed.
+#     Otherwise its review would fire post_review, queueing another mission,
+#     which opens another PR, forever. Review such a PR on demand instead.
+#   - At most 20 fires per event per day actually queue work for a project;
+#     past that the skills are skipped and a line is logged.
+# ===========================================================================
+
+# hooks:
+#   post_review:
+#     - "docs-refresh"          # your repo's .claude/skills/docs-refresh/
+#   post_mission:
+#     - "some-other-skill"

@@ -58,6 +58,12 @@ Stay on the current branch. Your changes will be committed and pushed automatica
      implementing it.
 3. **Be focused.** Only change what was requested — no drive-by refactoring, no extra improvements.
 4. **Do not run tests.** The caller handles testing separately.
+5. **Commit-message-only requests.** When the only change asked for is to the
+   commit message itself (a wrong ticket key, a bad subject) and no file needs
+   editing, run `git commit --amend` on the current branch to rewrite it. That
+   is the one case where you commit yourself; list it under `APPLIED:` like any
+   other change. For every other change, leave your edits in the worktree —
+   the caller commits them.
 
 When you're done, report a concise summary using these two labeled sections, so
 it renders unambiguously in the PR comment and commit message. Use the headers

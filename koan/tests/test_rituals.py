@@ -314,3 +314,33 @@ class TestRitualsCLI:
             with pytest.raises(SystemExit) as exc_info:
                 main()
             assert exc_info.value.code == 1
+
+
+class TestRitualHonoursCliRole:
+    """Rituals build their command from the `lightweight` role's provider.
+
+    Previously they passed no provider, so argv[0] came from the global
+    provider and a `cli:` binary override was silently ignored.
+    """
+
+    @patch("app.rituals.subprocess.run")
+    def test_uses_the_lightweight_role_binary(self, mock_run, prompt_dir, instance_dir):
+        from app.provider import ClaudeProvider
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch(
+            "app.provider.get_provider_for_role",
+            return_value=ClaudeProvider(binary_path="/opt/bin/wrap-claude"),
+        ) as mock_role:
+            assert run_ritual("morning", instance_dir) is True
+
+        mock_role.assert_called_once_with("lightweight")
+        assert mock_run.call_args[0][0][0] == "/opt/bin/wrap-claude"
+
+    @patch("app.rituals.subprocess.run")
+    def test_falls_back_to_the_global_binary_without_an_override(
+        self, mock_run, prompt_dir, instance_dir
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+        assert run_ritual("morning", instance_dir) is True
+        assert mock_run.call_args[0][0][0] == "claude"

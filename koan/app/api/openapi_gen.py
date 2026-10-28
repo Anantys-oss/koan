@@ -1,9 +1,8 @@
 """Generate the OpenAPI document for the Kōan REST API from the live Flask app.
 
-The document is **derived** from the app's route table — it can only describe
-routes that are actually registered, so it cannot drift from the code. Auth
-requirements come from the ``require_token`` decorator marker
-(``_koan_requires_token``), not a hand-maintained allow-list.
+The document is **derived** from the app's route table and request metadata
+attached to registered views. Auth requirements come from the ``require_token``
+decorator marker (``_koan_requires_token``), not a hand-maintained allow-list.
 
 Usage::
 
@@ -15,12 +14,25 @@ See specs/005-openapi-enforcement/ and docs/operations/rest-api.md.
 """
 
 import argparse
+import inspect
 import re
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 import yaml
 from flask import Flask
+
+from app.api.openapi_metadata import (
+    DESTRUCTIVE_ATTR,
+    DESTRUCTIVE_EXTENSION,
+    MCP_DESCRIPTION_ATTR,
+    MCP_ENABLED_ATTR,
+    PATH_PARAMETER_DESCRIPTIONS_ATTR,
+    QUERY_PARAMETERS_ATTR,
+    REQUEST_REQUIRED_ATTR,
+    REQUEST_SCHEMA_ATTR,
+)
 
 # The API contract version (matches the /v1 URL prefix). Pinned deliberately so
 # that bumping app.__version__ on a release does NOT cause spurious spec drift.
@@ -53,6 +65,18 @@ SUCCESS_STATUS = {
     ("post", "/v1/projects"): "201",
 }
 
+# One-line human summary per API tag (blueprint / command group). Feeds the
+# OpenAPI ``tags[].description``, which the CLI surfaces as group-level --help.
+# This is the single source for group help — keep each entry a short sentence.
+TAG_DESCRIPTIONS = {
+    "admin": "Config, pause/resume, restart, update and shutdown",
+    "health": "Liveness probe (no token required)",
+    "missions": "Queue, inspect, reorder and delete missions",
+    "observability": "Logs, metrics and usage",
+    "projects": "List, add, update and remove watched projects",
+    "status": "Current agent state, execution and mission counters",
+}
+
 _PATH_PARAM_RE = re.compile(r"<(?:[^:<>]+:)?([^<>]+)>")
 
 
@@ -61,26 +85,31 @@ def _openapi_path(rule: str) -> str:
     return _PATH_PARAM_RE.sub(r"{\1}", rule)
 
 
-def _path_params(openapi_path: str) -> list:
+def _path_params(openapi_path: str, descriptions: dict[str, str]) -> list:
     """Build OpenAPI parameter objects for each ``{name}`` in the path."""
     names = re.findall(r"{([^{}]+)}", openapi_path)
-    return [
-        {
+    result = []
+    for name in names:
+        parameter = {
             "name": name,
             "in": "path",
             "required": True,
             "schema": {"type": "string"},
         }
-        for name in names
-    ]
+        description = descriptions.get(name, "").strip()
+        if description:
+            parameter["description"] = description
+        result.append(parameter)
+    return result
 
 
-def _summary(view) -> str:
-    """First non-empty line of the view's docstring (fallback: humanized name)."""
-    doc = (view.__doc__ or "").strip()
-    if doc:
-        return doc.splitlines()[0].strip()
-    return view.__name__.replace("_", " ").strip().capitalize()
+def _doc_parts(view) -> tuple[str, str]:
+    """Return cleaned one-line summary and remaining docstring body."""
+    doc = inspect.cleandoc(view.__doc__ or "")
+    if not doc:
+        return view.__name__.replace("_", " ").strip().capitalize(), ""
+    lines = doc.splitlines()
+    return lines[0].strip(), "\n".join(lines[1:]).strip()
 
 
 def _tag(endpoint: str) -> str:
@@ -91,7 +120,7 @@ def _tag(endpoint: str) -> str:
 def build_spec(app: Flask) -> dict:
     """Build the OpenAPI 3.1 document (as a plain dict) from ``app``'s route table.
 
-    Pure with respect to the route table: equal route tables yield equal dicts.
+    Pure with respect to registered routes and their attached metadata.
     """
     paths: dict = {}
     tags: set = set()
@@ -108,7 +137,14 @@ def build_spec(app: Flask) -> dict:
         secured = bool(getattr(view, "_koan_requires_token", False))
         tag = _tag(rule.endpoint)
         tags.add(tag)
-        params = _path_params(openapi_path)
+        summary, description = _doc_parts(view)
+        path_params = _path_params(
+            openapi_path,
+            getattr(view, PATH_PARAMETER_DESCRIPTIONS_ATTR, {}),
+        )
+        query_params = getattr(view, QUERY_PARAMETERS_ATTR, ())
+        request_schema = getattr(view, REQUEST_SCHEMA_ATTR, None)
+        destructive = bool(getattr(view, DESTRUCTIVE_ATTR, False))
 
         for method in methods:
             m = method.lower()
@@ -123,18 +159,38 @@ def build_spec(app: Flask) -> dict:
                 # Method-qualified so a future multi-method view cannot emit two
                 # operations sharing an operationId (which is invalid OpenAPI).
                 "operationId": f"{rule.endpoint}_{m}".replace(".", "_"),
-                "summary": _summary(view),
+                "summary": summary,
                 "tags": [tag],
                 "responses": responses,
             }
-            if params:
-                operation["parameters"] = params
+            if description:
+                operation["description"] = description
+            if getattr(view, MCP_ENABLED_ATTR, False):
+                operation["x-koan-mcp"] = True
+                mcp_description = getattr(view, MCP_DESCRIPTION_ATTR, "")
+                if mcp_description:
+                    operation["x-koan-mcp-description"] = mcp_description
+            parameters = [*deepcopy(path_params), *deepcopy(query_params)]
+            if parameters:
+                operation["parameters"] = parameters
+            if request_schema is not None:
+                operation["requestBody"] = {
+                    "required": bool(getattr(view, REQUEST_REQUIRED_ATTR, True)),
+                    "content": {
+                        "application/json": {
+                            "schema": deepcopy(request_schema),
+                        },
+                    },
+                }
+            if destructive:
+                operation[DESTRUCTIVE_EXTENSION] = True
             if not secured:
                 # Override the global bearerAuth requirement — this route is public.
                 operation["security"] = []
 
             paths.setdefault(openapi_path, {})[m] = operation
 
+    sorted_tags = sorted(tags)
     return {
         "openapi": OPENAPI_VERSION,
         "info": {
@@ -147,7 +203,14 @@ def build_spec(app: Flask) -> dict:
         },
         "servers": [{"url": "http://127.0.0.1:8420", "description": "Default loopback bind"}],
         "security": [{"bearerAuth": []}],
-        "tags": [{"name": t} for t in sorted(tags)],
+        "tags": [
+            (
+                {"name": t, "description": TAG_DESCRIPTIONS[t]}
+                if t in TAG_DESCRIPTIONS
+                else {"name": t}
+            )
+            for t in sorted_tags
+        ],
         "paths": paths,
         "components": {
             "securitySchemes": {

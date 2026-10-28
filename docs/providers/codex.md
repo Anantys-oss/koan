@@ -4,7 +4,7 @@ title: "OpenAI Codex CLI Provider"
 description: "Setup and behavior guide for using OpenAI's Codex CLI as Kōan's provider, including quota/usage handling and troubleshooting."
 tags: [providers]
 created: 2026-05-28
-updated: 2026-07-16
+updated: 2026-08-18
 ---
 
 # OpenAI Codex CLI Provider
@@ -117,6 +117,14 @@ than a generic failure.
 |-----------------------|------------------|---------------------------------|
 | `skip_permissions: false` | `--sandbox workspace-write` | Workspace writes, but `.git` may be read-only |
 | `skip_permissions: true`  | `--dangerously-bypass-approvals-and-sandbox` | No approvals, no sandbox |
+| read-only role (`review_mode`) | `--sandbox read-only` | No writes at all. **Overrides `skip_permissions`** |
+
+Because Codex has no per-tool allow/disallow flags, the sandbox is the only lever
+that can make a role read-only. Roles in `app.provider.READ_ONLY_ROLES`
+(currently `review_mode` — every `/review` pass) are pinned to
+`--sandbox read-only`, and that pin deliberately **wins over
+`skip_permissions: true`**: honoring the bypass there would silently hand a code
+review write access to the live project clone it runs in.
 
 ### Feature Mapping
 
@@ -206,6 +214,34 @@ context isolation) is a **no-op for Codex today**. Claude uses
 If contributor `AGENTS.md` at the instance root leaks into Codex-backed
 chat, prefer mission/`workspace/` project roots with their own docs, or
 track a follow-up to map isolation to a Codex config override.
+
+## Automatic CLI updates
+
+When Codex is the active provider, Kōan keeps the Codex CLI current on its
+own. **At startup and at most once a day** it runs `codex update --check`; if a
+newer release is available it applies it with `codex update` and advertises the
+version delta to the owner over the messaging bridge (Telegram/Slack/…):
+
+```
+⬆️ Codex CLI updated: 0.139.0 → 0.140.0
+Ran `codex update` automatically (new upstream release detected).
+```
+
+Older Codex builds that don't support `update --check` still work — Kōan falls
+back to running the idempotent `codex update` and only notifies when the
+`codex --version` output actually changes.
+
+The daily cadence is throttled via `instance/.codex-update-check.json`, so
+frequent restarts don't hammer the network. The check is a no-op unless the
+active provider resolves to `codex`.
+
+Configure in `config.yaml`:
+
+```yaml
+codex_update:
+  enabled: true    # opt-out — set false to manage the Codex CLI yourself
+  notify: true     # advertise applied updates via the messaging bridge
+```
 
 ## Troubleshooting
 

@@ -27,6 +27,21 @@ from typing import Optional, Tuple
 
 # Strict patterns: specific enough to match safely in both stdout and stderr.
 # These are actual CLI error messages, not terms that appear in normal text.
+# Bounded gap for the *strict* (stdout-scanned) patterns.
+#
+# ``.`` never crosses a newline, so an unbounded ``.*`` used to be safe: the CLI
+# emitted one short line per event. It no longer is — Claude Code emits its
+# ``init`` capability manifest (slash commands, agents, skills, MCP tools) as a
+# **single JSON line** that can exceed 90KB. An unbounded gap then stitched
+# together unrelated tokens thousands of characters apart: ``"usage-credits"``
+# … ``"recap"`` … a later ``hit`` matched ``usage.*cap.*(?:reached|hit)`` and
+# paused Kōan on a run that had exited 0.
+#
+# Excluding ``"`` keeps a match inside one JSON string value, which is where a
+# genuine provider message lives; the length cap keeps it inside one clause of
+# human prose. Same technique as ``_RESET_RE`` below, for the same reason.
+_GAP = r'[^"\n]{0,40}?'
+
 _STRICT_QUOTA_PATTERNS = [
     # Claude-specific error messages
     r"out of extra usage",
@@ -51,11 +66,11 @@ _STRICT_QUOTA_PATTERNS = [
     # Credit/billing limit messages from the Anthropic API and Claude Code CLI.
     # These are specific enough to be safe in stdout (Claude's code output won't
     # contain "credit balance is too low" or "billing period limit").
-    r"credit.*balance.*(?:too low|exhausted|zero|empty)",
+    r"credit" + _GAP + r"balance" + _GAP + r"(?:too low|exhausted|zero|empty)",
     r"your credit balance",
-    r"out of.*credits?",
-    r"credits?.*(?:exhausted|depleted|expired|insufficient)",
-    r"insufficient.*credits?",
+    r"out of" + _GAP + r"credits?",
+    r"credits?" + _GAP + r"(?:exhausted|depleted|expired|insufficient)",
+    r"insufficient" + _GAP + r"credits?",
     # xAI/OpenAI-style 403 billing exhaustion, e.g. "used all available
     # credits or reached its monthly spending limit". No quota/usage keyword,
     # so the patterns above miss it. Anchor on the exhaustion verb (used all/
@@ -63,8 +78,8 @@ _STRICT_QUOTA_PATTERNS = [
     # mentions a "monthly spending limit" feature must not trip a pause.
     r"used all (?:available )?credits?",
     r"(?:reached|hit|exceeded)[^\n]{0,25}spending limit",
-    r"billing.*(?:limit|period.*exceeded)",
-    r"usage.*cap.*(?:reached|exceeded|hit)",
+    r"billing" + _GAP + r"(?:limit|period" + _GAP + r"exceeded)",
+    r"usage" + _GAP + r"cap" + _GAP + r"(?:reached|exceeded|hit)",
     # Claude Code CLI: "You've hit your session limit · resets 6pm (UTC)"
     r"(?:you'?ve\s+)?hit\s+(?:your|the)\s+(?:session\s+)?limit",
 ]
@@ -101,8 +116,18 @@ _LOOSE_QUOTA_RE = re.compile("|".join(_LOOSE_QUOTA_PATTERNS), re.IGNORECASE)
 # paused Koan on successful runs — the false positive this guards against.
 _REJECTED_RATE_LIMIT_STATUSES = ("rejected", "exceeded", "blocked", "throttled")
 _RATE_LIMIT_EVENT_RE = re.compile(r"rate_limit_event", re.IGNORECASE)
+# The lookbehind pins this to the *whole* key ``status``. Without it the
+# optional leading quote let ``status`` match the tail of any ``*Status`` key —
+# in practice ``overageStatus``, which Claude Code sets to ``"rejected"`` on
+# every informational event for an account without overage credit
+# (``overageDisabledReason: group_zero_credit_limit``). The authoritative field
+# is ``status`` itself; ``overageStatus`` only reports whether spending *beyond*
+# the plan is available, so matching it paused Koan on successful runs even
+# though ``status`` was ``allowed``.
 _RATE_LIMIT_REJECTED_STATUS_RE = re.compile(
-    r'"?status"?\s*:\s*"?(?:' + "|".join(_REJECTED_RATE_LIMIT_STATUSES) + r')"?',
+    r'(?<![A-Za-z_])"?status"?\s*:\s*"?(?:'
+    + "|".join(_REJECTED_RATE_LIMIT_STATUSES)
+    + r')"?',
     re.IGNORECASE,
 )
 # Marker the stream-json summarizer emits for genuine rejections. The streaming

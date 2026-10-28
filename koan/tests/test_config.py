@@ -1104,8 +1104,20 @@ class TestGetBashForegroundTimeoutMs:
         from app.config import get_bash_foreground_timeout_ms
 
         with _mock_config({}):
-            # Default 900s (15 min) with default mission_timeout 3600s.
-            assert get_bash_foreground_timeout_ms() == 900_000
+            # Unset follows the mission budget: 3600s - 120s buffer (#2249).
+            assert get_bash_foreground_timeout_ms() == 3_480_000
+
+    def test_default_follows_custom_mission_timeout(self):
+        from app.config import get_bash_foreground_timeout_ms
+
+        with _mock_config({"mission_timeout": 7200}):
+            assert get_bash_foreground_timeout_ms() == 7_080_000
+
+    def test_default_with_watchdog_disabled(self):
+        from app.config import get_bash_foreground_timeout_ms
+
+        with _mock_config({"mission_timeout": 0}):
+            assert get_bash_foreground_timeout_ms() == 3_600_000
 
     def test_custom_honored(self):
         from app.config import get_bash_foreground_timeout_ms
@@ -1878,6 +1890,86 @@ class TestGetEffortForMode:
             assert get_effort_for_mode("deep") == "high"
 
 
+class TestGetReviewEffort:
+    def test_unset_keeps_provider_default(self):
+        from app.config import get_review_effort
+        with _mock_config({}):
+            assert get_review_effort() == ""
+
+    def test_configured_level(self):
+        from app.config import get_review_effort
+        with _mock_config({"review_effort": "xhigh"}):
+            assert get_review_effort() == "xhigh"
+
+    def test_level_is_normalized(self):
+        from app.config import get_review_effort
+        with _mock_config({"review_effort": "  XHigh "}):
+            assert get_review_effort() == "xhigh"
+
+    def test_invalid_level_ignored(self):
+        from app.config import get_review_effort
+        with _mock_config({"review_effort": "turbo"}):
+            assert get_review_effort() == ""
+
+    def test_non_string_ignored(self):
+        from app.config import get_review_effort
+        with _mock_config({"review_effort": 3}):
+            assert get_review_effort() == ""
+
+    def test_effort_section_does_not_leak_into_reviews(self):
+        """The effort: section governs agent-loop missions, not /review."""
+        from app.config import get_review_effort
+        with _mock_config({"effort": {"review": "low"}}):
+            assert get_review_effort() == ""
+
+    def test_null_is_unset(self):
+        from app.config import get_review_effort
+        with _mock_config({"review_effort": None}):
+            assert get_review_effort() == ""
+
+    def test_project_override_wins(self):
+        from app.config import get_review_effort
+        with (
+            _mock_config({"review_effort": "high"}),
+            patch("app.config._load_project_overrides", return_value={"review_effort": "max"}),
+        ):
+            assert get_review_effort("my-project") == "max"
+
+    def test_no_project_override_uses_global(self):
+        from app.config import get_review_effort
+        with (
+            _mock_config({"review_effort": "high"}),
+            patch("app.config._load_project_overrides", return_value={}),
+        ):
+            assert get_review_effort("my-project") == "high"
+
+    def test_invalid_project_override_falls_back_to_global(self):
+        """A bad override must not throw away a good global level."""
+        from app.config import get_review_effort
+        with (
+            _mock_config({"review_effort": "high"}),
+            patch("app.config._load_project_overrides", return_value={"review_effort": "turbo"}),
+        ):
+            assert get_review_effort("my-project") == "high"
+
+    def test_null_project_override_falls_back_to_global(self):
+        from app.config import get_review_effort
+        with (
+            _mock_config({"review_effort": "high"}),
+            patch("app.config._load_project_overrides", return_value={"review_effort": None}),
+        ):
+            assert get_review_effort("my-project") == "high"
+
+    def test_empty_project_override_disables_the_flag(self):
+        """An explicit "" is a valid pin: that project keeps the provider default."""
+        from app.config import get_review_effort
+        with (
+            _mock_config({"review_effort": "high"}),
+            patch("app.config._load_project_overrides", return_value={"review_effort": ""}),
+        ):
+            assert get_review_effort("my-project") == ""
+
+
 # --- get_effort (per-mission-type) ---
 
 
@@ -2603,6 +2695,63 @@ class TestGetPageCacheReclaimConfig:
         assert cfg["extra_roots"] == []
 
 
+class TestGetMissionLimitsConfig:
+    def test_defaults_are_on_with_a_reserve_and_a_floor(self):
+        from app.config import get_mission_limits_config
+        with _mock_config({}):
+            assert get_mission_limits_config() == {
+                "enabled": True,
+                "memory_reserve": "2G",
+                "memory_min": "1G",
+                "memory_max": None,
+            }
+
+    def test_overrides_and_untouched_defaults(self):
+        from app.config import get_mission_limits_config
+        with _mock_config({
+            "mission_limits": {
+                "enabled": False,
+                "memory_reserve": "3G",
+                "memory_max": "6G",
+            }
+        }):
+            cfg = get_mission_limits_config()
+        assert cfg["enabled"] is False
+        assert cfg["memory_reserve"] == "3G"
+        assert cfg["memory_min"] == "1G"       # untouched default
+        assert cfg["memory_max"] == "6G"
+
+    def test_malformed_section_falls_back_to_defaults(self):
+        from app.config import get_mission_limits_config
+        with _mock_config({"mission_limits": "nope"}):
+            cfg = get_mission_limits_config()
+        assert cfg["enabled"] is True
+        assert cfg["memory_reserve"] == "2G"
+
+    def test_an_explicit_null_falls_back_to_the_default(self):
+        """`enabled:` with no value must not silently disable containment.
+
+        The merge is {**defaults, **section}, so a null key overrides rather
+        than falls through — and `bool(None)` would turn the whole feature off
+        while `memory_reserve: null` would hand a mission all of RAM.
+        """
+        from app.config import get_mission_limits_config
+        with _mock_config({
+            "mission_limits": {
+                "enabled": None,
+                "memory_reserve": None,
+                "memory_min": None,
+                "memory_max": None,
+            }
+        }):
+            cfg = get_mission_limits_config()
+        assert cfg["enabled"] is True
+        assert cfg["memory_reserve"] == "2G"
+        assert cfg["memory_min"] == "1G"
+        # memory_max is the one key where null is the documented value.
+        assert cfg["memory_max"] is None
+
+
 # --- _get_config_with_overrides (shared helper, issue #2340) ---
 
 
@@ -2822,3 +2971,63 @@ class TestGetReviewDiscoveryConfig:
         from app.config import get_review_discovery_config
         with _mock_config({"review_discovery": {"enabled": "??"}}):
             assert get_review_discovery_config()["enabled"] is False
+
+
+# --- is_mission_hooks_enabled (operator opt-in for repo shell hooks) ---
+
+
+class TestIsMissionHooksEnabled:
+    def test_default_disabled(self):
+        from app.config import is_mission_hooks_enabled
+        with _mock_config({}):
+            assert is_mission_hooks_enabled() is False
+
+    def test_enabled_when_true(self):
+        from app.config import is_mission_hooks_enabled
+        with _mock_config({"mission_hooks": {"enabled": True}}):
+            assert is_mission_hooks_enabled() is True
+
+    def test_disabled_when_explicit_false(self):
+        from app.config import is_mission_hooks_enabled
+        with _mock_config({"mission_hooks": {"enabled": False}}):
+            assert is_mission_hooks_enabled() is False
+
+    def test_bool_shorthand(self):
+        from app.config import is_mission_hooks_enabled
+        with _mock_config({"mission_hooks": True}):
+            assert is_mission_hooks_enabled() is True
+
+    def test_malformed_type_defaults_disabled(self):
+        from app.config import is_mission_hooks_enabled
+        with _mock_config({"mission_hooks": "yes please"}):
+            assert is_mission_hooks_enabled() is False
+
+
+# --- is_hook_skills_enabled (operator opt-in for repo-declared hook skills) ---
+
+
+class TestIsHookSkillsEnabled:
+    def test_default_disabled(self):
+        from app.config import is_hook_skills_enabled
+        with _mock_config({}):
+            assert is_hook_skills_enabled() is False
+
+    def test_enabled_when_true(self):
+        from app.config import is_hook_skills_enabled
+        with _mock_config({"hook_skills": {"enabled": True}}):
+            assert is_hook_skills_enabled() is True
+
+    def test_disabled_when_explicit_false(self):
+        from app.config import is_hook_skills_enabled
+        with _mock_config({"hook_skills": {"enabled": False}}):
+            assert is_hook_skills_enabled() is False
+
+    def test_bool_shorthand(self):
+        from app.config import is_hook_skills_enabled
+        with _mock_config({"hook_skills": True}):
+            assert is_hook_skills_enabled() is True
+
+    def test_malformed_type_defaults_disabled(self):
+        from app.config import is_hook_skills_enabled
+        with _mock_config({"hook_skills": "yes please"}):
+            assert is_hook_skills_enabled() is False

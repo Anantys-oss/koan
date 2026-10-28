@@ -2,7 +2,7 @@
 
 import os
 import subprocess
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, call, MagicMock
 
 import pytest
 
@@ -314,7 +314,7 @@ class TestRunCli:
 
         run_cli(cmd, capture_output=True, text=True)
 
-        assert mock_flock.call_args_list[0][0][1] == fcntl.LOCK_EX
+        assert mock_flock.call_args_list[0][0][1] == fcntl.LOCK_EX | fcntl.LOCK_NB
         assert mock_flock.call_args_list[-1][0][1] == fcntl.LOCK_UN
 
 
@@ -385,6 +385,30 @@ class TestPopenCli:
         assert len(after) <= len(before)
 
     @patch("app.cli_exec.subprocess.Popen")
+    def test_launcher_is_prefixed_after_the_prompt_rewrite(self, mock_popen):
+        """mission_scope wraps the provider CLI without hiding it from the rewrite."""
+        mock_popen.return_value = MagicMock()
+        cmd = ["claude", "-p", "secret", "--model", "opus"]
+
+        proc, cleanup = popen_cli(
+            cmd, launcher=["systemd-run", "--scope", "--"], stdout=subprocess.PIPE,
+        )
+
+        actual_cmd = mock_popen.call_args[0][0]
+        assert actual_cmd[:3] == ["systemd-run", "--scope", "--"]
+        assert actual_cmd[3] == "claude"
+        # The prompt was still rewritten to the stdin marker.
+        assert STDIN_PLACEHOLDER in actual_cmd
+        cleanup()
+
+    @patch("app.cli_exec.subprocess.Popen")
+    def test_no_launcher_leaves_argv_untouched(self, mock_popen):
+        mock_popen.return_value = MagicMock()
+        proc, cleanup = popen_cli(["claude", "-p", "x"], launcher=None)
+        assert mock_popen.call_args[0][0][0] == "claude"
+        cleanup()
+
+    @patch("app.cli_exec.subprocess.Popen")
     def test_no_p_flag_returns_noop_cleanup(self, mock_popen):
         mock_popen.return_value = MagicMock()
         cmd = ["git", "status"]
@@ -434,7 +458,7 @@ class TestPopenCli:
 
         _proc, cleanup = popen_cli(cmd)
 
-        assert mock_flock.call_args_list[0][0][1] == fcntl.LOCK_EX
+        assert mock_flock.call_args_list[0][0][1] == fcntl.LOCK_EX | fcntl.LOCK_NB
         cleanup()
         assert mock_flock.call_args_list[-1][0][1] == fcntl.LOCK_UN
 
@@ -459,8 +483,124 @@ class TestPopenCli:
             with pytest.raises(OSError):
                 popen_cli(cmd)
 
-        assert mock_flock.call_args_list[0][0][1] == fcntl.LOCK_EX
+        assert mock_flock.call_args_list[0][0][1] == fcntl.LOCK_EX | fcntl.LOCK_NB
         assert mock_flock.call_args_list[-1][0][1] == fcntl.LOCK_UN
+
+    def test_handed_over_lock_released_when_prompt_prep_fails(
+        self, tmp_path, monkeypatch
+    ):
+        """A scratch-dir failure must not leak the caller's hoisted lock.
+
+        ``mission_scope.launch_scoped`` catches the OSError and retries the
+        spawn with a *fresh* lock; flock ownership is per open-file-description,
+        so a leaked hand-over would make that retry block on this very process,
+        forever.
+        """
+        import threading
+
+        from app import utils
+        from app.cli_exec import _ProviderInvocationLock, acquire_provider_lock
+
+        monkeypatch.setattr(utils, "_koan_tmp_dir_cache", None)
+        monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path))
+        provider = CodexProvider()
+
+        cli_lock = acquire_provider_lock(provider)
+        assert cli_lock.acquired
+
+        with patch(
+            "app.cli_exec.prepare_prompt_file",
+            side_effect=OSError("No space left on device"),
+        ), pytest.raises(OSError):
+            popen_cli(["codex", "exec", "prompt"], provider=provider, cli_lock=cli_lock)
+
+        retry = _ProviderInvocationLock(provider.invocation_lock_name())
+        acquired = threading.Event()
+
+        def _take_fresh_lock():
+            retry.__enter__()
+            acquired.set()
+
+        worker = threading.Thread(target=_take_fresh_lock, daemon=True)
+        worker.start()
+        assert acquired.wait(5), "hand-over leaked the lock; the retry self-deadlocks"
+        assert retry.acquired
+        retry.release()
+
+    def test_a_failing_cleanup_still_releases_the_lock(self, tmp_path, monkeypatch):
+        """cleanup()'s release sits in a finally — nothing earlier can skip it.
+
+        ``stdin_file.close()`` raising EIO on the scratch mount, or the prompt
+        removal failing, would otherwise strand the flock: the caller only
+        suppresses-and-logs the error, so the next mission's
+        ``acquire_provider_lock`` polls LOCK_NB against a lock this very
+        process still holds, forever.
+        """
+        from app import utils
+        from app.cli_exec import acquire_provider_lock
+
+        monkeypatch.setattr(utils, "_koan_tmp_dir_cache", None)
+        monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path))
+        provider = CodexProvider()
+
+        cli_lock = acquire_provider_lock(provider)
+        assert cli_lock.acquired
+
+        with patch("app.cli_exec.subprocess.Popen", return_value=MagicMock()):
+            _proc, cleanup = popen_cli(
+                ["codex", "exec", "secret"], provider=provider, cli_lock=cli_lock,
+            )
+
+        with patch(
+            "app.cli_exec._cleanup_prompt_file", side_effect=OSError("EIO"),
+        ), pytest.raises(OSError):
+            cleanup()
+
+        # release() unlocks and drops the fd; it does not reset `acquired`
+        # (that flag records the acquisition, not the current hold).
+        assert cli_lock._fh is None, "a failing cleanup stranded the provider lock"
+
+    def test_a_failing_close_still_removes_the_prompt_file(
+        self, tmp_path, monkeypatch
+    ):
+        """An EIO on close() must not leave the mission prompt on disk.
+
+        The 0600 temp file holds the full prompt and sits in ``koan_tmp_dir()``,
+        which no mission-TMPDIR reap or stray sweep covers — only this cleanup
+        removes it.
+        """
+        from app import utils
+        from app.cli_exec import acquire_provider_lock
+
+        monkeypatch.setattr(utils, "_koan_tmp_dir_cache", None)
+        monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path))
+        provider = ClaudeProvider()
+
+        cli_lock = acquire_provider_lock(provider)
+        real_open = open
+        broken = MagicMock()
+        broken.close.side_effect = OSError("EIO")
+
+        def fake_open(path, *args, **kwargs):
+            if str(path).startswith(str(tmp_path)) and str(path).endswith(".md"):
+                return broken
+            return real_open(path, *args, **kwargs)
+
+        with patch("builtins.open", side_effect=fake_open), \
+             patch("app.cli_exec.subprocess.Popen", return_value=MagicMock()):
+            _proc, cleanup = popen_cli(
+                ["claude", "-p", "secret prompt"],
+                provider=provider,
+                cli_lock=cli_lock,
+            )
+
+        with pytest.raises(OSError):
+            cleanup()
+
+        assert not list(tmp_path.glob("koan-prompt-*.md")), (
+            "a failing close() left the mission prompt file behind"
+        )
+        assert cli_lock._fh is None, "a failing cleanup stranded the provider lock"
 
 
 class TestProviderInvocationLock:
@@ -624,6 +764,76 @@ class TestStreamWithTimeout:
 
         assert result.timed_out is True
         assert result.timeout_kind == "idle"
+
+    def test_idle_timeout_kills_the_group_with_sigkill(self):
+        """The idle kill must not be SIGTERM-then-escalate.
+
+        Escalation stops once the *leader* exits, so a descendant that ignores
+        SIGTERM survives holding the inherited stdout write end — the read loop
+        never sees EOF, never reaches the idle check, and the hang gets
+        misattributed to ``rebase_review_max_duration``. A regression back to
+        the graceful default would be silent, so the kill mode is pinned here.
+        """
+        import signal as _signal
+        import threading
+
+        killed = threading.Event()
+
+        class _BlockingStream:
+            def __iter__(self):
+                killed.wait(timeout=10)
+                return iter([])
+
+            def read(self):
+                return ""
+
+            def close(self):
+                return None
+
+        proc = MagicMock()
+        proc.stdout = _BlockingStream()
+        proc.stderr = _FakeStream(read_text="")
+        proc.returncode = -9
+        proc.pid = 12345
+        proc.wait.return_value = -9
+
+        with patch("app.subprocess_runner.os.killpg",
+                   side_effect=lambda *a, **kw: killed.set()) as killpg, \
+                patch("app.subprocess_runner.os.getpgid", return_value=12345):
+            stream_with_timeout(proc, timeout=10, idle_timeout=0.5)
+
+        assert killpg.call_args_list[0] == call(12345, _signal.SIGKILL)
+
+    def test_idle_watchdog_fire_after_stream_end_kills_nothing(self):
+        """A late fire must be a no-op, not a killpg on a recycled PID.
+
+        ``Timer.cancel()`` alone cannot close the race — it does nothing once
+        ``_fire`` has begun — and the ``graceful=False`` path has no ``poll()``
+        guard to make the late kill harmless, so the stream end must also
+        ``mark_completed()``.
+        """
+        from app.subprocess_runner import LivenessWatchdog
+
+        made = []
+        real_init = LivenessWatchdog.__init__
+
+        def spy_init(self, *args, **kwargs):
+            real_init(self, *args, **kwargs)
+            made.append(self)
+
+        proc = _fake_proc(["done\n"], returncode=0)
+
+        with patch.object(LivenessWatchdog, "__init__", spy_init):
+            result = stream_with_timeout(proc, timeout=10, idle_timeout=5)
+
+        assert made, "no idle watchdog was armed"
+        with patch("app.subprocess_runner.os.killpg") as killpg:
+            # The Timer the stream end cancelled had already entered _fire.
+            made[0]._fire()
+
+        killpg.assert_not_called()
+        assert made[0].fired is False
+        assert result.timed_out is False
 
     def test_max_duration_timeout_sets_timeout_kind(self):
         import threading

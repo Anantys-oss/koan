@@ -52,6 +52,50 @@ class TestParseCliValue:
         assert cfg._parse_cli_value(None) == ("", "")
 
 
+class TestParseCliValueWarnFlag:
+    def test_warn_false_suppresses_the_unknown_flavor_line(self, capsys):
+        """Callers that re-parse an already-reported value stay quiet."""
+        assert cfg._parse_cli_value("bogus:/x", warn=False) == ("", "")
+        assert "unknown provider flavor" not in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# get_global_cli_spec
+# ---------------------------------------------------------------------------
+
+class TestGlobalCliSpec:
+    def test_flavor_only(self):
+        with _config({"cli_provider": "claude"}):
+            assert cfg.get_global_cli_spec() == ("claude", "")
+
+    def test_flavor_with_path(self):
+        with _config({"cli_provider": "claude:/opt/bin/wrap-claude"}):
+            assert cfg.get_global_cli_spec() == ("claude", "/opt/bin/wrap-claude")
+
+    def test_relative_path_returned_raw(self):
+        # The provider resolves it against KOAN_ROOT in binary().
+        with _config({"cli_provider": "claude:bin/wrap"}):
+            assert cfg.get_global_cli_spec() == ("claude", "bin/wrap")
+
+    def test_non_claude_flavor_with_path(self):
+        with _config({"cli_provider": "codex:/opt/bin/codex"}):
+            assert cfg.get_global_cli_spec() == ("codex", "/opt/bin/codex")
+
+    def test_unknown_flavor_warns_and_falls_through(self, capsys):
+        with _config({"cli_provider": "bogus:/x"}):
+            assert cfg.get_global_cli_spec() == ("", "")
+        assert "unknown provider flavor" in capsys.readouterr().err
+
+    def test_absent_key(self):
+        with _config({}):
+            assert cfg.get_global_cli_spec() == ("", "")
+
+    def test_warn_false_is_quiet(self, capsys):
+        with _config({"cli_provider": "bogus:/x"}):
+            assert cfg.get_global_cli_spec(warn=False) == ("", "")
+        assert "unknown provider flavor" not in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # get_cli_config
 # ---------------------------------------------------------------------------

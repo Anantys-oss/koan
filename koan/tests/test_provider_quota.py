@@ -20,7 +20,7 @@ class TestBaseProviderQuota:
             name = "stub"
             def binary(self): return "stub"
             def build_prompt_args(self, p): return []
-            def build_tool_args(self, a=None, d=None): return []
+            def build_tool_args(self, a=None, d=None, restrict_tools=None): return []
             def build_model_args(self, m="", f=""): return []
             def build_output_args(self, f=""): return []
             def build_max_turns_args(self, m=0): return []

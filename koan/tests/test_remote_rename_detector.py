@@ -27,6 +27,12 @@ class TestExtractSlug:
     def test_https_no_git_suffix(self):
         assert _extract_slug("https://github.com/Owner/Repo") == "owner/repo"
 
+    def test_dotted_repo_name(self):
+        assert _extract_slug("https://github.com/esphome/esphome.io") == "esphome/esphome.io"
+
+    def test_dotted_repo_name_with_git_suffix(self):
+        assert _extract_slug("git@github.com:esphome/esphome.io.git") == "esphome/esphome.io"
+
     def test_non_github_url(self):
         assert _extract_slug("git@gitlab.com:owner/repo.git") is None
 

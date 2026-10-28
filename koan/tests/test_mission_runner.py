@@ -843,6 +843,76 @@ class TestPostMissionHookFiring:
 
         mock_hook.assert_called_once()
 
+    @patch("app.mission_runner._fire_post_mission_hook")
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    def test_memory_cap_hit_reaches_the_hook_context(
+        self, mock_usage, mock_quota, mock_archive, mock_reflect,
+        mock_merge, mock_hook, tmp_path,
+    ):
+        """A cap hit is a distinct mission result, not a generic failure."""
+        from app.mission_runner import run_post_mission
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+        result = run_post_mission(
+            instance_dir=instance_dir,
+            project_name="koan",
+            project_path=str(tmp_path),
+            run_num=1,
+            exit_code=137,
+            stdout_file="/tmp/out.json",
+            stderr_file="/tmp/err.txt",
+            memory_cap_detail="exceeded memory cap (5.9G of 5.75G)",
+        )
+
+        assert result["memory_cap_exceeded"] is True
+        assert result["memory_cap_detail"] == "exceeded memory cap (5.9G of 5.75G)"
+        hook_result = mock_hook.call_args[0][6]
+        assert hook_result["memory_cap_detail"] == (
+            "exceeded memory cap (5.9G of 5.75G)"
+        )
+
+    @patch("app.mission_runner._fire_post_mission_hook")
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    def test_no_cap_hit_leaves_the_keys_empty(
+        self, mock_usage, mock_quota, mock_archive, mock_reflect,
+        mock_merge, mock_hook, tmp_path,
+    ):
+        """A caller that reports no cap gets no cap — even mid-agent-loop.
+
+        The sequential loop's ``app.run._last_mission_memory_cap`` belongs to
+        whatever mission it last ran. A parallel session reaped afterwards must
+        not inherit it, so the pipeline reads only what its caller passes.
+        """
+        import app.run as _run
+        from app.mission_runner import run_post_mission
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+        _run._last_mission_memory_cap = "exceeded memory cap (5.9G of 5.75G)"
+        try:
+            result = run_post_mission(
+                instance_dir=instance_dir,
+                project_name="koan",
+                project_path=str(tmp_path),
+                run_num=1,
+                exit_code=0,
+                stdout_file="/tmp/out.json",
+                stderr_file="/tmp/err.txt",
+            )
+        finally:
+            _run._last_mission_memory_cap = ""
+        assert result["memory_cap_exceeded"] is False
+        assert result["memory_cap_detail"] == ""
+
 
 class TestRunPostMissionKoanRoot:
     """Test that run_post_mission uses KOAN_ROOT env var for koan_root."""
@@ -3775,6 +3845,30 @@ class TestMaybeQueueAutoreview:
 
     @patch("app.utils.insert_pending_mission", return_value=True)
     @patch("app.session_tracker.detect_pr_created", return_value=True)
+    @patch("app.projects_config.get_project_autoreview", return_value=True)
+    def test_skips_pr_from_a_hook_skill_mission(
+        self, mock_autoreview, mock_detect, mock_insert, tmp_path
+    ):
+        # Reviewing this PR would fire post_review, which queues another
+        # hook-skill mission, which opens another PR — a cycle the hook
+        # system's own guards cannot see (post_review carries no mission_title,
+        # and each round has a PR URL the dedup has never seen).
+        config = {"projects": {"myapp": {"path": str(tmp_path)}}}
+        (tmp_path / "missions.md").write_text("## Pending\n")
+        self._call(
+            tmp_path,
+            mission_title=(
+                "[project:myapp] Use the docs-refresh skill for "
+                "https://github.com/owner/repo/pull/7. Queued by the post_review "
+                "lifecycle event via .koan/config.yaml. [hook-skill:docs-refresh]"
+                "[hook-subject:https://github.com/owner/repo/pull/7]"
+            ),
+            projects_config=config,
+        )
+        mock_insert.assert_not_called()
+
+    @patch("app.utils.insert_pending_mission", return_value=True)
+    @patch("app.session_tracker.detect_pr_created", return_value=True)
     @patch("app.projects_config.get_project_autoreview", return_value=False)
     def test_skips_when_disabled(
         self, mock_autoreview, mock_detect, mock_insert, tmp_path
@@ -4177,3 +4271,100 @@ class TestApplyVerifyRequeueSignal:
         result = {}
         _apply_verify_requeue_signal(result, vr, "")
         assert result.get("verify_requeue") is not True
+
+
+class TestFirePostMissionHookMissionHooks:
+    """Agent-loop post-mission repo-config shell hooks wiring (011, US1)."""
+
+    def _fire(self, exit_code, mission_title):
+        from app.mission_runner import _fire_post_mission_hook
+        return _fire_post_mission_hook(
+            instance_dir="/tmp/koan/instance",
+            project_name="koan",
+            project_path="/tmp/proj",
+            exit_code=exit_code,
+            mission_title=mission_title,
+            duration_minutes=3,
+            result={},
+        )
+
+    def test_post_hooks_called_success(self):
+        with patch("app.mission_hooks.run_post_hooks") as post, \
+             patch("app.hooks.fire_hook", return_value={}):
+            self._fire(0, "do some refactoring")
+        # Non-skill mission title resolves to type "" -> default hooks only.
+        post.assert_called_once_with("/tmp/proj", "koan", "", True)
+
+    def test_post_hooks_called_failure(self):
+        with patch("app.mission_hooks.run_post_hooks") as post, \
+             patch("app.hooks.fire_hook", return_value={}):
+            self._fire(1, "do some refactoring")
+        post.assert_called_once_with("/tmp/proj", "koan", "", False)
+
+    def test_post_hook_error_does_not_break_python_hook(self):
+        with patch("app.mission_hooks.run_post_hooks", side_effect=RuntimeError("boom")), \
+             patch("app.hooks.fire_hook", return_value={}) as fire:
+            failures = self._fire(0, "do some refactoring")
+        # The Python post_mission hook still fires and the function returns cleanly.
+        fire.assert_called_once()
+        assert failures == {}
+
+    def test_skill_dispatch_does_not_fire_post_hooks_here(self):
+        # Regression: skill-dispatched missions also flow through this pipeline
+        # (run.py::_run_skill_mission → run_post_mission), but their repo
+        # post_hooks fire once in _handle_skill_dispatch's finally. Firing them
+        # here too would double-run them, so is_skill_dispatch must suppress it.
+        from app.mission_runner import _fire_post_mission_hook
+        with patch("app.mission_hooks.run_post_hooks") as post, \
+             patch("app.hooks.fire_hook", return_value={}) as fire:
+            _fire_post_mission_hook(
+                instance_dir="/tmp/koan/instance",
+                project_name="koan",
+                project_path="/tmp/proj",
+                exit_code=0,
+                mission_title="/review https://x/pull/1",
+                duration_minutes=1,
+                result={},
+                is_skill_dispatch=True,
+            )
+        post.assert_not_called()          # repo post_hooks suppressed here
+        fire.assert_called_once()         # Python post_mission hook still fires
+
+
+class TestOutcomeFromStdout:
+    """The agent loop reads the outcome a runner handed over on stdout."""
+
+    def test_no_report_falls_back_to_first_pr_url(self):
+        from app.mission_runner import outcome_from_stdout
+        out = "transcript\nhttps://github.com/o/r/pull/1\n"
+        assert outcome_from_stdout(out) == {
+            "pr_url": "https://github.com/o/r/pull/1", "reason": "", "detail": "",
+            "reported": False,
+        }
+        assert outcome_from_stdout("")["pr_url"] == ""
+
+    def test_handed_over_url_wins(self):
+        from app.mission_runner import outcome_from_stdout
+        out = ("old https://github.com/o/r/pull/1\nKOAN_OUTCOME_OK: 1\n"
+               "KOAN_OUTCOME_URL: https://github.com/o/r/pull/2\n")
+        assert outcome_from_stdout(out)["pr_url"] == "https://github.com/o/r/pull/2"
+
+    def test_reported_without_url_never_guesses_one(self):
+        """An inline /plan quoting a PR link must not be reported as that PR."""
+        from app.mission_runner import outcome_from_stdout
+        out = ("KOAN_OUTCOME_OK: 1\nKOAN_OUTCOME_DETAIL: see https://github.com/o/r/pull/42\n")
+        found = outcome_from_stdout(out)
+        assert found["reported"] is True
+        assert found["pr_url"] == ""
+
+    def test_reason_and_detail(self):
+        from app.mission_runner import outcome_from_stdout
+        out = ("KOAN_OUTCOME_OK: 0\nKOAN_OUTCOME_REASON: first\nKOAN_OUTCOME_DETAIL: line one\n"
+               "noise\nKOAN_OUTCOME_DETAIL:   indented\nKOAN_OUTCOME_REASON: second\n")
+        found = outcome_from_stdout(out)
+        assert found["reason"] == "second"
+        assert found["detail"] == "line one\n  indented"
+
+    def test_marker_must_start_the_line(self):
+        from app.mission_runner import outcome_from_stdout
+        assert outcome_from_stdout("quoted KOAN_OUTCOME_REASON: nope\n")["reason"] == ""

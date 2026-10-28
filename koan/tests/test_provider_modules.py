@@ -4,6 +4,7 @@ Covers: base.py, claude.py, copilot.py, ollama_launch.py, __init__.py
 These modules had zero test coverage despite being used throughout the codebase.
 """
 
+import contextlib
 import json
 import os
 from unittest.mock import MagicMock, patch
@@ -43,6 +44,31 @@ class TestConstants:
         for v in TOOL_NAME_MAP.values():
             assert isinstance(v, str)
             assert v  # not empty
+
+    def test_side_effect_tools_cover_every_write_capable_tool(self):
+        """Read-only roles deny these by name, so the set must stay complete.
+
+        Anything that can mutate state or shell out belongs here; otherwise a
+        read-only role silently keeps a write path.
+        """
+        from app.provider.base import SIDE_EFFECT_TOOLS
+
+        assert set(SIDE_EFFECT_TOOLS) >= {"Bash", "Write", "Edit"}
+        # The read tools must NOT be denied — reviews still need them.
+        assert not ({"Read", "Glob", "Grep"} & set(SIDE_EFFECT_TOOLS))
+
+    def test_read_only_roles_is_review_only(self):
+        """Only review_mode is read-only.
+
+        Deliberately NOT "chat": scripts/wiki_sync_ci.py drives a *write* job
+        (Edit/Write plus a git-log Bash rule) on the chat role, so adding it
+        here would break that CI fixer.
+        """
+        from app.provider import READ_ONLY_ROLES
+
+        assert READ_ONLY_ROLES == frozenset({"review_mode"})
+        assert "chat" not in READ_ONLY_ROLES
+        assert "mission" not in READ_ONLY_ROLES
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +246,20 @@ class TestClaudeProvider:
         p = ClaudeProvider()
         assert p.build_permission_args(False) == []
         assert p.build_permission_args(True) == ["--dangerously-skip-permissions"]
+
+    def test_read_only_suppresses_skip_permissions(self):
+        """A read-only role never gets --dangerously-skip-permissions.
+
+        That flag bypasses ALL permission checks, which would defeat the
+        --disallowedTools denial that makes the role read-only in the first
+        place. read_only therefore wins over skip_permissions.
+        """
+        p = ClaudeProvider()
+        assert p.build_permission_args(False, read_only=True) == []
+        assert p.build_permission_args(True, read_only=True) == []
+
+    def test_supports_tool_denial(self):
+        assert ClaudeProvider().supports_tool_denial() is True
 
     def test_system_prompt_args(self):
         p = ClaudeProvider()
@@ -1726,6 +1766,32 @@ class TestCodexProvider:
             and "exec" in cmd
         )
 
+    def test_read_only_pins_sandbox_and_beats_skip_permissions(self):
+        """Codex ignores tool arguments, so the sandbox is the only lever.
+
+        build_tool_args() returns [] AND build_command never calls it, so a
+        read-only Codex review can only be enforced via --sandbox read-only.
+        That must therefore override skip_permissions — honoring the bypass
+        would hand the review write access to the live project clone.
+        """
+        from app.provider.codex import CodexProvider
+        p = CodexProvider()
+        assert p.build_permission_args(False, read_only=True) == [
+            "--sandbox", "read-only",
+        ]
+        assert p.build_permission_args(True, read_only=True) == [
+            "--sandbox", "read-only",
+        ]
+
+    def test_read_only_build_command_has_no_write_sandbox(self):
+        from app.provider.codex import CodexProvider
+        cmd = CodexProvider().build_command(
+            prompt="hi", skip_permissions=True, read_only=True,
+        )
+        assert "read-only" in cmd
+        assert "workspace-write" not in cmd
+        assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
+
     def test_build_command_prepends_system_prompt(self):
         from app.provider.codex import CodexProvider
         cmd = CodexProvider().build_command(prompt="up", system_prompt="sys")
@@ -2260,11 +2326,17 @@ class TestSummarizeStreamEventEdgeCases:
         line = _summarize_stream_event({
             "type": "user",
             "message": {"content": [
-                {"type": "tool_result", "tool_use_id": "tu_abc123xyz", "is_error": True},
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tu_abc123xyz",
+                    "is_error": True,
+                    "content": "permission_denied\nadditional detail",
+                },
             ]},
         })
         assert "tool_result" in line
         assert "(error)" in line
+        assert line.endswith(": permission_denied")
 
     def test_user_turn_without_tool_result(self):
         from app.provider import _summarize_stream_event
@@ -2308,3 +2380,991 @@ class TestSummarizeStreamEventEdgeCases:
         })
         # Empty text should render as just "text" without preview
         assert "text" in line
+
+
+# ---------------------------------------------------------------------------
+# Read-only role enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestReadOnlyRoleEnforcement:
+    """A read-only role must be enforced by the CLI, not by the prompt.
+
+    The premise these tests defend, verified against Claude CLI 2.1.234:
+    ``--allowedTools`` only *pre-approves* invocations, it does not restrict
+    which tools exist. Under ``--allowedTools Read,Glob,Grep`` a ``Bash`` call
+    still succeeds; under ``--disallowedTools Bash`` it is blocked. So passing a
+    read-only ``allowed_tools`` list is NOT sufficient — the side-effecting
+    tools have to be denied by name.
+    """
+
+    def test_read_only_denies_side_effect_tools(self):
+        from app.provider import build_full_command
+        from app.provider.base import READ_ONLY_TOOLS, SIDE_EFFECT_TOOLS
+        from app.provider.claude import ClaudeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            cmd = build_full_command(
+                prompt="p",
+                allowed_tools=["Read", "Glob", "Grep"],
+                provider=ClaudeProvider(),
+                read_only=True,
+            )
+        denied = cmd[cmd.index("--disallowedTools") + 1].split(",")
+        # Bash is excluded from the denial ON PURPOSE: --disallowedTools removes
+        # a tool from the model's context, so denying it here would cancel the
+        # gated shell that --tools grants. Everything else still gets denied.
+        for tool in SIDE_EFFECT_TOOLS:
+            if tool in READ_ONLY_TOOLS:
+                assert tool not in denied, (
+                    f"{tool} is granted by READ_ONLY_TOOLS; denying it would "
+                    "cancel the grant"
+                )
+                continue
+            assert tool in denied, f"{tool} must be denied for a read-only role"
+
+    def test_non_read_only_adds_no_denial(self):
+        """The default path must stay byte-identical to before this change."""
+        from app.provider import build_full_command
+        from app.provider.claude import ClaudeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            cmd = build_full_command(
+                prompt="p",
+                allowed_tools=["Read", "Glob", "Grep"],
+                provider=ClaudeProvider(),
+            )
+        assert "--disallowedTools" not in cmd
+        assert "--tools" not in cmd
+        assert "--strict-mcp-config" not in cmd
+
+    def test_read_only_restricts_tools_to_the_allowlist(self):
+        """The positive allowlist is the primary mechanism."""
+        from app.provider import build_full_command
+        from app.provider.base import READ_ONLY_TOOLS
+        from app.provider.claude import ClaudeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            cmd = build_full_command(
+                prompt="p",
+                allowed_tools=["Read", "Glob", "Grep"],
+                provider=ClaudeProvider(),
+                read_only=True,
+            )
+        assert cmd[cmd.index("--tools") + 1].split(",") == list(READ_ONLY_TOOLS)
+
+    def test_read_only_excludes_subagent_spawning_tools(self):
+        """Task/Skill/MultiEdit must be withheld WITHOUT being enumerated.
+
+        This is the whole reason the allowlist replaced the denial as primary:
+        `SIDE_EFFECT_TOOLS` never named these, so a "read-only" review could
+        spawn a write-capable subagent via Task. Nothing enumerates them now
+        either -- they are absent because they were never named as allowed.
+        """
+        from app.provider import build_full_command
+        from app.provider.base import SIDE_EFFECT_TOOLS
+        from app.provider.claude import ClaudeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            cmd = build_full_command(
+                prompt="p", provider=ClaudeProvider(), read_only=True,
+            )
+        granted = cmd[cmd.index("--tools") + 1].split(",")
+        for tool in ("Task", "Skill", "MultiEdit", "Write", "Edit"):
+            assert tool not in granted, f"{tool} must not be in the allowlist"
+        # ...and none of them had to be listed as a denial to achieve that.
+        for tool in ("Task", "Skill", "MultiEdit"):
+            assert tool not in SIDE_EFFECT_TOOLS
+
+    def test_bash_is_granted_but_never_pre_approved(self):
+        """The whole fail-closed property of the review shell.
+
+        `Bash` is in READ_ONLY_TOOLS so the tool exists, but nothing
+        pre-approves it -- the PreToolUse hook returning "allow" is the only
+        thing that lets a command run. If the hook fails to load, Bash is
+        un-pre-approved and headless mode denies it, so the gate fails to
+        "no shell" rather than to an unguarded one. Putting Bash into
+        --allowedTools here would silently destroy that.
+        """
+        from app.provider import build_full_command
+        from app.provider.claude import ClaudeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            cmd = build_full_command(
+                prompt="p",
+                allowed_tools=["Read", "Glob", "Grep"],
+                provider=ClaudeProvider(),
+                read_only=True,
+            )
+        assert "Bash" in cmd[cmd.index("--tools") + 1].split(",")
+        pre_approved = cmd[cmd.index("--allowedTools") + 1].split(",")
+        assert not any(t == "Bash" or t.startswith("Bash(") for t in pre_approved), (
+            f"Bash must never be pre-approved; got {pre_approved}"
+        )
+
+    def test_read_only_installs_the_shell_gate(self):
+        import json
+
+        from app.provider import build_full_command
+        from app.provider.claude import ClaudeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            cmd = build_full_command(
+                prompt="p", provider=ClaudeProvider(), read_only=True,
+            )
+        settings_path = cmd[cmd.index("--settings") + 1]
+        with open(settings_path, encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        entry = cfg["hooks"]["PreToolUse"][0]
+        assert entry["matcher"] == "Bash"
+        assert "review_bash_guard.py" in entry["hooks"][0]["command"]
+
+    def test_non_read_only_installs_no_gate(self):
+        from app.provider import build_full_command
+        from app.provider.claude import ClaudeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            cmd = build_full_command(prompt="p", provider=ClaudeProvider())
+        assert "--settings" not in cmd
+
+    def test_read_only_isolates_ambient_mcp_servers(self):
+        """--tools covers built-ins only; MCP needs its own isolation.
+
+        Measured on CLI 2.1.235: under `--tools "Read,Glob,Grep"` every
+        user-level MCP tool was still present, including write-capable ones.
+        """
+        from app.provider import build_full_command
+        from app.provider.claude import ClaudeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            cmd = build_full_command(
+                prompt="p", provider=ClaudeProvider(), read_only=True,
+            )
+        assert "--strict-mcp-config" in cmd
+        assert "--mcp-config" not in cmd
+
+    def test_empty_restriction_is_distinct_from_no_restriction(self):
+        """`None` means unrestricted; `[]` means no built-in tools at all.
+
+        Collapsing the two is how a positive allowlist quietly becomes a
+        fail-open, so both must stay expressible.
+        """
+        from app.provider.claude import ClaudeProvider
+
+        p = ClaudeProvider()
+        assert p.build_tool_args(restrict_tools=None) == []
+        assert p.build_tool_args(restrict_tools=[]) == ["--tools", ""]
+        assert p.build_tool_args(restrict_tools=["Read"]) == ["--tools", "Read"]
+
+    def test_claude_and_ollama_launch_declare_restriction(self):
+        from app.provider.claude import ClaudeProvider
+        from app.provider.ollama_launch import OllamaLaunchProvider
+
+        for cls in (ClaudeProvider, OllamaLaunchProvider):
+            assert cls().supports_tool_restriction() is True, cls.__name__
+
+    def test_ollama_launch_forwards_restriction_and_isolation(self):
+        """It re-implements build_command, so it can silently fail open."""
+        from app.provider.base import READ_ONLY_TOOLS
+        from app.provider.ollama_launch import OllamaLaunchProvider
+
+        cmd = OllamaLaunchProvider().build_command(prompt="p", read_only=True)
+        assert cmd[cmd.index("--tools") + 1].split(",") == list(READ_ONLY_TOOLS)
+        assert "--strict-mcp-config" in cmd
+
+    def test_read_only_preserves_caller_supplied_denials(self):
+        from app.provider import build_full_command
+        from app.provider.claude import ClaudeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            cmd = build_full_command(
+                prompt="p",
+                allowed_tools=["Read"],
+                disallowed_tools=["WebFetch"],
+                provider=ClaudeProvider(),
+                read_only=True,
+            )
+        denied = cmd[cmd.index("--disallowedTools") + 1].split(",")
+        assert "WebFetch" in denied, "caller-supplied denials must survive"
+        assert "Write" in denied
+
+    def test_read_only_suppresses_permission_bypass_end_to_end(self):
+        """skip_permissions must not survive into a read-only command."""
+        from app.provider import build_full_command
+        from app.provider.claude import ClaudeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=True):
+            cmd = build_full_command(
+                prompt="p",
+                allowed_tools=["Read", "Glob", "Grep"],
+                provider=ClaudeProvider(),
+                read_only=True,
+            )
+        assert "--dangerously-skip-permissions" not in cmd
+
+    def test_every_provider_fails_closed_for_read_only(self):
+        """Fail-closed across the whole registry.
+
+        Each provider either enforces the boundary -- denying the side-effecting
+        tools by name, or expressing a read-only posture some other way (Codex's
+        sandbox) -- or the invocation is REFUSED. There is no third outcome: a
+        provider that can do neither must never run a "read-only" review with
+        full write access to the live project clone, so adding a new provider
+        cannot silently produce an unenforced review either way.
+        """
+        from app.provider import (
+            ReadOnlyUnenforceable,
+            build_full_command,
+            known_providers,
+            _PROVIDERS,
+        )
+
+        # Providers that can express NEITHER a per-tool denial nor a read-only
+        # sandbox. Documented in specs/skills/review.md: read-only invocations on
+        # these are rejected. "fake" is test-only and refuses instantiation
+        # without KOAN_ALLOW_FAKE_PROVIDER=1.
+        unenforceable = {"cline", "haze", "copilot", "grok", "gemini", "fake"}
+        assert unenforceable <= set(known_providers())
+
+        enforced_count = 0
+        refused_count = 0
+        for name in known_providers():
+            if name == "fake":
+                continue
+            provider = _PROVIDERS[name]()
+            assert provider.enforces_read_only() is (name not in unenforceable), (
+                f"provider {name!r}: enforces_read_only() disagrees with the "
+                "documented unenforceable set"
+            )
+            if provider.supports_tool_restriction():
+                assert provider.enforces_read_only(), (
+                    f"provider {name!r}: a positive tool allowlist must imply "
+                    "enforces_read_only()"
+                )
+            with patch("app.config.get_skip_permissions", return_value=False):
+                if name in unenforceable:
+                    with pytest.raises(ReadOnlyUnenforceable):
+                        build_full_command(
+                            prompt="p",
+                            allowed_tools=["Read", "Glob", "Grep"],
+                            provider=provider,
+                            read_only=True,
+                        )
+                    refused_count += 1
+                    continue
+                cmd = build_full_command(
+                    prompt="p",
+                    allowed_tools=["Read", "Glob", "Grep"],
+                    provider=provider,
+                    read_only=True,
+                )
+            # Inspect each flag's OWN value, never the joined string. Once
+            # `--tools Read,Glob,Grep` is also present, a substring check for
+            # "Bash" would pass for the wrong reason and the assertion would
+            # silently stop testing what it claims.
+            def _flag_value(flag):
+                return cmd[cmd.index(flag) + 1] if flag in cmd else ""
+
+            # A positive allowlist enforces when it exists at all: whatever it
+            # omits is withheld. Bash may legitimately be IN it (gated by the
+            # PreToolUse hook), so its presence says nothing either way.
+            restricted = "--tools" in cmd
+            denied = "Write" in _flag_value("--disallowedTools").split(",")
+            sandboxed = "read-only" in cmd
+            assert restricted or denied or sandboxed, (
+                f"provider {name!r} claims enforces_read_only() but produced no "
+                "read-only enforcement in the built command"
+            )
+            enforced_count += 1
+        assert enforced_count, "no enforceable provider was exercised"
+        assert refused_count, "no unenforceable provider was exercised"
+
+    def test_unenforceable_provider_is_refused_with_actionable_error(self):
+        """The refusal must name the provider and point at the fix."""
+        from app.provider import ReadOnlyUnenforceable, build_full_command
+        from app.provider.haze import HazeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            with pytest.raises(ReadOnlyUnenforceable) as exc:
+                build_full_command(
+                    prompt="p",
+                    allowed_tools=["Read", "Glob", "Grep"],
+                    provider=HazeProvider(),
+                    read_only=True,
+                )
+        msg = str(exc.value)
+        assert "haze" in msg
+        assert "cli.review_mode" in msg
+
+    def test_unenforceable_provider_still_runs_when_not_read_only(self):
+        """The refusal is scoped to read-only roles, not the provider itself."""
+        from app.provider import build_full_command
+        from app.provider.haze import HazeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            cmd = build_full_command(prompt="p", provider=HazeProvider())
+        assert cmd, "a non-read-only haze invocation must still build"
+
+    def test_fallback_swap_into_unenforceable_provider_is_refused(self):
+        """The check must run AFTER provider resolution, including cli.fallback.
+
+        `resolve_role_provider` swaps to `cli.fallback` when the role's binary is
+        missing, so a fallback into an unenforceable provider must be refused
+        exactly like a directly-configured one. Nothing else pins this ordering:
+        moving the predicate up into `resolve_role_provider` or
+        `get_provider_for_role` would silently break the documented contract in
+        specs/components/providers.md.
+        """
+        import app.provider as provider_mod
+        from app.provider import ReadOnlyUnenforceable, run_command_streaming
+        from app.provider.haze import HazeProvider
+
+        with patch.object(
+            provider_mod, "resolve_role_provider", return_value=HazeProvider(),
+        ), patch("app.config.get_skip_permissions", return_value=False), \
+                patch("app.config.get_model_config", return_value={}):
+            with pytest.raises(ReadOnlyUnenforceable):
+                run_command_streaming(
+                    prompt="p",
+                    project_path=".",
+                    allowed_tools=["Read", "Glob", "Grep"],
+                    model_key="review_mode",
+                )
+
+    def test_grok_emits_tool_flags_but_still_declares_no_capability(self):
+        """Grok is refused for a measured reason, not for lacking flags.
+
+        `GrokProvider.build_tool_args` DOES emit `--tools` / `--disallowed-tools`,
+        so "grok has no deny flag" is false and must not be the justification.
+        It stays unenforceable because (1) nobody has measured that those flags
+        withhold rather than pre-approve -- the exact assumption that made
+        `--allowedTools` look like a restriction when it was not -- and (2)
+        `build_permission_args` returns `--always-approve` unconditionally,
+        ignoring read_only. This test fails if someone flips the predicate
+        without first making the permission args conditional.
+        """
+        from app.provider.base import SIDE_EFFECT_TOOLS
+        from app.provider.grok import GrokProvider
+
+        p = GrokProvider()
+        flags = p.build_tool_args(["Read", "Glob", "Grep"], list(SIDE_EFFECT_TOOLS))
+        assert "--disallowed-tools" in flags, (
+            "premise changed: grok no longer emits a denial flag"
+        )
+        assert p.enforces_read_only() is False
+
+        # Blocker (2): the blanket auto-approve is emitted even for read_only.
+        assert p.build_permission_args(False, read_only=True) == ["--always-approve"]
+
+    def test_codex_declares_read_only_sandbox_support(self):
+        from app.provider.codex import CodexProvider
+
+        p = CodexProvider()
+        assert p.supports_tool_denial() is False
+        assert p.supports_read_only_sandbox() is True
+        assert p.enforces_read_only() is True
+
+    def test_managed_build_unlinks_prompt_file_when_build_raises(self):
+        """A failed build must not leave the 0600 system-prompt file behind.
+
+        ``cleanup_paths`` only reaches the caller on success, so a raise out of
+        ``build_full_command`` would otherwise leak a file containing the system
+        prompt with nobody holding its path.
+        """
+        import os
+
+        import app.provider as provider_mod
+        from app.provider import build_full_command_managed
+        from app.provider.claude import ClaudeProvider
+
+        captured = {}
+        real = provider_mod._write_system_prompt_file
+
+        def spy(content, host_dir=None, container_dir=None):
+            host_path, cmd_path = real(content, host_dir, container_dir)
+            captured["path"] = host_path
+            return host_path, cmd_path
+
+        with patch.object(provider_mod, "_write_system_prompt_file", spy), \
+                patch("app.config.get_skip_permissions", return_value=False), \
+                patch.object(
+                    ClaudeProvider, "build_command", side_effect=RuntimeError("boom"),
+                ):
+            with pytest.raises(RuntimeError, match="boom"):
+                build_full_command_managed(
+                    prompt="p",
+                    system_prompt="a system prompt",
+                    provider=ClaudeProvider(),
+                )
+
+        assert captured.get("path"), "the spy never saw a temp file"
+        assert not os.path.exists(captured["path"]), (
+            "system-prompt temp file leaked when the build raised"
+        )
+
+
+class TestStreamingReadLoopIsInactivityBounded:
+    """A provider that opens stdout then goes silent must not hang the caller.
+
+    Production symptom (2026-09-10): a review pass printed its `session init`
+    banner and then emitted nothing for 600s. The ``timeout=`` argument did not
+    bound it — ``timeout`` is applied by the ``proc.wait()`` that runs *after*
+    stdout EOF, and a blocking ``for line in proc.stdout`` never reaches that
+    line. The only thing that ended the run was run.py's outer skill-runner
+    watchdog, which SIGKILLs the whole runner: the mission died as a generic
+    "Skill runner timed out", no partial result was written, and the stall was
+    not attributable to the pass that caused it.
+
+    A wall-clock cap is the wrong instrument — a healthy long pass streams
+    progress for many minutes — so the bound is on inactivity.
+    """
+
+    STALL_SECONDS = 30
+
+    def _spawn(self, script):
+        import subprocess as _sp
+        import sys as _sys
+        return _sp.Popen(
+            [_sys.executable, "-c", script],
+            stdout=_sp.PIPE, stderr=_sp.PIPE,
+            encoding="utf-8", errors="replace",
+            start_new_session=True,
+        )
+
+    def _run(self, proc, **kwargs):
+        from app.provider import run_command_streaming
+        cleanup = MagicMock()
+        with patch("app.config.get_model_config",
+                   return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.popen_cli", return_value=(proc, cleanup)), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            return run_command_streaming("hi", "/tmp", [], **kwargs)
+
+    def test_a_silent_provider_fails_the_pass_instead_of_blocking(self):
+        import time as _time
+        proc = self._spawn(
+            "import sys,time\n"
+            "sys.stdout.write('session init\\n')\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({self.STALL_SECONDS})\n"
+        )
+        started = _time.monotonic()
+        try:
+            # The suffix is what keeps a stall diagnosable from the error
+            # alone: a pass that printed most of its findings and then went
+            # silent must not be reported as a bare timeout.
+            with pytest.raises(
+                RuntimeError, match="no output for 2s.*Partial output.*session init"
+            ):
+                self._run(proc, idle_timeout=2)
+        finally:
+            proc.kill()
+            proc.wait()
+        elapsed = _time.monotonic() - started
+        assert elapsed < self.STALL_SECONDS / 2, (
+            f"returned in {elapsed:.1f}s — the bound did not reach the read loop"
+        )
+
+    def test_a_stall_carries_the_stderr_the_provider_printed(self):
+        """stderr is usually the only statement of *why* it went silent.
+
+        The stall branch sits above the normal drain, so without an explicit
+        read the expired token (or whatever the CLI complained about) never
+        reaches the caller and the operator just re-runs into the same wall.
+        """
+        proc = self._spawn(
+            "import sys,time\n"
+            "sys.stderr.write('Error: OAuth token expired\\n')\n"
+            "sys.stderr.flush()\n"
+            "sys.stdout.write('session init\\n')\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({self.STALL_SECONDS})\n"
+        )
+        try:
+            with pytest.raises(RuntimeError, match="OAuth token expired"):
+                self._run(proc, idle_timeout=2)
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_silence_after_the_result_envelope_returns_the_verdict(self):
+        """The loop drains to EOF, so teardown silence trips the same watchdog.
+
+        A CLI that emits its terminal ``result`` and then goes quiet shutting
+        down MCP servers has produced a complete pass. Reporting that as a
+        stall would demote a finished review to a truncated error string —
+        the exact outcome this bound exists to prevent, reached from the
+        other end.
+        """
+        proc = self._spawn(
+            "import json,sys,time\n"
+            "sys.stdout.write(json.dumps("
+            "{'type': 'result', 'result': 'VERDICT: approved'}) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({self.STALL_SECONDS})\n"
+        )
+        try:
+            out = self._run(proc, idle_timeout=2)
+        finally:
+            proc.kill()
+            proc.wait()
+        assert "VERDICT: approved" in out
+
+    def test_a_textless_terminal_envelope_also_exempts_the_teardown_silence(self):
+        """"Finished" is an event shape, not "a result string came out".
+
+        Grok Build closes with ``{"type": "end"}`` and streams the assistant
+        text as deltas, so ``_extract_result_text`` returns None by design.
+        Keying the exemption off the extracted result would report a completed
+        pass on that provider as a stall and throw the verdict away down to a
+        200-character suffix — the same demotion the exemption exists to
+        prevent, reached through a different envelope shape.
+        """
+        proc = self._spawn(
+            "import json,sys,time\n"
+            "for e in ({'type': 'text', 'data': 'VERDICT: approved'},"
+            " {'type': 'end', 'stopReason': 'done'}):\n"
+            "    sys.stdout.write(json.dumps(e) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({self.STALL_SECONDS})\n"
+        )
+        try:
+            out = self._run(proc, idle_timeout=2)
+        finally:
+            proc.kill()
+            proc.wait()
+        assert "VERDICT: approved" in out
+
+    def test_a_mid_stream_item_completed_does_not_disarm_the_stall_report(self):
+        """Codex's per-item envelope must not latch the teardown exemption.
+
+        ``saw_terminal_result`` is a one-way flag, so matching a ``.completed``
+        suffix would let Codex's ``item.completed`` — emitted after the *first*
+        tool call, with ``turn.completed`` being the real terminal envelope —
+        exempt the whole rest of the run from the idle bound. A provider that
+        then went silent would come back as a *successful* truncated pass with
+        no usage recorded: quieter, and worse, than the hang this bound
+        replaced.
+        """
+        proc = self._spawn(
+            "import json,sys,time\n"
+            "for e in ({'type': 'item.completed',"
+            " 'item': {'type': 'command_execution'}},"
+            " {'type': 'response.output_text.done', 'text': 'half a finding'}):\n"
+            "    sys.stdout.write(json.dumps(e) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({self.STALL_SECONDS})\n"
+        )
+        try:
+            with pytest.raises(RuntimeError, match="no output for 2s"):
+                self._run(proc, idle_timeout=2)
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_a_terminal_turn_completed_still_exempts_the_teardown_silence(self):
+        """The strict whitelist must keep Codex's real terminal envelope.
+
+        Paired with the test above: tightening the predicate is only correct
+        if ``turn.completed`` — the envelope that actually closes a Codex
+        stream — still exempts teardown silence, or the fix trades a silent
+        truncation for a spurious stall on the same provider.
+        """
+        proc = self._spawn(
+            "import json,sys,time\n"
+            "for e in ({'type': 'item.completed',"
+            " 'item': {'type': 'command_execution'}},"
+            " {'type': 'turn.completed', 'output_text': 'VERDICT: approved'}):\n"
+            "    sys.stdout.write(json.dumps(e) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({self.STALL_SECONDS})\n"
+        )
+        try:
+            out = self._run(proc, idle_timeout=2)
+        finally:
+            proc.kill()
+            proc.wait()
+        assert "VERDICT: approved" in out
+
+    def test_a_failed_envelope_then_teardown_silence_still_reports_the_failure(self):
+        """Our own SIGKILL must not launder a failed session into a success.
+
+        A headless permission denial arrives as a terminal envelope with
+        status=failed. If the CLI then hangs in teardown, recognising exit -9
+        as the watchdog's own kill must suppress only the generic exit-code
+        error — not the failed-status raise that carries the actionable
+        ``skip_permissions`` hint.
+        """
+        proc = self._spawn(
+            "import json,sys,time\n"
+            "for e in ({'type': 'text', 'data': 'partial prose'},"
+            " {'type': 'result', 'status': 'failed',"
+            " 'error': {'message': 'permission denied'}}):\n"
+            "    sys.stdout.write(json.dumps(e) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({self.STALL_SECONDS})\n"
+        )
+        try:
+            with pytest.raises(RuntimeError, match="status=failed.*permission denied"):
+                self._run(proc, idle_timeout=2)
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_an_exception_mid_loop_does_not_orphan_the_isolated_child(self):
+        """cleanup() releases the invocation lock; it never kills.
+
+        An opted-in child is session-isolated, so run.py's skill-runner
+        teardown and mission_scope's process-group reap cannot reach it either.
+        Disarming the watchdog without killing first would leave it running and
+        burning quota while the next mission takes the lock just released.
+        """
+        import time as _time
+        proc = self._spawn(
+            "import json,sys,time\n"
+            "sys.stdout.write(json.dumps({'type': 'text', 'data': 'x'}) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({self.STALL_SECONDS})\n"
+        )
+        try:
+            with patch("app.provider._summarize_stream_event",
+                       side_effect=ValueError("malformed event")), \
+                 pytest.raises(ValueError, match="malformed event"):
+                self._run(proc, idle_timeout=self.STALL_SECONDS)
+            deadline = _time.monotonic() + 5
+            while proc.poll() is None and _time.monotonic() < deadline:
+                _time.sleep(0.05)
+            assert proc.poll() is not None, (
+                "the session-isolated provider outlived the call with no "
+                "group teardown left that can reach it"
+            )
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_a_genuine_stall_still_records_what_it_burned(self):
+        """Usage is persisted on every other exit; the stall must match.
+
+        A pass that streamed for minutes before going silent is the run that
+        consumed the most quota — dropping its snapshot under-counts exactly
+        the runs that matter most to budget tracking.
+        """
+        proc = self._spawn(
+            "import sys,time\n"
+            "sys.stdout.write('session init\\n')\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({self.STALL_SECONDS})\n"
+        )
+        with patch("app.provider._persist_stream_usage_snapshot") as persist:
+            try:
+                with pytest.raises(RuntimeError, match="no output for 2s"):
+                    self._run(proc, idle_timeout=2)
+            finally:
+                proc.kill()
+                proc.wait()
+        assert persist.called, "a stalled pass recorded no usage at all"
+
+    def test_a_streaming_provider_is_not_killed_by_the_idle_bound(self):
+        """Every consumed line heartbeats, so steady progress survives."""
+        proc = self._spawn(
+            "import sys,time\n"
+            "for i in range(10):\n"
+            "    sys.stdout.write('tick %d\\n' % i)\n"
+            "    sys.stdout.flush()\n"
+            "    time.sleep(0.2)\n"
+        )
+        try:
+            out = self._run(proc, idle_timeout=2)
+        finally:
+            proc.kill()
+            proc.wait()
+        # Ran 2s wall-clock with a 2s idle bound and still completed.
+        assert "tick 0" in out and "tick 9" in out
+
+    def _spawn_kwargs(self, **kwargs):
+        """popen_cli kwargs for a trivially-successful streaming call."""
+        from app.provider import run_command_streaming
+        proc = MagicMock()
+        stdout = MagicMock()
+        stdout.__iter__ = lambda self: iter(["ok\n"])
+        proc.stdout = stdout
+        # No stderr and an impossible pid: this fixture asserts on the *spawn*
+        # kwargs only, and both the stderr drain and the teardown group kill
+        # need a real fd / a real process group to mean anything. A MagicMock
+        # fd would be read under select(); a MagicMock pid would be signalled.
+        proc.stderr = None
+        proc.pid = -1
+        proc.returncode = 0
+        proc.wait.return_value = None
+        with patch("app.config.get_model_config",
+                   return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.popen_cli",
+                   return_value=(proc, MagicMock())) as mock_popen, \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            run_command_streaming("hi", "/tmp", [], **kwargs)
+        return mock_popen.call_args[1]
+
+    def test_an_opted_in_child_gets_its_own_session(self):
+        """An armed watchdog group-kills; a shared group would kill koan."""
+        assert self._spawn_kwargs(idle_timeout=30).get(
+            "start_new_session") is True
+
+    def test_a_non_opted_in_child_stays_in_the_caller_s_group(self):
+        """Session isolation must not outrun the watchdog that needs it.
+
+        run.py's skill-runner teardown and ``mission_scope``'s fallback both
+        reap by process group. A child in its own session is outside both, so
+        isolating one with no watchdog to protect buys nothing and lets a
+        stuck provider outlive the runner that spawned it — surviving a skill
+        timeout, an abort, or the outer liveness kill while still burning
+        quota.
+        """
+        assert "start_new_session" not in self._spawn_kwargs()
+        assert "start_new_session" not in self._spawn_kwargs(idle_timeout=0)
+        assert "start_new_session" not in self._spawn_kwargs(idle_timeout=None)
+
+    def test_the_teardown_never_signals_a_group_it_did_not_create(self):
+        """The kill must take a pgid captured from a real child, or none.
+
+        ``MagicMock().__index__()`` is 1, so any fixture whose ``proc.pid`` is a
+        mock turns ``os.killpg(proc.pid, SIGKILL)`` into a SIGKILL of **process
+        group 1** — everything in init's group on the host that the user may
+        signal. That is not hypothetical: it killed the CI runner mid-suite,
+        which surfaced as "the hosted runner lost communication with the server"
+        with the job's logs never uploaded. A group id that was not captured
+        from a live child is a failed capture, not something to kill.
+        """
+        from app.provider import run_command_streaming
+        proc = MagicMock()
+        stdout = MagicMock()
+        stdout.__iter__ = lambda self: iter(["ok\n"])
+        proc.stdout = stdout
+        proc.stderr = None
+        proc.returncode = 0
+        proc.wait.return_value = None
+        # Deliberately left as a MagicMock: that is the shape that misfires.
+        with patch("app.config.get_model_config",
+                   return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.popen_cli", return_value=(proc, MagicMock())), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s), \
+             patch("app.subprocess_runner.os.killpg") as killpg:
+            run_command_streaming("hi", "/tmp", [], idle_timeout=30)
+
+        assert killpg.call_args_list == [], (
+            "teardown signalled a process group derived from a mock pid"
+        )
+
+    def test_a_sigterm_ignoring_descendant_cannot_hold_the_pipe_open(self):
+        """The watchdog kill must be SIGKILL-to-the-group, not SIGTERM-first.
+
+        ``kill_process_group`` stops escalating the moment the *leader* exits.
+        A descendant that ignores SIGTERM therefore survives it — and if it
+        inherited the stdout write end, the reader never sees EOF, never
+        reaches the ``fired`` check, and hangs exactly as it did before the
+        watchdog existed. Only a group SIGKILL is guaranteed to release the
+        pipe.
+        """
+        import time as _time
+        proc = self._spawn(
+            "import signal,subprocess,sys,time\n"
+            # Inherits stdout, ignores SIGTERM: survives the graceful path
+            # while still holding the pipe's write end open.
+            "subprocess.Popen([sys.executable, '-c',\n"
+            "  'import signal,time\\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\\n"
+            f"time.sleep({self.STALL_SECONDS})'])\n"
+            "sys.stdout.write('session init\\n')\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({self.STALL_SECONDS})\n"
+        )
+        started = _time.monotonic()
+        try:
+            with pytest.raises(RuntimeError, match="no output for 2s"):
+                self._run(proc, idle_timeout=2)
+        finally:
+            import os as _os
+            import signal as _signal
+            with contextlib.suppress(OSError, ProcessLookupError):
+                _os.killpg(_os.getpgid(proc.pid), _signal.SIGKILL)
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=5)
+        elapsed = _time.monotonic() - started
+        assert elapsed < self.STALL_SECONDS / 2, (
+            f"returned in {elapsed:.1f}s — a SIGTERM survivor held the pipe"
+        )
+
+    def test_a_session_escaped_descendant_cannot_hold_stderr_open(self, tmp_path):
+        """The stall report must be bounded on stderr too, not only on stdout.
+
+        A helper the CLI spawned into its own session (an MCP server, say) is
+        outside the group the idle watchdog SIGKILLs. The leader dies at once —
+        so stdout reaches EOF and the leader is reaped, telling us nothing —
+        while the survivor keeps the inherited stderr write end. ``read()``
+        returns only at EOF, so draining stderr there blocks forever with the
+        watchdog already disarmed: the original hang, one pipe over.
+        """
+        import signal as _signal
+        import time as _time
+        pidfile = tmp_path / "helper.pid"
+        proc = self._spawn(
+            "import subprocess,sys,time\n"
+            # Its own session, so the group SIGKILL never reaches it. stdout is
+            # dropped so the read loop still sees EOF when the leader dies;
+            # stderr is inherited, and held for far longer than the drain bound.
+            "child = subprocess.Popen([sys.executable, '-c',\n"
+            f"  'import time; time.sleep({self.STALL_SECONDS})'],\n"
+            "  stdout=subprocess.DEVNULL, start_new_session=True)\n"
+            f"open({str(pidfile)!r}, 'w').write(str(child.pid))\n"
+            "sys.stderr.write('Error: OAuth token expired\\n')\n"
+            "sys.stderr.flush()\n"
+            "sys.stdout.write('session init\\n')\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({self.STALL_SECONDS})\n"
+        )
+        started = _time.monotonic()
+        try:
+            with pytest.raises(RuntimeError, match="no output for 2s") as excinfo:
+                self._run(proc, idle_timeout=2)
+        finally:
+            proc.kill()
+            proc.wait()
+            with contextlib.suppress(OSError, ValueError):
+                os.kill(int(pidfile.read_text()), _signal.SIGKILL)
+        elapsed = _time.monotonic() - started
+        assert elapsed < self.STALL_SECONDS / 2, (
+            f"returned in {elapsed:.1f}s — a session-escaped descendant held "
+            "the stderr pipe open"
+        )
+        # What reached the pipe is still reported, and the fact that the read
+        # was cut short with it: otherwise the fragment reads as everything the
+        # provider printed.
+        message = str(excinfo.value)
+        assert "OAuth token expired" in message
+        assert "truncated" in message
+
+    def test_a_clean_exit_is_not_held_open_by_an_escaped_stderr_holder(
+        self, tmp_path,
+    ):
+        """The success path needs the same bound — it is where none is left.
+
+        The watchdog is disarmed the moment stdout ends, so for an opted-in
+        caller the post-EOF stderr drain is the one read with nothing bounding
+        it. A helper spawned with its own session and ``stdout=DEVNULL`` keeps
+        the inherited stderr fd through the leader's entirely *normal* exit:
+        the read loop still sees EOF, nothing fired, and an unbounded ``read()``
+        blocks here forever with ``proc.wait(timeout=…)`` below it never
+        reached. The provider is session-isolated by then, so the outer
+        watchdog's eventual SIGKILL of the runner does not even reach it.
+        """
+        import signal as _signal
+        import time as _time
+        pidfile = tmp_path / "helper.pid"
+        proc = self._spawn(
+            "import json,subprocess,sys\n"
+            "child = subprocess.Popen([sys.executable, '-c',\n"
+            f"  'import time; time.sleep({self.STALL_SECONDS})'],\n"
+            "  stdout=subprocess.DEVNULL, start_new_session=True)\n"
+            f"open({str(pidfile)!r}, 'w').write(str(child.pid))\n"
+            "sys.stdout.write(json.dumps("
+            "{'type': 'result', 'result': 'VERDICT: approved'}) + '\\n')\n"
+            "sys.stdout.flush()\n"
+        )
+        started = _time.monotonic()
+        try:
+            out = self._run(proc, idle_timeout=self.STALL_SECONDS)
+        finally:
+            proc.kill()
+            proc.wait()
+            with contextlib.suppress(OSError, ValueError):
+                os.kill(int(pidfile.read_text()), _signal.SIGKILL)
+        elapsed = _time.monotonic() - started
+        assert elapsed < self.STALL_SECONDS / 2, (
+            f"returned in {elapsed:.1f}s — an escaped helper held the stderr "
+            "pipe open on the success path"
+        )
+        assert "VERDICT: approved" in out
+
+    def test_the_watchdog_is_disarmed_once_stdout_reaches_eof(self):
+        """A completed run must not be killed during the post-EOF wait.
+
+        ``proc.stderr.read()`` and ``proc.wait()`` emit no heartbeats. A
+        watchdog still armed across them SIGKILLs a run that already streamed
+        everything, and because the ``fired`` check has already been
+        evaluated the kill surfaces as an opaque ``exit -9`` instead of a
+        stall — a successful review reported as a provider crash.
+        """
+        proc = self._spawn(
+            "import os,sys,time\n"
+            "sys.stdout.write('done\\n')\n"
+            "sys.stdout.flush()\n"
+            # os.close, not sys.stdout.close(): CPython builds the std streams
+            # with closefd=False, so closing the wrapper leaves fd 1 (and the
+            # pipe) open and the reader would never see EOF.
+            "os.close(1)\n"
+            # Still alive well past the idle bound, holding stderr open — the
+            # exact window `proc.stderr.read()` blocks in with no heartbeats.
+            "time.sleep(4)\n"
+        )
+        try:
+            out = self._run(proc, idle_timeout=2)
+        finally:
+            proc.kill()
+            proc.wait()
+        assert "done" in out
+
+
+class TestReviewStallTimeoutStaysUnderTheOuterWatchdog:
+    """An inner bound at or above the outer one is decorative."""
+
+    @pytest.mark.parametrize("outer,expected", [
+        (600, 540),  # the default: a flat 60s of reporting margin
+        (120, 60),   # exactly the floor, still strictly below the outer
+        (119, 0),    # margin leaves less than the 60s floor -> outer governs
+        (60, 0),     # outer already tighter than the floor
+        (0, 0),      # operator disabled stall killing -- honour it
+    ])
+    def test_derived_from_first_output_timeout(self, outer, expected, monkeypatch):
+        from app.review_runner import _review_stall_timeout
+        monkeypatch.delenv("KOAN_MISSION_COMMAND", raising=False)
+        with patch("app.config.get_first_output_timeout", return_value=outer):
+            assert _review_stall_timeout() == expected
+
+    def test_a_rebase_mission_derives_from_the_budget_governing_it(self, monkeypatch):
+        """run.py arms the outer watchdog from rebase_first_output_timeout.
+
+        A review pass is reachable inside /rebase (rebase_pr →
+        private_review_gate → review_runner), and that knob exists only to
+        *widen* the silence budget. Reading first_output_timeout there would
+        kill a pass at 540s that the operator allowed 1800s — losing the
+        verdict the rebase was configured to gate on, with two thirds of the
+        budget unused.
+        """
+        from app.review_runner import _review_stall_timeout
+        monkeypatch.setenv("KOAN_MISSION_COMMAND", "rebase")
+        with patch("app.config.get_first_output_timeout", return_value=600), \
+             patch("app.config.get_rebase_first_output_timeout", return_value=1800):
+            assert _review_stall_timeout() == 1740
+
+    @pytest.mark.parametrize("outer", [0, 1, 59, 60, 119, 120, 300, 600, 3600])
+    @pytest.mark.parametrize("command", [None, "rebase"])
+    def test_result_is_zero_or_strictly_below_the_outer_budget(
+        self, outer, command, monkeypatch,
+    ):
+        """The postcondition, over the whole input range and both budgets.
+
+        A single off-by-one here silently reinstates the bug: the outer
+        watchdog fires first and SIGKILLs the runner, so the pass never gets
+        to report its own stall.
+        """
+        from app.review_runner import _review_stall_timeout
+        if command is None:
+            monkeypatch.delenv("KOAN_MISSION_COMMAND", raising=False)
+        else:
+            monkeypatch.setenv("KOAN_MISSION_COMMAND", command)
+        with patch("app.config.get_first_output_timeout", return_value=outer), \
+             patch("app.config.get_rebase_first_output_timeout", return_value=outer):
+            inner = _review_stall_timeout()
+        assert inner == 0 or inner < outer

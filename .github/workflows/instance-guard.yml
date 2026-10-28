@@ -1,0 +1,34 @@
+name: 📁 Instance Guard
+
+# Fails a PR that tracks files where they must never live:
+#   • instance/                 — the private, gitignored runtime tree (force-added leak)
+#   • instance.example/skills/  — the fresh-instance template must stay skill-free
+# Fast and dependency-free: checkout + stdlib Python only, no venv, no pip. See
+# scripts/instance_guard.py.
+#
+# Read-only: no `contents: write`, no push, no secrets beyond the default token.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: instance-guard-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  instance-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 📁 Check for leaked instance/ and instance.example/skills/ files
+        run: python3 scripts/instance_guard.py

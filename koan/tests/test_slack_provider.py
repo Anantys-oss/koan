@@ -188,6 +188,40 @@ class TestHandleSocketEvent:
         update = provider._message_queue.get_nowait()
         assert update.message.text == "/help"
 
+    def test_bang_command_without_mention_normalized(self, provider):
+        req = self._make_request("message", "C123", "!help")
+        provider._handle_socket_event(MagicMock(), req)
+        update = provider._message_queue.get_nowait()
+        assert update.message.text == "/help"
+
+    def test_bang_command_with_arguments_normalized(self, provider):
+        req = self._make_request("message", "C123", "  !review changes")
+        provider._handle_socket_event(MagicMock(), req)
+        update = provider._message_queue.get_nowait()
+        assert update.message.text == "/review changes"
+
+    @pytest.mark.parametrize("command", ["plan", "review", "fix", "rebase", "squash"])
+    def test_command_normalizes_slack_url_markup(self, provider, command):
+        url = "https://github.com/example/project/issues/19"
+        req = self._make_request(
+            "message",
+            "C123",
+            f"/{command} <{url}|github.com/example/project/issues/19> extra context",
+        )
+        provider._handle_socket_event(MagicMock(), req)
+        update = provider._message_queue.get_nowait()
+        assert update.message.text == f"/{command} {url} extra context"
+
+    @pytest.mark.parametrize("suffix", [">", "|", ""])
+    def test_command_normalizes_unlabelled_or_truncated_slack_url_markup(
+        self, provider, suffix,
+    ):
+        url = "https://github.com/example/project/pull/19"
+        req = self._make_request("message", "C123", f"/review <{url}{suffix}")
+        provider._handle_socket_event(MagicMock(), req)
+        update = provider._message_queue.get_nowait()
+        assert update.message.text == f"/review {url}"
+
     def test_slash_command_with_leading_whitespace_processed(self, provider):
         req = self._make_request("message", "C123", "  /status")
         provider._handle_socket_event(MagicMock(), req)
@@ -218,6 +252,12 @@ class TestHandleSocketEvent:
         # ignored. Note: letter-initial paths like /etc/hosts DO match /[a-zA-Z]
         # and are treated as commands, so they are not valid examples here.
         for text in ("//deploy note: ship it", "/.config/app.toml is the culprit"):
+            req = self._make_request("message", "C123", text)
+            provider._handle_socket_event(MagicMock(), req)
+            assert provider._message_queue.empty()
+
+    def test_leading_bang_non_letter_not_command(self, provider):
+        for text in ("!! deploy note", "!42 is surprising"):
             req = self._make_request("message", "C123", text)
             provider._handle_socket_event(MagicMock(), req)
             assert provider._message_queue.empty()

@@ -4,7 +4,7 @@ title: "Daemon Runtime"
 description: "Describes how the Koan daemon is assembled: startup/process management, the bridge's chat/bg worker lanes, the agent loop's modular pieces, runtime modes, parallel sessions, and the bounded-memory model for CLI stdout capture."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-07-17
+updated: 2026-09-30
 ---
 
 # Daemon Runtime
@@ -26,6 +26,12 @@ process launch if it fails.
 bridge. `make stop` asks managed processes to exit and escalates only when a
 process does not stop cleanly.
 
+When `mcp.enabled: true` and `mcp.transport: http`, `make start` also launches
+the MCP Streamable HTTP daemon after the REST API. It owns
+`.koan-pid-mcp`, writes process and audit output to `logs/mcp.log`, and is
+included in `make stop`, `make status`, and `make logs`. The default stdio
+transport is launched by MCP clients and is never daemonized by `make start`.
+
 ## Bridge Loop
 
 See `specs/components/bridge.md` for the design contract behind this process
@@ -44,9 +50,9 @@ See `specs/components/bridge.md` for the design contract behind this process
 Bridge state that would otherwise create circular imports lives in
 `bridge_state.py`. Bridge logging lives in `bridge_log.py`.
 
-### Worker lanes (chat vs background)
+### Worker lanes
 
-The bridge runs heavy work off the messaging poll loop in two independent
+The bridge runs heavy work off the messaging poll loop in independent
 daemon-thread lanes (`awake._run_in_worker(fn, lane=...)`):
 
 - **chat** — interactive replies (`handle_chat`). When busy, a second chat
@@ -59,6 +65,16 @@ daemon-thread lanes (`awake._run_in_worker(fn, lane=...)`):
   (a `/review`, `/implement`, etc. typed in chat) dispatch on the bg lane
   but surface a "⏳ Busy with a previous task" reply when the lane was full,
   so a typed command never vanishes without feedback.
+- **maintenance** — internal housekeeping such as the hourly foreign-worktree
+  sweep. It is single-flight and silent when busy; its work never runs on the
+  poll loop, so a large repository cannot delay Slack, Telegram, or other
+  inbound commands. Each sweep has a fixed two-minute deadline and a 15-second
+  cap per Git command; incomplete checks retain worktrees for a later sweep.
+  Unlike chat and bg, this lane does **not** hold back the bridge's memory
+  watchdog: its work is idempotent and restart-safe (a half-removed worktree is
+  pruned on the next sweep), so a sweep wedged in uninterruptible I/O — which
+  outlives its Python-level timeout — cannot silently disable the watchdog and
+  trade a clean re-exec for an OOM kill.
 
 Because the lanes run concurrently, a long-running background task never
 blocks an interactive chat reply, and neither blocks the poll loop. One
@@ -138,6 +154,47 @@ notification polling is disabled, so always-on instances do not hot-loop.
 During those idle waits, the runner only wakes for the run-targeted restart
 marker (`.koan-restart-run`); stale legacy `.koan-restart` markers are ignored.
 
+A restart marker is normally honored **between** missions, so `/restart` never
+interrupts work in flight. `/restart --force` writes the same markers with an
+extra `force` line and sends SIGUSR2 to the runner: the signal handler kills the
+mission subprocess and exits with the restart code immediately. If the signal is
+lost, the marker is re-read inside `run_claude_task`'s mission wait loop as a
+fallback — but only there: a skill-dispatch mission (`/review`, `/fix`,
+`/implement`) blocks on its child's output with no poll tick, so it is not
+killed by the marker and restarts once it ends. The interrupted mission stays In Progress and is re-queued by `recover.py` on the
+next startup — or escalated to Failed if its crash count has already reached
+`max_crash_retries`, since the forced kill counts as a crash. The bridge needs no
+forced path — it re-execs on its next poll tick.
+
+SIGUSR2 is **capability-gated**. Its default disposition is *terminate*, so
+sending it to a runner that never installed the handler would hard-kill it: the
+mission's `finally` blocks would not run, and the provider subprocess (started
+with `start_new_session=True`, so it is not in the runner's process group) would
+survive as an orphan — still burning quota and editing the worktree while the
+relaunched runner picks up the next mission in the same repo. This is a real
+window, because `/update` re-execs the bridge immediately but lets the runner
+finish its current mission, so a new bridge routinely drives an older runner.
+The runner therefore writes `.koan-run-caps` (its PID, that process's start time,
+and a `sigusr2` line) right after installing the handler and removes it on exit;
+`/restart --force` signals only when that file vouches for the live process. The
+start time matters because a runner that is SIGKILLed or OOM-killed never gets to
+remove the file: without it, a later runner that happened to reuse the PID —
+including one rolled back to a version with no handler — would be vouched for by
+the dead one's marker. If that write fails (a full or read-only KOAN_ROOT mount),
+the runner remembers it and re-attempts the publish from its main loop, at most
+once every 5 minutes — otherwise the absent marker would be read as a
+pre-upgrade runner and downgrade every later `/restart --force` for the rest of
+that incarnation.
+
+The capability is resolved **before** the markers are written, so what lands on
+disk always matches the reply. When nothing vouches for the live process at all
+(no marker, or one naming another process), `/restart --force` writes a *polite*
+restart request — the behavior every runner understands — and says so. When a
+marker exists but its identity cannot be confirmed (unreadable caps file, or a
+host that cannot report process start times), the runner is almost certainly
+capable: only the signal is withheld, the forced marker stays, and the reply
+describes that weaker fallback instead of promising a kill.
+
 The loop writes real-time state to status files so the bridge, dashboard, and
 commands can report progress without directly controlling the runner.
 
@@ -158,12 +215,21 @@ Consequences and safeguards:
 - **Result-bearing work must complete in-turn.** The agent is instructed (see
   the `cli-execution-model` prompt partial) to block or poll within the turn
   until a command finishes, then read its result before concluding.
+- **No background Bash tasks.** For the Claude provider, Koan sets
+  `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`. Otherwise the CLI auto-moves a
+  foreground command that outlives the Bash timeout into the background; the
+  model ends its turn waiting for a notification, the CLI exits `0`, and the
+  mission is marked Done without the result (#2249). With the flag, an
+  over-long command is killed and the model sees the timeout. The `Monitor`
+  tool still works: the CLI stays alive until a monitor completes.
 - **Foreground headroom.** For the Claude provider, Koan sets
-  `BASH_DEFAULT_TIMEOUT_MS` / `BASH_MAX_TIMEOUT_MS` (from
-  `bash_foreground_timeout`, default 15 min, clamped
-  below `mission_timeout` with a 120s reporting buffer) so a long-but-bounded
-  command can block in the foreground rather than being backgrounded and
-  orphaned. Set `bash_foreground_timeout: 0` to keep the CLI's built-in default.
+  `BASH_DEFAULT_TIMEOUT_MS` / `BASH_MAX_TIMEOUT_MS` from
+  `bash_foreground_timeout`. Unset, it follows the mission budget
+  (`mission_timeout` minus a 120s reporting buffer — ~58 min by default), so a
+  20+ minute test suite fits one foreground call. An explicit value is clamped
+  below that ceiling. Set `bash_foreground_timeout: 0` to keep the CLI's
+  built-in default (~2 min). Background tasks stay disabled either way, so with
+  `0` a command past that limit is killed rather than backgrounded.
 - **Not a `max_turns` issue.** Default missions pass no `--max-turns` flag; and a
   genuine turn-cap hit surfaces as `subtype: "error_max_turns"`, which
   `check_json_success()` treats as failure — not the clean "Done" this class of

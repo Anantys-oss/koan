@@ -1,10 +1,10 @@
 ---
 type: doc
 title: "Provider Architecture"
-description: "Documents the CLI provider abstraction layer, provider responsibilities, resolution flow, and the current supported providers (Claude, Cline, Codex, Copilot, Haze, Grok, Ollama-launch)."
+description: "Documents the CLI provider abstraction layer, provider responsibilities, resolution flow, and the current supported providers (Claude, Cline, Codex, Copilot, Haze, Grok, Gemini, Ollama-launch)."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-07-16
+updated: 2026-09-02
 ---
 
 # Provider Architecture
@@ -58,6 +58,9 @@ prefer importing from `koan.app.provider`.
 - Grok provider: xAI Grok Build CLI (`cli_provider: grok`) with headless
   `streaming-json`, Claude→Grok tool-name mapping, and always-on
   `--always-approve` for headless tool execution.
+- Gemini provider: Google Gemini CLI (`cli_provider: gemini`) with headless
+  `stream-json`, argv prompt delivery, and `--approval-mode yolo` emitted only
+  when `skip_permissions` is set.
 - Ollama Launch provider: Claude CLI driven via `ollama launch claude`.
 
 Setup details live in [Provider Setup](../providers/).

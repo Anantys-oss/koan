@@ -387,6 +387,83 @@ class TestDetectQuotaExhaustionCreditMessages:
         assert detect_quota_exhaustion("// validate credit card number") is False
         assert detect_quota_exhaustion("def check_billing_status():") is False
 
+    def test_overage_status_rejected_is_not_exhaustion(self):
+        """``overageStatus: rejected`` must not read as a rejected rate limit.
+
+        Verbatim ``rate_limit_event`` from Claude Code 2.1.229. The authoritative
+        field is ``status`` — here **allowed** — while ``overageStatus: rejected``
+        only means spending beyond the plan is unavailable
+        (``overageDisabledReason: group_zero_credit_limit``). That is permanently
+        true for any account without overage credit, so matching it paused Kōan
+        on every successful mission and requeued the work.
+        """
+        from app.quota_handler import _rate_limit_exhausted, detect_quota_exhaustion
+
+        event = (
+            '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed",'
+            '"resetsAt":1786611600,"rateLimitType":"five_hour",'
+            '"overageStatus":"rejected",'
+            '"overageDisabledReason":"group_zero_credit_limit",'
+            '"isUsingOverage":false},"uuid":"8fd6b1c8"}'
+        )
+        assert _rate_limit_exhausted(event) is False
+        assert detect_quota_exhaustion(event) is False
+
+    def test_genuine_rejected_status_still_detected(self):
+        """A real ``status: rejected`` on the event must still pause Kōan."""
+        from app.quota_handler import _rate_limit_exhausted
+
+        event = (
+            '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected",'
+            '"resetsAt":1786611600,"rateLimitType":"five_hour"}}'
+        )
+        assert _rate_limit_exhausted(event) is True
+        # Unquoted key form, and the other rejection verbs.
+        assert _rate_limit_exhausted('rate_limit_event status: exceeded') is True
+        assert _rate_limit_exhausted(
+            '{"type":"rate_limit_event","rate_limit_info":{"status":"throttled"}}'
+        ) is True
+
+    def test_no_false_positive_on_cli_init_capability_manifest(self):
+        """Claude Code's ``init`` event must never read as quota exhaustion.
+
+        The CLI emits its capability manifest (slash commands, agents, skills,
+        MCP tools) as a **single JSON line** that can exceed 90KB. Unbounded
+        ``.*`` gaps in the strict patterns then stitched together unrelated
+        tokens thousands of characters apart — ``"usage-credits"`` … ``"recap"``
+        … a later ``hit`` — and matched ``usage.*cap.*(?:reached|exceeded|hit)``.
+        Kōan paused itself mid-trial on a run that had exited 0.
+
+        Any install exposing the built-in ``usage`` / ``extra-usage`` /
+        ``usage-credits`` commands reproduces this, so the gaps are bounded to
+        stay inside one JSON string value.
+        """
+        from app.quota_handler import _strict_quota_match, detect_quota_exhaustion
+
+        init_line = (
+            '{"type":"system","subtype":"init","cwd":"/tmp/x","tools":["Bash","Read"],'
+            '"slash_commands":["reload-skills","rename","security-review",'
+            '"usage-credits","extra-usage","usage","insights","recap","goal",'
+            '"design","list-agents","team-onboarding"],'
+            '"agents":["code-reviewer","architect","planner"],'
+            '"skills":["content-hash-cache-pattern","whitespace-linter"],'
+            '"apiKeySource":"none","claude_code_version":"2.1.229"}'
+        )
+        assert _strict_quota_match(init_line) is False
+        assert detect_quota_exhaustion(init_line) is False
+
+    def test_strict_gaps_do_not_cross_json_string_boundaries(self):
+        """A strict pattern must not span two unrelated JSON string values."""
+        from app.quota_handler import _strict_quota_match
+
+        # "usage" and "cap"/"reached" live in *different* strings — not a quota signal.
+        assert _strict_quota_match('{"a":"usage","b":"recap","c":"reached"}') is False
+        assert _strict_quota_match('{"a":"out of","b":"credits"}') is False
+        assert _strict_quota_match('{"x":"billing","y":"limit"}') is False
+        # Genuine single-string messages must still match.
+        assert _strict_quota_match('{"message":"usage cap reached"}') is True
+        assert _strict_quota_match('{"message":"You are out of credits"}') is True
+
     def test_credit_balance_in_api_error_json(self):
         """Real-world API error JSON containing credit balance message."""
         from app.quota_handler import detect_quota_exhaustion

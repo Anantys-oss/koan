@@ -401,7 +401,7 @@ class TestGenerateReport:
             "## Pending\n\n"
             "## In Progress\n\n"
             "- [project:koan] refactoring utils ⏳(2026-02-18T08:00) ▶(2026-02-18T08:05)\n"
-            "- [project:ulc] fixing SSL cert reuse\n\n"
+            "- [project:my-toolkit] fixing SSL cert reuse\n\n"
             "## Done\n\n"
         )
         with patch("app.daily_report.MISSIONS_FILE", missions_file), \

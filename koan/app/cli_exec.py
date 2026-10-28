@@ -31,6 +31,21 @@ STDIN_PLACEHOLDER = "@stdin"
 # explicit timeout, but this guards against future callers forgetting.
 DEFAULT_TIMEOUT = 600  # 10 minutes
 
+# Granularity of the provider-invocation-lock wait. Contention is unbounded
+# (a peer Kōan can hold the lock for a whole mission), so the wait must never
+# park the calling thread in an uninterruptible kernel wait — see
+# _ProviderInvocationLock.__enter__.
+LOCK_POLL_INTERVAL = 0.25
+
+# Visibility for that wait. A contended lock is normal (a peer Kōan holds it
+# for a whole mission); a *leaked* one — an abandoned open-file description
+# from a crashed peer — looks identical from outside: the runner just goes
+# quiet forever with no child to show for it. Warn once past the first
+# threshold, then at a coarse interval, so a stuck lock is observable rather
+# than inferred.
+LOCK_WAIT_WARN_AFTER = 60.0
+LOCK_WAIT_WARN_INTERVAL = 300.0
+
 _FALLBACK_PROVIDER = CLIProvider()
 
 
@@ -90,7 +105,38 @@ class _ProviderInvocationLock:
             lock_path = _lock_path(self._lock_name)
             Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
             self._fh = open(lock_path, "a+")  # noqa: SIM115
-            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+            # LOCK_NB + sleep rather than a blocking LOCK_EX. A blocking flock
+            # parks the thread in the kernel, and CPython only runs Python-level
+            # signal handlers from the main thread's eval loop: a
+            # process-directed kill() may be accepted by any other thread, so
+            # the blocked flock never even sees EINTR. With unbounded contention
+            # that makes the whole process deaf to SIGUSR1 / SIGUSR2 (/abort,
+            # /restart --force) for as long as the peer holds the lock. Polling
+            # bounds that deafness to LOCK_POLL_INTERVAL.
+            waiting_since = time.monotonic()
+            warn_at = LOCK_WAIT_WARN_AFTER
+            try:
+                while True:
+                    try:
+                        fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        time.sleep(LOCK_POLL_INTERVAL)
+                        waited = time.monotonic() - waiting_since
+                        if waited >= warn_at:
+                            warn_at = waited + LOCK_WAIT_WARN_INTERVAL
+                            _log_cli(
+                                "warning",
+                                f"Waiting {waited:.0f}s for the provider "
+                                f"invocation lock {self._lock_name!r} "
+                                f"({lock_path}) — a peer Kōan may hold it, or "
+                                "it leaked from a crashed one",
+                            )
+            except (KeyboardInterrupt, SystemExit):
+                # A signal handler firing during the poll sleep (forced restart,
+                # CTRL-C) must not leak the lock file descriptor.
+                self._close()
+                raise
             self.acquired = True
         except OSError as exc:
             # Degrade loudly but do not abort the invocation: failing to lock
@@ -225,25 +271,80 @@ def run_cli(
                 _cleanup_prompt_file(prompt_path)
 
 
+def acquire_provider_lock(
+    provider: Optional[CLIProvider] = None,
+) -> _ProviderInvocationLock:
+    """Take the provider's invocation lock now, for a later :func:`popen_cli`.
+
+    Callers that must not sit inside ``popen_cli`` for an unbounded time hoist
+    the wait out with this and hand the result back via ``cli_lock=``; the
+    returned ``cleanup()`` then owns the release. The runner does this so the
+    contended wait happens *outside* its forced-restart deferral window (see
+    ``app.run._sigusr2_deferred``), where a ``/restart --force`` can still be
+    honoured immediately because no child process exists yet.
+
+    A failed acquire is reported through the run log, not just ``__enter__``'s
+    stderr line. Hoisting the wait removes the one place that would otherwise
+    have re-attempted it (``popen_cli`` only tests ``cli_lock is None``), so an
+    unserialized invocation would otherwise look like a normal mission on the
+    only surface an operator reads.
+    """
+    provider = provider or _get_cli_provider()
+    lock_name = provider.invocation_lock_name()
+    lock = _ProviderInvocationLock(lock_name)
+    lock.__enter__()
+    if lock_name and not lock.acquired:
+        _log_cli(
+            "error",
+            f"Provider invocation lock {lock_name!r} could not be taken — this "
+            "mission runs UNSERIALIZED and may race a peer Kōan on shared "
+            "provider auth/session state",
+        )
+    return lock
+
+
 def popen_cli(
     cmd,
     provider: Optional[CLIProvider] = None,
+    launcher: Optional[List[str]] = None,
+    cli_lock: Optional[_ProviderInvocationLock] = None,
     **kwargs,
 ) -> Tuple[subprocess.Popen, Callable[[], None]]:
     """Start a :class:`~subprocess.Popen` process with the prompt via temp-file stdin.
 
     Returns ``(proc, cleanup)`` where *cleanup()* **must** be called after
     the process exits to close the file handle and delete the temp file.
+
+    *launcher* is an argv prefix applied **after** the prompt rewrite —
+    ``mission_scope`` uses it to wrap the provider CLI in a ``systemd-run
+    --scope`` invocation. Prefixing before :func:`prepare_prompt_file` would
+    hide the provider's own argv from the rewrite, so the prefix is deliberately
+    applied at the last moment, immediately before the spawn.
+
+    *cli_lock* is an already-acquired :func:`acquire_provider_lock` result whose
+    ownership transfers here — it is released by ``cleanup()`` (or immediately,
+    on failure), exactly like a lock taken internally. The transfer covers
+    **every** exit path: the guard below opens before the first statement that
+    can fail, so a handed-over lock is never left held by a raising caller.
     """
     provider = provider or _get_cli_provider()
-    cmd, prompt_path, use_as_stdin = prepare_prompt_file(cmd, provider=provider)
-    cli_lock = _ProviderInvocationLock(provider.invocation_lock_name())
-    cli_lock.__enter__()
-    # One outer guard so the lock is released on ANY failure after acquisition —
-    # including open(prompt_path) below, which sits before the Popen try/except.
+    prompt_path: Optional[str] = None
+    # One outer guard so the lock is released on ANY failure — including
+    # prepare_prompt_file() (tempfile.mkstemp under koan_tmp_dir() raises
+    # OSError on a full/unwritable scratch dir) and open(prompt_path), both of
+    # which sit before the Popen try/except. A handed-over lock leaked here
+    # self-deadlocks the caller: mission_scope.launch_scoped catches OSError and
+    # retries the spawn unscoped, and the fresh flock on a second open-file
+    # description can never be granted against one this process already holds.
     # On the success path we return normally (no exception), so the lock stays
     # held until the returned cleanup()/release runs.
     try:
+        cmd, prompt_path, use_as_stdin = prepare_prompt_file(cmd, provider=provider)
+        if launcher:
+            cmd = list(launcher) + list(cmd)
+        if cli_lock is None:
+            cli_lock = _ProviderInvocationLock(provider.invocation_lock_name())
+            cli_lock.__enter__()
         if prompt_path and use_as_stdin:
             stdin_file = open(prompt_path)  # noqa: SIM115
             kwargs.pop("stdin", None)
@@ -255,9 +356,20 @@ def popen_cli(
                 raise
 
             def cleanup():
-                stdin_file.close()
-                _cleanup_prompt_file(prompt_path)
-                cli_lock.release()
+                # Nested try/finally, not a plain sequence: neither later step
+                # may be skipped by an earlier failure. An EIO on close() would
+                # otherwise strand the flock — the next mission's
+                # acquire_provider_lock then polls LOCK_NB against it forever —
+                # and leave the 0600 prompt file (the full mission prompt)
+                # behind in koan_tmp_dir(), which no mission-TMPDIR reap or
+                # stray sweep covers.
+                try:
+                    try:
+                        stdin_file.close()
+                    finally:
+                        _cleanup_prompt_file(prompt_path)
+                finally:
+                    cli_lock.release()
 
             return proc, cleanup
 
@@ -265,17 +377,23 @@ def popen_cli(
         proc = subprocess.Popen(cmd, **kwargs)
 
         def cleanup_prompt_file_only():
-            if prompt_path and not use_as_stdin:
-                _cleanup_prompt_file(prompt_path)
-            cli_lock.release()
+            # Same invariant as cleanup() above: the lock release cannot be
+            # skipped by an earlier failure.
+            try:
+                if prompt_path and not use_as_stdin:
+                    _cleanup_prompt_file(prompt_path)
+            finally:
+                cli_lock.release()
 
         return proc, cleanup_prompt_file_only
     except Exception:
-        # Any failure after the lock was taken (open(), Popen, ...) must release
+        # Any failure (prepare_prompt_file(), open(), Popen, ...) must release
         # the lock and remove the temp prompt file. _cleanup_prompt_file tolerates
-        # a None path (the no-prompt branch).
+        # a None path (the no-prompt branch); cli_lock is None only when we failed
+        # before taking one of our own, and release() is a no-op on an unheld lock.
         _cleanup_prompt_file(prompt_path)
-        cli_lock.release()
+        if cli_lock is not None:
+            cli_lock.release()
         raise
 
 
@@ -320,6 +438,7 @@ def stream_with_timeout(
     from app.subprocess_runner import (
         LivenessWatchdog,
         ProcessWatchdog,
+        drain_stream_bounded,
         force_kill_process_group,
     )
 
@@ -338,7 +457,12 @@ def stream_with_timeout(
     if effective_max_duration and effective_max_duration > 0:
         duration_watchdog = ProcessWatchdog(proc, effective_max_duration, graceful=False).start()
     if idle_timeout and idle_timeout > 0:
-        idle_watchdog = LivenessWatchdog(proc, idle_timeout).start()
+        # graceful=False for the same reason the duration watchdog above uses
+        # it: SIGTERM-then-escalate stops escalating once the *leader* exits,
+        # so a descendant that ignores SIGTERM survives holding the inherited
+        # stdout write end — the loop below never sees EOF, never reaches the
+        # idle_fired check, and the hang is misattributed to max_duration.
+        idle_watchdog = LivenessWatchdog(proc, idle_timeout, graceful=False).start()
 
     try:
         try:
@@ -354,11 +478,20 @@ def stream_with_timeout(
                 duration_watchdog.mark_completed()
                 duration_watchdog.cancel()
             if idle_watchdog is not None:
+                idle_watchdog.mark_completed()
                 idle_watchdog.cancel()
 
-        with suppress_logged(_log_cli, "warning", "Stderr stream read failed", OSError, ValueError):
-            if proc.stderr:
-                stderr_text = proc.stderr.read()
+        # Bounded, not `proc.stderr.read()`: both watchdogs were disarmed at the
+        # loop above, so this is the one read left with nothing in force, and
+        # `read()` returns only at EOF — a descendant that escaped the group
+        # (its own session, e.g. a `setsid`'d MCP helper) keeps the inherited
+        # write end through the leader's exit, group SIGKILL or not. Blocking
+        # here would put the hang one pipe over from the one `idle_timeout`
+        # exists to end, with `proc.wait(timeout=drain_timeout)` below never
+        # reached to notice it.
+        stderr_text, stderr_error = drain_stream_bounded(proc.stderr)
+        if stderr_error:
+            _log_cli("warning", f"Stderr drain incomplete:{stderr_error}")
 
         try:
             proc.wait(timeout=drain_timeout)

@@ -4,7 +4,7 @@ title: "Model Configuration"
 description: "Explains how to configure which model handles each Koan role (mission, chat, lightweight, fallback, etc.) per provider via `config.yaml`, including resolution order and CLI-provider-per-role routing."
 tags: [users]
 created: 2026-06-07
-updated: 2026-06-30
+updated: 2026-10-05
 ---
 
 # Model Configuration
@@ -80,7 +80,7 @@ The role's **model** is then read from that role's provider block above. With
 
 ## Reasoning effort per mission type (the `effort:` section)
 
-The Claude provider accepts an `--effort` flag (`low`/`medium`/`high`/`max`)
+The Claude provider accepts an `--effort` flag (`low`/`medium`/`high`/`xhigh`/`max`)
 that trades cost for reasoning depth. By default Kōan picks effort **dynamically
 from the current budget mode**: `review` → `low`, `deep` → `high`, otherwise no
 flag (provider default). This keeps cheap audits cheap and deep reasoning deep,
@@ -119,12 +119,32 @@ will not warn, it just never fires. Of these, only the types listed under
 > `/check`, … — run in their own runners, and commands with no runner (e.g.
 > `/refactor`, `/pr`) are handled by their bridge-side handler or fail as an
 > unknown skill. So pinning `review: low` — or `refactor: high` — has no
-> effect. To control effort for one of those, configure that skill's runner
-> directly.
+> effect. For `/review`, use `review_effort` (below); other runners have no
+> effort setting yet.
 
 > Note: effort is a no-op when extended thinking is active for a mission
 > (thinking already implies max effort) and is ignored by providers whose CLI
 > has no `--effort` flag.
+
+## Reasoning effort for reviews (`review_effort`)
+
+`/review` runs in its own runner, outside the `effort:` section, so review depth
+has its own key:
+
+```yaml
+review_effort: xhigh   # low | medium | high | xhigh | max
+```
+
+- **Scope:** every review call — the main pass, the reflect pass, the error
+  hunter and bot-comment triage.
+- **Unset** (or `""`) omits the flag, so reviews run at the provider's own
+  default effort. Existing instances are unaffected until they set it.
+- **Per project:** a `review_effort` value in `projects.yaml` wins over the
+  global one. An invalid value — there or in `config.yaml` — is logged and
+  ignored: an invalid project value falls back to the global level, and an
+  invalid global value falls back to the provider default.
+
+Higher levels make reviews slower and use more quota per pull request.
 
 ## Migrating from the legacy layout
 

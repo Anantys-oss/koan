@@ -4,7 +4,7 @@ title: "Skill Spec — rebase"
 description: "Documents the `/rebase` skill that rebases a PR onto its current base by default and, with `--fix` (or any trailing context), also addresses review feedback, including its already-solved detection JSON scored by the eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-07-22
+updated: 2026-09-10
 ---
 
 # Skill Spec — `rebase`
@@ -45,6 +45,11 @@ See `docs/users/skills.md` for the end-user `/rebase` reference and
 
 - Queues a rebase mission (`model_key: mission`); runs via `rebase_pr.py`.
 - Updates the PR branch (force-push with multi-account token resolution if needed).
+- After the pipeline's final push, the force-push content-preservation guard
+  (`force_push_guard.py`, see `specs/components/git-github.md`) compares the
+  pre-rebase PR head against what was pushed; if original PR content was dropped
+  or modified, or a concurrent push was clobbered/raced, the PR comment opens
+  with one CAUTION/WARNING callout naming the recoverable pre-rebase SHA.
 - Commit messages shaped by `commit_conventions.py`.
 
 ## Error cases
@@ -75,11 +80,46 @@ See `docs/users/skills.md` for the end-user `/rebase` reference and
 - A feedback run that makes no commit must return a structured `SKIPPED:`
   disposition. Otherwise it fails before force-pushing and cannot be reported
   as a simple rebase.
+- **"Makes no commit" means HEAD did not move, not merely that the worktree is
+  clean.** A feedback agent may commit its own work — and for a
+  commit-message-only request (a wrong ticket key in the subject) `git commit
+  --amend` on the current branch is the only route, since there is nothing left
+  in the worktree for the runner to stage. `run_claude_step` credits that
+  agent-authored HEAD move as a commit (see `specs/components/git-github.md`),
+  so it reaches the push instead of failing as `feedback_no_disposition`.
 - Conflict resolution treats `HEAD`/`ours` as the current target branch and
   `theirs` as the replayed PR commit. It verifies no unmerged paths remain
   before continuing. Its per-round agent budget is `rebase_conflict_timeout`
   (600 seconds by default); exhaustion aborts the rebase and preserves the
   existing recreate fallback.
+- **The rebase PR comment never auto-links a reviewer reference.** The feedback
+  agent numbers reviewer points after the review comment's own finding IDs
+  ("reviewer #5", "#7"). The rendered body is passed through
+  `app.github.escape_issue_refs`, which rewrites every bare `#N` (and the
+  `owner/repo#N` form) to a fullwidth `＃N` outside code spans, fenced blocks and
+  URLs — so a reviewer point never renders as a link to an unrelated repository
+  issue or PR. Nothing this comment emits is ever a deliberate issue link.
+- **Force pushes are guarded, not gated.** The content-preservation guard runs
+  after the pipeline's last push (private-gate re-pushes included — the gate
+  feeds its own pre-push observations and pushed SHA back into the guard's
+  `push_state`), is best-effort — both the whole post-push call site and the
+  pre-push observations are wrapped, so not even an unexpected guard bug can
+  fail a rebase whose push already landed, nor stop or divert the push it only
+  observes — and
+  reports via the PR comment + the un-gated outcome channel (`notify_outcome`,
+  so the finding is not swallowed by normal messaging mode) — it never blocks
+  or reverts a push. Detection scope: dropped/modified original PR content
+  (patch-id screening plus a separate merge-commit pass, refined by
+  content-level survival checks, so upstream squash-merges and context-line
+  drift never warn), clobbered mid-pipeline pushes by others (including a tip
+  that only surfaces when `--force-with-lease` is rejected; observations of a
+  remote whose push then failed are discarded, since that branch was never
+  overwritten), and a post-push remote mismatch against the recorded pushed
+  SHA (race). Without a confirmed pushed SHA the guard skips rather than
+  comparing against local HEAD, and any check that could not run is listed as
+  unverified instead of passing silently. The
+  warning always includes the full pre-rebase head SHA and a shell-quoted
+  recovery command targeting the actual push remote.
 
 ## Transition (temporary)
 

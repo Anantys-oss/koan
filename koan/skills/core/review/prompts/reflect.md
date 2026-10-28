@@ -13,6 +13,14 @@ Your task: for each finding, assign a score from 0 to 10 indicating how actionab
 - **3-4 (low signal)**: Vague, speculative, or context-dependent. The diff does not clearly support the finding.
 - **0-2 (noise)**: The finding is wrong, refers to code not changed in the diff, misreads the context, suggests trivially cosmetic changes (add docstring, add type hint), or flags missing imports that are defined elsewhere.
 
+**Structural findings.** A finding about code structure (a simplification that
+would delete branches or a layer, feature logic in the wrong module, a duplicated
+canonical helper, a file the PR pushes past a healthy size) is *not* automatically
+noise. Score it on how concrete it is: one that names the specific restructuring
+and the file it applies to belongs in the 5-7 band (8-10 if the mess it prevents
+is clearly visible in the diff). One that only gestures at "this could be cleaner"
+with no proposed change stays at 0-2.
+
 **Score penalties:**
 - Findings that assert facts about surrounding code without evidence (unverified claims): cap at 4
 - Findings that describe what's wrong but not why it matters (no impact explanation): -2 from base score

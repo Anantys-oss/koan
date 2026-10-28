@@ -95,6 +95,20 @@ class TestParseYamlLite:
         assert len(result["commands"]) == 1
         assert result["commands"][0]["usage"] == "/cancel <n>, /cancel <keyword>"
 
+    def test_quoted_command_fields_strip_quotes(self):
+        yaml = textwrap.dedent('''\
+            name: review
+            commands:
+              - name: review
+                description: "Review code"
+                usage: "/review <url>"
+        ''')
+
+        command = _parse_yaml_lite(yaml)["commands"][0]
+
+        assert command["description"] == "Review code"
+        assert command["usage"] == "/review <url>"
+
     def test_empty_string(self):
         assert _parse_yaml_lite("") == {}
 
@@ -408,6 +422,55 @@ class TestParseSkillMd:
         skill = parse_skill_md(skill_md)
         assert skill is not None
         assert skill.iterative is False
+
+    def test_api_exposed_defaults_false(self, tmp_path):
+        skill_dir = tmp_path / "core" / "sample"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(textwrap.dedent("""\
+            ---
+            name: sample
+            scope: core
+            group: code
+            description: Sample skill
+            commands:
+              - name: sample
+                description: Run the sample
+            ---
+        """))
+
+        skill = parse_skill_md(skill_md)
+
+        assert skill is not None
+        assert skill.api_exposed is False
+
+    def test_api_exposed_true_is_parsed_without_warning(self, tmp_path):
+        skill_dir = tmp_path / "core" / "sample"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(textwrap.dedent("""\
+            ---
+            name: sample
+            scope: core
+            group: code
+            description: Sample skill
+            api_exposed: true
+            commands:
+              - name: sample
+                description: Run the sample
+                usage: /sample https://github.com/owner/repo/issues/42
+            ---
+        """))
+
+        skill = parse_skill_md(skill_md)
+        warnings = validate_skill_metadata(
+            _parse_yaml_lite(skill_md.read_text().split("---", 2)[1]),
+            skill_md,
+        )
+
+        assert skill is not None
+        assert skill.api_exposed is True
+        assert not any("api_exposed" in warning for warning in warnings)
 
 
 class TestForwardResultFrontmatter:

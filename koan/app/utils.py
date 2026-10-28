@@ -125,6 +125,29 @@ def load_config() -> dict:
         return {}
 
 
+def config_read_error() -> str:
+    """Why instance/config.yaml could not be read, or "" when it reads fine.
+
+    :func:`load_config` deliberately degrades an unreadable or malformed config
+    to an empty dict so one bad edit never crashes the daemon — but that makes
+    "unreadable" indistinguishable from "not configured" for every getter built
+    on it. Callers whose decision turns on that difference (the process manager
+    deciding whether to manage the MCP daemon, which would otherwise report a
+    clean stack and hide a live listener) probe with this first.
+    """
+    config_path = KOAN_ROOT / "instance" / "config.yaml"
+    if not config_path.exists():
+        return ""
+    try:
+        with open(config_path, "r") as f:
+            yaml.safe_load(f)
+    except (yaml.YAMLError, OSError) as e:
+        # A YAML error spans several lines; callers put this in one-line
+        # status output, so collapse it.
+        return " ".join(str(e).split())
+    return ""
+
+
 # Track whether we've already logged the deprecation warning
 _cli_provider_warned = False
 
@@ -282,8 +305,9 @@ def detect_project_from_text(text: str) -> Tuple[Optional[str], str]:
     return None, text
 
 
-# Pre-compiled regex for GitHub remote URL parsing (SSH and HTTPS)
-_GITHUB_REMOTE_RE = re.compile(r'github\.com[:/]([^/]+)/([^/\s.]+?)(?:\.git)?$')
+# Canonical GitHub remote URL regex — re-exported under the historical name
+# for existing importers (rebase_pr) and test patch targets.
+from app.github_url_parser import GITHUB_REMOTE_RE as _GITHUB_REMOTE_RE  # noqa: E402
 
 
 def get_github_remote(project_path: str) -> Optional[str]:

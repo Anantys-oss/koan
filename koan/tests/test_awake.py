@@ -14,6 +14,7 @@ from app.awake import (
     is_mission,
     is_command,
     promote_bare_skill_command,
+    normalize_bang_command,
     parse_project,
     handle_chat,
     handle_message,
@@ -263,6 +264,46 @@ class TestPromoteBareSkillCommand:
         handle_message("time")
         mock_cmd.assert_called_once_with("/time")
         mock_worker.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# normalize_bang_command
+# ---------------------------------------------------------------------------
+
+class TestNormalizeBangCommand:
+    def test_bang_becomes_slash(self):
+        assert normalize_bang_command("!help") == "/help"
+        assert normalize_bang_command("!Status") == "/Status"
+
+    def test_arguments_preserved(self):
+        assert normalize_bang_command(
+            "!review https://github.com/o/r/pull/1"
+        ) == "/review https://github.com/o/r/pull/1"
+
+    def test_bang_before_non_letter_untouched(self):
+        for text in ("!! deploy note", "!42 is surprising", "!", "!/help"):
+            assert normalize_bang_command(text) == text
+
+    def test_non_leading_bang_untouched(self):
+        assert normalize_bang_command("wow! amazing") == "wow! amazing"
+        assert normalize_bang_command("/help") == "/help"
+        assert normalize_bang_command("") == ""
+
+    @patch("app.awake._run_in_worker")
+    @patch("app.awake.handle_command")
+    def test_handle_message_routes_bang_to_command(self, mock_cmd, mock_worker):
+        """A bang command reaches handle_command as its slash form, not chat."""
+        handle_message("  !help  ")
+        mock_cmd.assert_called_once_with("/help")
+        mock_worker.assert_not_called()
+
+    @patch("app.awake._run_in_worker")
+    @patch("app.awake.handle_command")
+    def test_handle_message_bang_non_letter_not_a_command(self, mock_cmd, mock_worker):
+        """`!!` punctuation stays chat — it must not be dispatched as a command."""
+        handle_message("!! server was flaky")
+        mock_cmd.assert_not_called()
+        assert mock_worker.call_args.args[0].__name__ == "handle_chat"
 
 
 # ---------------------------------------------------------------------------
@@ -4096,6 +4137,18 @@ def test_watchdog_skips_restart_when_worker_busy():
         assert awake._bridge_should_restart(monitor) is False
 
 
+def test_watchdog_restarts_while_maintenance_sweep_runs():
+    """A wedged maintenance sweep must not disable the memory watchdog."""
+    monitor = MagicMock()
+    monitor.sample.return_value = True
+    alive = MagicMock()
+    alive.is_alive.return_value = True
+    lanes = {"chat": None, "bg": None, "maintenance": alive}
+    with patch.dict(awake._worker_threads, lanes, clear=True):
+        assert awake._workers_idle() is True
+        assert awake._bridge_should_restart(monitor) is True
+
+
 def test_watchdog_no_monitor_never_restarts():
     assert awake._bridge_should_restart(None) is False
 
@@ -4123,6 +4176,108 @@ def test_periodic_compaction_disabled_when_interval_zero():
         assert new_ts == 0.0
 
 
+def test_worktree_reap_fires_on_interval():
+    with patch("app.awake._run_in_worker", return_value=True) as mock_worker, \
+         patch("app.awake.time.time", return_value=10_000.0):
+        new_ts = awake._maybe_reap_worktrees(last_reap=0.0, interval=3600)
+        mock_worker.assert_called_once_with(awake._reap_worktrees, lane="maintenance")
+        assert new_ts == 10_000.0
+
+
+def test_worktree_reap_skips_before_interval():
+    with patch("app.awake._run_in_worker") as mock_worker, \
+         patch("app.awake.time.time", return_value=100.0):
+        new_ts = awake._maybe_reap_worktrees(last_reap=90.0, interval=3600)
+        mock_worker.assert_not_called()
+        assert new_ts == 90.0
+
+
+def test_worktree_reap_disabled_when_interval_zero():
+    with patch("app.awake._run_in_worker") as mock_worker:
+        new_ts = awake._maybe_reap_worktrees(last_reap=0.0, interval=0)
+        mock_worker.assert_not_called()
+        assert new_ts == 0.0
+
+
+def test_worktree_reap_retries_when_maintenance_lane_is_busy():
+    with patch("app.awake._run_in_worker", return_value=False) as mock_worker, \
+         patch("app.awake._worktree_reap_busy_logged_at", 10_000.0), \
+         patch("app.awake.time.time", return_value=10_000.0):
+        new_ts = awake._maybe_reap_worktrees(last_reap=0.0, interval=3600)
+        mock_worker.assert_called_once_with(awake._reap_worktrees, lane="maintenance")
+        assert new_ts == 0.0
+
+
+def test_worktree_reap_reports_a_persistently_busy_maintenance_lane():
+    """A wedged sweep thread must not be silent.
+
+    Without this, a stuck maintenance worker makes reaping stop forever while the
+    logs look exactly like a healthy idle system.
+    """
+    with patch("app.awake._run_in_worker", return_value=False), \
+         patch("app.awake._worktree_reap_busy_logged_at", 0.0), \
+         patch("app.awake.time.time", return_value=10_000.0), \
+         patch("app.awake.log") as mock_log:
+        awake._maybe_reap_worktrees(last_reap=0.0, interval=3600)
+
+    errors = [c.args[1] for c in mock_log.call_args_list if c.args[0] == "error"]
+    assert any("maintenance lane is still busy" in message for message in errors)
+
+
+def test_worktree_reap_stays_quiet_when_the_lane_is_only_briefly_busy():
+    """One missed start is normal back-pressure, not a failure worth logging."""
+    with patch("app.awake._run_in_worker", return_value=False), \
+         patch("app.awake._worktree_reap_busy_logged_at", 0.0), \
+         patch("app.awake.time.time", return_value=5_000.0), \
+         patch("app.awake.log") as mock_log:
+        awake._maybe_reap_worktrees(last_reap=1_000.0, interval=3600)
+
+    assert not [c for c in mock_log.call_args_list if c.args[0] == "error"]
+
+
+def test_worktree_reap_survives_errors():
+    """A failed sweep must be logged, not lost to the worker thread's excepthook.
+
+    The sweep runs detached on the maintenance lane, so an escaping exception would reach
+    threading.excepthook and produce no koan log entry — a reaper that has been broken for
+    weeks would be indistinguishable from one with nothing to do.
+    """
+    with patch("app.project_explorer.get_projects",
+               side_effect=RuntimeError("config gone")), \
+         patch("app.awake.log") as mock_log:
+        awake._reap_worktrees()
+
+    errors = [c.args[1] for c in mock_log.call_args_list if c.args[0] == "error"]
+    assert any("config gone" in message for message in errors)
+
+
+def test_worktree_reap_continues_across_projects():
+    """One project's failure must not stop the others being swept.
+
+    time.time() is pinned because the sweep rotates its project order by the hour, so an
+    unpinned clock makes the expected order flip every hour. 7200.0 gives rotation 0.
+    """
+    with patch("app.project_explorer.get_projects",
+               return_value=[("a", "/srv/a"), ("b", "/srv/b")]), \
+         patch("app.awake.time.time", return_value=7200.0), \
+         patch("app.worktree_manager.reap_foreign_worktrees",
+               side_effect=[RuntimeError("bad repo"), ["/tmp/review-b"]]) as mock_reap:
+        awake._reap_worktrees()
+        assert [c.args[0] for c in mock_reap.call_args_list] == ["/srv/a", "/srv/b"]
+
+
+def test_worktree_reap_stops_after_shared_budget():
+    with patch("app.project_explorer.get_projects",
+               return_value=[("a", "/srv/a"), ("b", "/srv/b")]), \
+         patch("app.worktree_manager.reap_foreign_worktrees") as mock_reap, \
+         patch("app.awake.time.time", return_value=7200.0), \
+         patch("app.awake.time.monotonic", side_effect=[0.0, 0.0, 121.0, 121.0]):
+        awake._reap_worktrees()
+
+    mock_reap.assert_called_once()
+    assert mock_reap.call_args.kwargs["deadline"] == 120.0
+
+
 def test_read_sections_cached_serves_within_ttl():
     awake._sections_cache["ts"] = 0.0
     awake._sections_cache["value"] = None
@@ -4146,3 +4301,115 @@ def test_read_sections_cached_expires_after_ttl():
     assert first == {"pending": ["a"]}
     assert second == {"pending": ["b"]}  # TTL expired → re-read
     assert mock_read.call_count == 2
+
+
+class TestHandleChatHonoursCliRole:
+    """Chat builds its command from the `chat` role's provider.
+
+    It already asked for the chat MODEL while taking the global provider's
+    binary, so a `cli.default.chat` override never reached the spawn — the
+    symptom that surfaced as a 401 auth error delivered as a chat reply.
+    """
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram", return_value=True)
+    @patch("app.awake.subprocess.run")
+    def test_uses_the_chat_role_binary(self, mock_run, mock_send, mock_tools,
+                                       mock_tools_desc, mock_fmt, mock_hist,
+                                       mock_save, tmp_path):
+        from app.provider import ClaudeProvider
+
+        mock_run.return_value = MagicMock(stdout="Hello back!", returncode=0)
+        (tmp_path / "journal" / "2026-02-01").mkdir(parents=True)
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", "test soul"), \
+             patch("app.awake.SUMMARY", "test summary"), \
+             patch("app.provider.get_provider_for_role",
+                   return_value=ClaudeProvider(binary_path="/opt/bin/wrap-claude")) as mock_role:
+            handle_chat("hello")
+
+        mock_role.assert_called_once_with("chat")
+        assert mock_run.call_args[0][0][0] == "/opt/bin/wrap-claude"
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram", return_value=True)
+    @patch("app.awake.subprocess.run")
+    def test_routing_changes_only_the_binary(self, mock_run, mock_send, mock_tools,
+                                             mock_tools_desc, mock_fmt, mock_hist,
+                                             mock_save, tmp_path):
+        """Routing the provider must not disturb any other argument — same
+        model, tools and flags, only argv[0] moves."""
+        from app.provider import ClaudeProvider
+
+        mock_run.return_value = MagicMock(stdout="Hello back!", returncode=0)
+        (tmp_path / "journal" / "2026-02-01").mkdir(parents=True)
+        patches = [
+            patch("app.awake.INSTANCE_DIR", tmp_path),
+            patch("app.awake.KOAN_ROOT", tmp_path),
+            patch("app.awake.PROJECT_PATH", ""),
+            patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"),
+            patch("app.awake.SOUL", "test soul"),
+            patch("app.awake.SUMMARY", "test summary"),
+        ]
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            handle_chat("hello")
+            baseline = list(mock_run.call_args[0][0])
+            with patch("app.provider.get_provider_for_role",
+                       return_value=ClaudeProvider(binary_path="/opt/bin/wrap-claude")):
+                handle_chat("hello")
+            routed = list(mock_run.call_args[0][0])
+
+        assert routed[0] == "/opt/bin/wrap-claude"
+        assert baseline[0] == "claude"
+        assert routed[1:] == baseline[1:]
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram", return_value=True)
+    @patch("app.awake.subprocess.run")
+    def test_cross_flavor_role_uses_the_role_providers_model(
+        self, mock_run, mock_send, mock_tools, mock_tools_desc, mock_fmt,
+        mock_hist, mock_save, tmp_path
+    ):
+        """A cross-flavor `cli.default.chat` override (chat→codex under a claude
+        global) must resolve the chat model against codex's section, not
+        claude's — else codex is spawned with claude's model and rejects it."""
+        from app.provider import CodexProvider
+
+        mock_run.return_value = MagicMock(stdout="Hello back!", returncode=0)
+        (tmp_path / "journal" / "2026-02-01").mkdir(parents=True)
+        config = {
+            "cli_provider": "claude",
+            "models": {
+                "default": {"chat": "sonnet"},
+                "codex": {"chat": "gpt-5-codex"},
+            },
+        }
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", "test soul"), \
+             patch("app.awake.SUMMARY", "test summary"), \
+             patch("app.config._load_config", return_value=config), \
+             patch("app.provider.get_provider_for_role",
+                   return_value=CodexProvider(binary_path="/opt/bin/codex")):
+            handle_chat("hello")
+
+        argv = mock_run.call_args[0][0]
+        assert argv[0] == "/opt/bin/codex"
+        assert argv[argv.index("--model") + 1] == "gpt-5-codex"

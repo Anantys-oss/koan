@@ -4,7 +4,7 @@ title: "Component Spec — Agent Loop Pipeline"
 description: "Design contract for the core mission pipeline (iteration manager, mission executor/runner, quota handling, stagnation monitor) that pulls missions, invokes the CLI provider, and finalizes lifecycle state."
 tags: [agent-loop]
 created: 2026-06-27
-updated: 2026-07-22
+updated: 2026-10-13
 ---
 
 # Component Spec — Agent Loop Pipeline
@@ -56,12 +56,17 @@ mission_runner (post-processing)   # usage tracking, pending.md archival, reflec
 | `mission_runner.parse_claude_output()` | JSON → text extraction from `--output-format json` / stream-json. |
 | `run._is_ci_check_mission()` | Classifies a mission title as CI-related (`/ci_check …`, ci_dispatch `Fix CI failure: …`). |
 | `run._mission_fail_icon()` | **The single source of truth for the emoji prefix on a mission-failure notification** — 🚦 for CI missions, ❌ otherwise. Every failure-notification site MUST call this, never hardcode ❌. |
+| `run._notify_mission_end()` | **The single end-of-mission chat message.** Its first line is a fixed template from `outcome_line` (`✅ [p] 🔍 Reviewed <url>`, `❌ [p] 🔍 Review failed: <url>`, `✅ [p] Done: <title>`), sent verbatim via `_notify(…, verbatim=True)` — never through the Claude reformatter. |
+| `outcome_line` | **The one table of end-of-mission templates** (`SKILL_COMPLETION`: skill → emoji, success verb, failure noun) and the stdout hand-over markers. Pure. Shared by the loop and `messaging_level.report_outcome`. |
+| `messaging_level.report_outcome()` | **The one call a tracked skill's runner ends with.** Sends the fixed template itself, or — when the loop owns the message — prints it as markers. |
 | `iteration_manager._downgrade_if_burning_fast()` | Burn-rate-driven mode downgrade, next to affordability downgrade. |
 | `stagnation_monitor` | Daemon thread hashing last-N stdout lines; kills the subprocess group after K identical hashes; requeues up to `max_retry_on_stagnation`. |
+| `stagnation_monitor.get_retry_info()` | Exposes the per-mission retry count and stagnation pattern; consumed by `prompt_builder._get_stagnation_retry_section()` to coach a requeued session away from repeating the same stuck pattern. |
 | `quota_handler` | Parses quota exhaustion from CLI output, writes pause state + journal entry. `extract_reset_info` is **bounded** — it stops at JSON/structural delimiters so a single-line CLI result object can't leak its JSON tail into `reset_display`. `quota_debug_snippet` returns a capped, reset-centered window of the raw output for chat debug blocks. |
 | `hooks.py` | Lifecycle events: `session_start`, `session_end`, `pre_mission`, `post_mission`, `post_review`, each error-isolated. |
 | `prompt_builder._get_koan_md_section()` | Delegates reading to `project_koan.read_general_koan_md()` (root `KOAN.md` + `.koan/KOAN.md`, combined cap `_MAX_KOAN_MD_CHARS` 16k), frames via the `koan-md` template. Returns `""` for absent/blank/unreadable. |
-| `project_koan.read_koan_config()` / `get_review_always_check()` | Reads the target repo's optional structured `.koan/config.yaml` (a YAML surface alongside the markdown `.koan/` steering files). Fail-safe: returns `{}` / `[]` on absent/unparseable/malformed config, never raises. The `review.always_check` glob list feeds `/review` diff-size pinning — see `specs/components/skills.md` → "Repo config file (`.koan/config.yaml`)" and the `review` diff-size contract. |
+| `project_koan.read_koan_config()` / `get_review_always_check()` / `get_mission_hooks()` | Reads the target repo's optional structured `.koan/config.yaml` (a YAML surface alongside the markdown `.koan/` steering files). Fail-safe: returns `{}` / `[]` on absent/unparseable/malformed config, never raises. `review.always_check` feeds `/review` diff-size pinning; `get_mission_hooks(path, type, phase)` resolves the `pre_hooks`/`post_hooks` list executed by `mission_hooks` — see `specs/components/skills.md` → "Repo config file (`.koan/config.yaml`)". |
+| `mission_hooks.hooks_enabled()` / `run_pre_hooks()` / `run_post_hooks()` | Gated executor for repo-config-driven shell hooks around a mission (default off; see "Mission hooks" below). Error-isolated, never raises. |
 
 ### KOAN.md injection
 
@@ -82,13 +87,66 @@ Code auto-loads `CLAUDE.md` but never `KOAN.md`, so interactive sessions never
 see it.
 
 **Steering-context visibility (`make logs`).** Every steering file that shapes a
-mission prompt is announced on stderr (→ `logs/run.log`) as `Detected <label>,
-loaded N chars (~ M tokens)` via `project_koan.log_context_load`. The agent loop
-surfaces `KOAN.md` when `_get_koan_md_section` reads it, and — detection-only —
-`CLAUDE.md (auto-loaded by CLI)` via `_log_claude_md_detected(project_path)`,
-which reads the project-root `CLAUDE.md` solely to report its size (koan never
-injects it; the CLI loads it from `cwd`). Best-effort: any read/stream failure is
+mission prompt is folded in silently via `project_koan.record_context_load(label,
+content)` and then announced **once per prompt build** as a single consolidated
+block on stderr (→ `logs/run.log`) by `project_koan.flush_context_summary()`,
+called at the end of each prompt builder (`build_agent_prompt`,
+`build_agent_prompt_parts`, and `prompts.load_skill_prompt`). The block reads
+`Steering loaded before Claude (N file(s), ~ T tokens total):` followed by one
+`• <label>: C chars (~ M tokens)` line per file. The agent loop records `KOAN.md`
+(`_get_koan_md_section`) and — detection-only — `CLAUDE.md (auto-loaded by CLI)`
+(`_log_claude_md_detected`, wired into both `build_agent_prompt` and the split
+`build_agent_prompt_parts`), which reads the project-root `CLAUDE.md` solely to
+report its size (koan never injects it; the CLI loads it from `cwd`). A summary
+identical to the previous one (same files and sizes) is suppressed, so a skill
+that rebuilds the prompt several times per mission (e.g. `plan`) announces its
+steering context once, not once per CLI call.
+`mission_executor._run_iteration` calls `reset_context_load_log()` at the top of
+each iteration so a new mission re-announces even when the files are
+byte-identical to the previous mission's. Best-effort: any read/stream failure is
 swallowed and never blocks prompt assembly.
+
+### Mission hooks (`mission_hooks`) — repo-config-driven shell around missions
+
+`mission_hooks.py` executes the repo-owner shell commands declared in a target
+repo's `.koan/config.yaml` under `pre_hooks`/`post_hooks` (resolver + schema:
+`specs/components/skills.md` → "Mission hooks"). This is **distinct from `hooks.py`**:
+`hooks.py` runs operator-authored Python from the trusted `instance/` tree; this runs
+shell from a **repo-controlled** file, so it is a gated, separately-audited surface.
+
+**Operator opt-in gate (default off).** Nothing runs unless the operator opts in.
+`mission_hooks.hooks_enabled(project_name)` = per-project override
+(`projects_config.get_project_mission_hooks` — the `mission_hooks:` bool in
+`projects.yaml`) if set, else the global `config.is_mission_hooks_enabled()`
+(`mission_hooks.enabled` in `instance/config.yaml`, **default `False`**). Mirrors the
+`review_dispatch`/`ci_dispatch` opt-in pattern. When disabled, `run_pre_hooks` /
+`run_post_hooks` no-op and log one "skipped (not enabled)" diagnostic.
+
+**Executor.** `run_pre_hooks(project_path, project_name, mission_type)` and
+`run_post_hooks(project_path, project_name, mission_type, success)` gate-check, then
+run each resolved command with `subprocess.run(cmd, shell=True, cwd=project_path,
+env={**os.environ, KOAN_MISSION_TYPE, [KOAN_MISSION_STATUS]}, capture_output=True,
+text=True, timeout=MISSION_HOOK_TIMEOUT)`. Post-hooks set `KOAN_MISSION_STATUS` =
+`success`/`failure`. Best-effort: each command is error-isolated (a non-zero exit,
+`TimeoutExpired`, or launch error is logged with bounded output and never aborts the
+mission, blocks later commands, or raises). `mission_type =
+skill_dispatch.mission_command_name(mission_title)`.
+
+**Call sites (no double-fire).** Skill-dispatched missions return from
+`_handle_skill_dispatch` before the agent-loop `pre_mission` fire, so the **pre**
+sites are mutually exclusive. For **post**, note that skill dispatch *does* flow
+through `mission_runner.run_post_mission` (`run._run_skill_mission` calls it with
+`is_skill_dispatch=True`) and therefore reaches `_fire_post_mission_hook` — so that
+function fires the repo post-hooks **only for the agent-loop path** (guarded on
+`not is_skill_dispatch`); skill-dispatch post-hooks fire in
+`_handle_skill_dispatch`'s `finally` (which also covers skill exit paths that never
+reach `run_post_mission`, e.g. a runner exception). Exactly one post-fire per
+mission on either path:
+
+| Path | Pre | Post |
+|---|---|---|
+| Skill dispatch | `mission_executor._handle_skill_dispatch`, before the `_run_skill_mission` `try` | same function's `finally`, `success = exit_code == 0` (fires on success, failure, early-return, `KeyboardInterrupt`). `_fire_post_mission_hook` suppresses the repo post-hook here via `is_skill_dispatch`. |
+| Agent loop | `mission_executor._run_iteration`, at the `pre_mission` fire site | `mission_runner._fire_post_mission_hook` (`is_skill_dispatch=False`), `success = exit_code == 0` |
 
 ### Usage source selection (authoritative OAuth anchor)
 
@@ -141,11 +199,22 @@ heuristic:
   post-turn event loop. Deferred re-invocation (background monitors, scheduled
   wake-ups, "report later") is NOT available; such work is dropped and the child
   is killed. Result-bearing work MUST complete before the model ends its turn —
-  enforced at the prompt layer (`_partials/cli-execution-model.md`) and supported
-  by a raised Bash foreground timeout (`get_bash_foreground_timeout_ms()`,
-  injected into the mission subprocess env as `BASH_DEFAULT_TIMEOUT_MS` /
-  `BASH_MAX_TIMEOUT_MS` for the Claude provider only, clamped below
-  `mission_timeout`). `max_turns` is
+  enforced at the prompt layer (`_partials/cli-execution-model.md`) and, for the
+  Claude provider only, at the subprocess-env layer:
+  - **Background Bash tasks are disabled** (`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`).
+    The CLI otherwise auto-moves a foreground command that outlives the Bash
+    timeout into the background; the model then ends its turn "waiting for the
+    notification", the CLI exits `0`, and the mission is finalized Done without
+    the result (#2249, reproduced on CLI 2.1.286). With background tasks off, a
+    command that outlives the timeout is killed and the model sees the failure.
+    The `Monitor` tool is unaffected — the CLI keeps the session alive until a
+    monitor completes, so it is not an orphaning path.
+  - **The Bash foreground timeout follows the mission budget**
+    (`get_bash_foreground_timeout_ms()`, injected as `BASH_DEFAULT_TIMEOUT_MS` /
+    `BASH_MAX_TIMEOUT_MS`). Unset `bash_foreground_timeout` defaults to
+    `mission_timeout` minus a 120s reporting buffer, so any command that fits the
+    mission fits one foreground call; an explicit value is clamped below that
+    ceiling. `max_turns` is
   orthogonal: default missions impose no `--max-turns` cap (`build_mission_command`
   passes `0` unless `complexity_routing` assigns a tier), and a cap-hit is
   classified as failure (`subtype: "error_max_turns"`), not a clean success.
@@ -199,6 +268,118 @@ heuristic:
   by construction — a new provider or mission type inherits both hooks. Default on
   (`page_cache_reclaim.enabled: true`); `idle_interval_s: 0` keeps only the
   post-mission hook. See `docs/operations/memory-footprint.md`.
+- **Every mission is contained in a cgroup scope, and the scope is torn down on
+  every exit path — success included.** Bounding scratch and page cache (above) does
+  nothing about *processes*: a mission that leaves a build daemon running raises the
+  host's idle baseline until someone kills it by hand. A process group is
+  structurally insufficient, because Gradle's build daemon (3-hour idle timeout)
+  detaches to `PPID 1` with its own session and has left the mission's group by the
+  time the mission ends — `os.killpg` can never reach it, while a cgroup catches
+  every descendant however often it double-forks. Killing that daemon is also what
+  releases the Testcontainers `ryuk` client socket it was holding, so ryuk reaps the
+  containers itself. `app/mission_scope.py` is the single containment primitive:
+  `launch_scoped()` wraps the spawn in `systemd-run --scope --collect
+  --unit=koan-mission-<uuid>.scope --property=MemoryMax=<n>
+  --property=MemoryHigh=<90% of n>` and `teardown()` MUST be called from the same
+  `finally` that reaps `TMPDIR`. The `.scope` suffix is part of the contract:
+  `systemctl` appends `.service` to an abbreviated unit name, so a bare name would
+  make every stop, kill and property read address a unit that never existed.
+  **All three** mission spawn sites go through it (`run_claude_task`,
+  `_run_skill_mission`, and `session_manager.spawn_session` for parallel sessions —
+  whose teardown lives in `poll_sessions` on completion and `kill_session` on abort);
+  the inner `provider/__init__.py` spawn intentionally shares `review_runner`'s
+  process group and so inherits the same cgroup. A spawn path added without
+  `launch_scoped` is a containment hole, not merely a gap in coverage: parallel
+  sessions shipped that way and were caught in production running a Gradle daemon at
+  `PPID 1` (822 MB, inside Kōan's own SSH login scope) while
+  `systemctl list-units 'koan-mission-*'` listed nothing. Cleanup MUST touch
+  only the mission's own descendants — fleet hosts are shared, so there is no
+  name-based sweep (no `pkill`, no `gradlew --stop`, no `docker prune`) and **no
+  container sweep at all**. A container is a child of the Docker daemon, not of the
+  mission, so no observable property distinguishes this mission's containers from a
+  co-tenant's: a creation time inside the mission's window proves overlap, never
+  ownership, and `docker rm -f` on that basis can destroy a live unrelated workload.
+  Containers MUST therefore be left to ryuk, which reaps them when the scope
+  teardown drops its client socket; a project that disables ryuk owns its own
+  container cleanup.
+  Teardown MUST judge the manager by result, not by reachability: `_systemctl` runs
+  with `check=False`, so a refusal is a non-zero `CompletedProcess`, and treating it
+  as success reports containment that never happened. A non-zero `systemctl stop` is
+  disambiguated with `systemctl show -p LoadState` — `not-found` means `--collect`
+  already reaped the scope (the ordinary clean ending), anything else escalates to
+  `systemctl kill -s SIGKILL`. `mission_scope.stop_scope_unit()` is the single lever
+  for this and `make stop` MUST use it too, keeping a registry entry whose scope it
+  could not confirm stopped — that record is the only durable handle on a live scope,
+  and its descendants have left the daemon's process group. A destructive action MUST
+  verify its target first: a fallback `pid-<n>` record names a PID, and a PID is
+  recycled, so `make stop` MUST signal its process group only after the PID's real
+  start time matches the record's `started_at` — dropping a stale record afterwards
+  does not undo a SIGKILL already sent to a stranger's group. The rule binds every
+  escalation from a stored PID to a `killpg`, the daemon `.koan-pid-*` files
+  included: `check_pidfile` verifies identity only via the flock probe, so a
+  non-Python daemon (or one that died without cleaning up) falls through to a bare
+  liveness check that a recycled PID passes. `stop_processes` MUST therefore
+  escalate to the process group only when the PID's real start time is consistent
+  with the pid file that named it, and degrade to a single-PID `os.kill` when it
+  cannot be confirmed — a stale pid file after a reboot must cost one wrong signal,
+  not a stranger's whole session. For the same reason
+  "cannot tell" is never "contained": only `FileNotFoundError` on `cgroup.events`
+  proves the cgroup is empty, and any other read failure MUST fall through to the
+  manager's own confirmation. The fallback path is held to the same standard — only
+  a `ProcessLookupError` from `killpg` proves the group is empty, so an EPERM
+  refusal, a group that outlived SIGKILL, or a pgid that was never captured MUST
+  keep the registry record rather than report a clean sweep. The rule is
+  symmetric, and its mirror binds just as hard: **known-negative evidence MUST NOT
+  be overridden by a guess.** `memory.events`' `oom_kill 0` is the kernel saying the
+  cap did not fire, and it is readable in exactly the case this contract targets (a
+  leaked daemon keeps the scope populated, so `--collect` has not reaped the
+  cgroup), so the exit-status heuristic MUST be gated on evidence that is genuinely
+  *unreadable*. Otherwise an unrelated SIGKILL — a co-tenant exhausting RAM and the
+  kernel's *global* OOM killer taking the CLI — is relabelled a cap hit and, since
+  a cap hit is never retried, permanently suppresses both retry paths. Every kill
+  Kōan issues itself MUST be attributable for the same reason, the double-tap
+  CTRL-C included: `_on_sigint` records it as an abort exactly as `/abort` does.
+  The cap is `max(memory_min, MemTotal - memory_reserve)` with an explicit
+  `memory_max` winning verbatim — a reserve **with a floor**, never a percentage of
+  RAM, because Kōan's baseline is roughly constant while the fleet spans 1.9–7.7 GiB
+  with no swap. A cap hit is a distinct mission result (`memory_cap_exceeded` /
+  `memory_cap_detail` in the `post_mission` hook context) and MUST NOT be retried.
+  The verdict belongs to the mission that produced it: it is passed *into*
+  `run_post_mission` by that mission's own owner (the sequential loop's
+  `_last_mission_memory_cap`, or a parallel session's own `ScopedProcess` carried on
+  `SessionResult`), never read from a process-global by the pipeline — a session
+  reaped in a later iteration would otherwise inherit a previous mission's flag and
+  never report its own.
+  A scope also outlives a hard crash of `run.py`, which never reaches `teardown()`,
+  so startup MUST reconcile the registry (`stop_registered_scopes` from
+  `startup_manager`, alongside the stale-`TMPDIR` sweep): a record under this
+  `KOAN_ROOT` can only be a previous incarnation of this instance, and both record
+  kinds are already verified before they are acted on.
+  Where no scope can be created (macOS, no systemd manager) the loop falls back to
+  `start_new_session=True` + a kill of the process group captured at launch — the
+  pgid, not the `Popen`, because `kill_process_group()` returns at its
+  `poll()` guard once the mission process is reaped and would signal nothing on the
+  success path. No host is left unable to run missions. The probe MUST establish
+  that a scope can actually be *created*, not merely that `systemd-run` is on PATH
+  with a live manager: a manager that rejects the transient scope or its
+  `MemoryMax`/`MemoryHigh` properties (an undelegated memory controller, a manager
+  that refuses resource control) lets `systemd-run` start, exit non-zero and never
+  exec the provider — which `Popen` reports as success, so no exception-based
+  fallback can fire and *every* mission on that host would fail with empty output.
+  The probe therefore creates a throwaway resource-controlled scope once per
+  process and caches the verdict beside the binary lookup. The degraded-mode warning is
+  once per process for the *probe* verdict (a host does not grow a `systemd-run`
+  mid-run, so repeating it says nothing new) but **every occurrence** for a scope
+  that fails to *start*: a manager that goes away mid-run leaves every later mission
+  uncontained, and one shared one-shot budget would hide exactly the invisible leak
+  this contract exists to end. Default on
+  (`mission_limits.enabled: true`); `enabled: false` is a true off switch and MUST
+  restore the pre-containment behaviour exactly — no scope, no registry record, and
+  **no teardown sweep at all**. A disabled feature that still SIGTERM/SIGKILLs the
+  mission's whole process group on every exit path leaves an operator whose mission
+  deliberately backgrounds a process no configuration that turns the reaping off,
+  which is the one thing a master switch on a default-on destructive feature is for.
+  See `docs/operations/memory-footprint.md`.
 - **`run.py` never commits to main and never merges.** This is a hard safety boundary
   enforced by prompt + convention; the loop's job is to host the subprocess, not to
   alter git state itself.
@@ -225,12 +406,125 @@ heuristic:
   mistaken for a quota/auth message. Keep that default for new dispatch pathways.
 - **Every termination pathway needs a retry guard.** Stagnation kill, timeout kill,
   and CLI error all route through `_maybe_retry_mission`'s RETRYABLE check.
+  The forced-restart exit (below) is the ONE sanctioned exception: it never returns
+  to the retry guard at all, and hands the mission to crash recovery instead.
+- **Forced restart (`/restart --force`) unwinds the process; it does not return an
+  exit code.** `run_claude_task` is normally the only thing that decides a mission's
+  outcome, and every other kill path returns to `_finalize_mission`. The forced path
+  does not: `_force_restart_now` kills the provider process group and raises
+  `SystemExit(RESTART_EXIT_CODE)` from the main thread, so `run_claude_task` **never
+  returns** and `_maybe_retry_mission`/`_finalize_mission` never run. The mission is
+  deliberately left In Progress and owned by `recover.py`, which re-queues it to
+  Pending on the next startup — or escalates it to Failed once the mission has
+  exhausted `max_crash_retries`, since the forced kill counts as a crash. Code added
+  after `run_claude_task` returns is therefore NOT reached on this path; anything that
+  must happen on a forced restart belongs in a `finally` (which the `SystemExit`
+  unwind does run) or in recovery.
+  The kill MUST be verified before the exit. `kill_process_group` degrades quietly —
+  a child wedged in uninterruptible I/O survives SIGKILL, and a failing `killpg`
+  is swallowed — so `_force_restart_now` re-checks `proc.poll()` and logs an error
+  naming the surviving PID. Exiting silently there produces exactly the orphaned
+  provider session the capability gate below exists to prevent, while the operator
+  has already been told the mission was killed.
+  Two mechanisms drive it, and both are load-bearing: (1) SIGUSR2, handled by
+  `_on_sigusr2`, installed in `main_loop`; (2) the `force` line in `.koan-restart-run`,
+  re-read every `MISSION_POLL_INTERVAL` inside `run_claude_task`'s mission wait loop
+  as the fallback for a lost signal, filtered by `_runner_start_time` so a marker
+  from a previous incarnation cannot force a restart. The marker fallback is
+  strictly weaker than the signal and MUST NOT be described as equivalent: it covers
+  only that wait loop. `_run_skill_mission` blocks on its child's stdout with no poll
+  tick, so a skill-dispatch mission (`/review`, `/fix`, `/implement`) is not killed
+  by the marker — it restarts once the mission ends. Every operator-facing reply that
+  reports a withheld signal MUST say so rather than promise a kill. Across the window between spawning the CLI
+  subprocess and publishing it on `_sig.claude_proc`, `_sigusr2_deferred` records the
+  request and replays it on exit instead of acting on it — otherwise a forced restart
+  in that window would kill nothing and orphan the just-spawned session. This applies
+  to **every** sequential path that publishes `_sig.claude_proc` — `run_claude_task`
+  and `_run_skill_mission` today — and any new one MUST arm the window too: the orphan
+  is the same whether the survivor is a provider session or a skill session. The
+  deferral MUST live in `_on_sigusr2`, not in a `pthread_sigmask` block: a signal mask
+  is *per thread*, a process-directed `kill()` is accepted by any of the runner's
+  threads that has not blocked it (journal tail, watchdog, stagnation monitor), and
+  CPython then runs the Python-level handler on the main thread regardless of that
+  thread's own mask. Only a check inside the handler is independent of the thread
+  topology.
+  The deferral window MUST stay bounded: anything inside it suppresses forced
+  restarts for its whole duration. `run_claude_task` therefore calls
+  `cli_exec.acquire_provider_lock` *before* `_sigusr2_deferred` and hands the lock to
+  `popen_cli(cli_lock=...)`, because that flock is contended by every other Kōan on
+  the host and can be held for a whole peer mission. Honouring a forced restart while
+  waiting for it is safe — nothing has been forked yet, so there is nothing to orphan.
+  The same applies to `launch_scoped`'s unscoped retry, which must take a *fresh*
+  lock because `popen_cli` already released the handed-over one: that second acquire
+  happens with the window lifted (`_sigusr2_undeferred`), never inside it.
+  Correspondingly, `_ProviderInvocationLock` waits with `LOCK_EX | LOCK_NB` plus a
+  `LOCK_POLL_INTERVAL` sleep rather than a blocking `LOCK_EX`: a blocking flock parks
+  the main thread in the kernel, where CPython cannot run Python-level signal handlers
+  at all (the process-directed signal may be taken by another thread, so the flock
+  never sees `EINTR`), leaving the runner deaf to `/abort` and `/restart --force`.
+- **SIGUSR2 is capability-gated, never sent optimistically.** Its default disposition
+  is *terminate*, so a runner without `_on_sigusr2` is hard-killed by it: no `finally`
+  runs, and the provider subprocess — spawned `start_new_session=True`, hence outside
+  the runner's process group — survives as an orphan mutating the worktree while the
+  relaunched runner starts the next mission in the same repo. A PID/cmdline check
+  (`pid_manager.signal_daemon`) cannot detect this, because the stale runner *is*
+  `run.py`. The runner therefore publishes `.koan-run-caps` (its PID, that process's
+  start time, and a `sigusr2` line) immediately after installing the handler and
+  clears it in `main_loop`'s exit `finally` — and, when that publish fails, retries it
+  from the main loop (`ensure_runner_caps`, throttled), because an absent marker is
+  read as a pre-upgrade runner and would downgrade every later `/restart --force` for
+  the rest of the incarnation; the `/restart` skill signals only when
+  `force_signal_support` matches that marker to the live process (`"yes"`), and
+  otherwise withholds the signal and reports the degradation. **The marker
+  identifies a process, not a PID** — `main_loop`'s `finally` cannot run for a
+  SIGKILLed or OOM-killed runner, so the file outlives it; the recorded start time
+  (same `_process_start_time` source, same 30 s tolerance as `mission_scope`'s
+  `pid-<n>` records) is what stops a corpse's marker from vouching for a later runner
+  that reused the PID — including a rollback to an image with no handler, which is
+  exactly the case the gate exists to prevent. Every uncertainty fails closed for the
+  *signal*, but the two negative outcomes are distinct and the skill MUST resolve them
+  **before** writing the markers, so the restart request on disk matches the reply:
+  `"no"` (no marker, or one naming another process/incarnation) means a runner that
+  probably has no forced-marker poll either, so the request is rewritten as a
+  **polite** one; `"unknown"` (unreadable caps file, no start time in the body, an
+  unreadable live start time, an unparseable value) means a capable runner on a host
+  that cannot prove identity, so the forced marker stays and only the signal is
+  withheld. Writing a forced marker and then reporting a polite restart is a
+  contract violation: the runner would kill a mission the operator was told would be
+  allowed to finish. This is not hypothetical: `/update` re-execs the bridge
+  at once but lets the runner finish its mission (`CYCLE_FILE` → exit 42), so a new
+  bridge routinely drives a pre-upgrade runner. Any future runner-directed signal
+  whose default disposition is lethal MUST be gated the same way.
 - **Mission-failure notifications route their emoji through `_mission_fail_icon()`.**
   CI-related missions (`/ci_check`, ci_dispatch `Fix CI failure:`) surface 🚦 — a
   status signal, not an alarm, per operator preference; all other failures surface ❌.
   This was scattered across call sites and kept regressing (start-transition and
   devcontainer-setup failures still hardcoded ❌). New failure-notify sites must call
   `_mission_fail_icon(mission_title)`, never inline the emoji.
+- **End-of-mission lines are fixed templates, sent verbatim.** The same outcome
+  must read the same every time, so the operator can scan the channel. The first
+  line comes from `outcome_line` (table `SKILL_COMPLETION`: emoji, success verb,
+  failure noun) and is sent with `_notify(…, verbatim=True)`; the Claude
+  reformatter rephrased it, dropped the URL or emoji, and made four wordings of one
+  "PR reviewed" event. Free text (a gate note, a plan body, a failure reason) only
+  ever goes on the lines below it. The first line is identical in `normal` and
+  `debug`; `debug` only appends the run counter and the journal detail. Always the
+  full URL, no trailing full stop. A failure starts with ❌ (🚦 for CI missions,
+  via `_mission_fail_icon`).
+- **One message per mission; the agent loop is the reporter.** A tracked skill's
+  runner (every `SKILL_COMPLETION` key) never builds its own outcome text: it ends
+  with `messaging_level.report_outcome(skill, ok, url=, detail=, reason=)`. In
+  `normal` mode the loop sets `KOAN_SUPPRESS_RUNNER_OUTCOME=1`, and the runner
+  prints `KOAN_OUTCOME_OK:` (always) / `KOAN_OUTCOME_URL:` /
+  `KOAN_OUTCOME_DETAIL:` (one per line) / `KOAN_OUTCOME_REASON:` on stdout instead
+  of sending; the loop reads them (`mission_runner.outcome_from_stdout`) and sends
+  the one message — `No reason given.` when the runner died before reporting.
+  Once the runner reported, its URL is final (`/recreate`'s new PR, `/plan`'s issue
+  URL, or none): no PR link from the transcript or `pending.md` stands in for it,
+  and the "— skipping" shortcut (runner already told the user) does not apply.
+  Otherwise (`debug`) the runner sends the same template itself. A runner's
+  `main()` ends with `report_failure_unless_reported`, so a failure path that only
+  returned its summary still reaches chat, once.
 - **Contemplative failures must surface, not swallow.** `_handle_contemplative`
   captures the CLI exit code and runs `_notify_contemplative_failure`, which classifies
   the outcome (529 overload, quota, auth, transient, exit-code) and sends ONE throttled
@@ -267,6 +561,9 @@ heuristic:
   faster than post-kill JSON-completeness checks.
 - Retry-guard gaps: introducing a new kill/abort mechanism without a `_maybe_retry_mission`
   guard silently drops retryable missions.
+  The forced-restart exit is the single sanctioned exception (see the invariant
+  above) — it bypasses the guard by design and delegates to `recover.py`. Do not
+  read it as precedent: any *other* new kill path still needs the guard.
 - `_run_iteration` is large; the dispatch layer was extracted to `mission_executor` to
   keep `run.py` focused on the execution host. Resist re-merging them.
 

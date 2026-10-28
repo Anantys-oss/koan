@@ -4,7 +4,7 @@ title: "GitHub And Trackers"
 description: "Covers GitHub/Jira notification flow, PR workflows (footer, receiving-code-review protocol), review issue-tracker enrichment, and the instance/ tracker files used to dedupe work."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-07-13
+updated: 2026-09-10
 ---
 
 # GitHub And Trackers
@@ -54,6 +54,93 @@ request is incorrect — while complying when the human insists. Trivial/mechani
 feedback takes a fast-path. The review-learning extraction additionally records
 pushback outcomes (validated vs. overridden) so the agent learns which pushbacks to
 trust.
+
+### Reviewer references never auto-link
+
+A review comment numbers its findings (`1.`, `2.`, … and `warning #3` in the
+checklist), and the rebase feedback agent echoes those numbers back in its
+summary — "reviewer #5", "#7 (transport fallback)". GitHub auto-links any bare
+`#N` in comment prose to the issue or PR with that number, so those references
+used to render as links to unrelated repository issues.
+
+`app.github.escape_issue_refs` neutralizes them: every bare `#N` (including the
+`owner/repo#N` cross-repo form) becomes a fullwidth `＃N` (U+FF03), which
+reads the same but is not a GitHub reference. Fenced code blocks, inline code
+spans, and URLs are left verbatim, so a `…/pull/12#issuecomment-9` fragment or a
+`#1f2937` hex colour survives untouched. The rebase PR comment
+(`rebase_pr._build_rebase_comment`) runs its whole rendered body through it —
+nothing that comment emits is ever a deliberate issue link. Comments that *do*
+link real issues on purpose (the already-solved close notice's "linked to PR
+#N") are not passed through it.
+
+### Force-push content-preservation guard
+
+A `/rebase` ends in a force-push, and a force-push can silently lose work: a
+bad rebase can drop or reshape commits the PR previously carried, and a commit
+someone pushes to the branch *while* the rebase is running gets erased outright.
+After confirmed incidents of both, every rebase-pipeline force-push is now
+followed by a detection harness (`koan/app/force_push_guard.py`; contract in
+`specs/components/git-github.md`):
+
+- **Before every pipeline push** (the main push *and* any private-gate
+  re-push, whose observations are fed back via `push_state`) the remote branch
+  tip is snapshotted (`git ls-remote`) and fetched, so a concurrent human push
+  is known — and recoverable — before it gets overwritten. The fetch also
+  refreshes the tracking ref, making the subsequent `--force-with-lease`
+  compare against the freshest observation. If that lease is *rejected*, the
+  remote moved since the snapshot and the plain `--force` fallback is about to
+  overwrite whatever moved it — so the tip is observed again first, otherwise
+  the clobbered commits could never be named. Observations belong to the remote
+  they were taken on: the push tries several remotes in turn, and tips seen on
+  one whose push then failed are dropped, since that branch was never
+  overwritten and reporting it would be a false alarm.
+- **After the pipeline's last push** the guard compares the pre-rebase PR head
+  against the last SHA actually pushed. That SHA is captured before the push
+  and kept only on success; with no confirmed value the guard skips rather
+  than falling back to local HEAD, which may hold commits the remote never
+  received. The comparison is `git cherry` patch-id screening — plus a
+  separate pass over the PR's **merge commits**, which `git cherry` never
+  reports and a plain rebase replays away, so a conflict resolution living
+  only inside a merge would otherwise vanish unseen (their combined `--cc`
+  diff is exactly the content unique to the merge) — refined by content-level
+  survival checks: a commit whose files are byte-identical at both heads
+  (upstream squash-merge) or whose added lines are not *removed* by the
+  old→pushed diff (context-line drift) counts as preserved. Checking the
+  removed side, rather than looking each added line up anywhere in the file,
+  is what stops an identical line elsewhere in the same file from masking a
+  reverted change. Anything the guard cannot evaluate — an unreadable file
+  list, a deletion-only commit, any git failure — is reported as unverified
+  rather than cleared. On top of that come a file-level cross-check for
+  changes that vanished from the PR diff entirely, the list of clobbered
+  concurrent commits, and a
+  final `ls-remote` to detect a push that raced in right after ours — the
+  window that cannot be closed client-side, only detected. Per-commit analysis
+  is capped and the cap is reported, never silent.
+- **Findings render as one alert** (`build_alert`) at the top of the rebase PR
+  comment — CAUTION (red) when content was lost or a concurrent push was
+  overwritten, WARNING (amber) when patches were only reshaped in-flight or
+  the remote raced us — plus a Telegram/Slack notification sent through the
+  un-gated outcome channel, so a safety finding still reaches you in normal
+  messaging mode. The alert always names the pre-rebase head SHA with a
+  copy-pasteable recovery command. Because that command is meant to be pasted
+  into a shell and git ref names may legally contain `$()`, backticks, `;` and
+  `&`, every argument is shell-quoted and the backup branch is derived from the
+  SHA — no branch-controlled text ever reaches it.
+
+A check that could not run at all — an `ls-remote` outage before or after the
+push — is listed in the alert as an explicitly **unverified** check. "Could
+not look" is not "nothing was there", and a safety check that silently did not
+happen is worse than one that says so.
+
+The guard **detects and warns; it never blocks or reverts**. It is best-effort
+by contract: any internal failure logs, appends a "guard skipped" action, and
+lets the rebase finish normally. That boundary covers the whole call site, not
+just the git operations — by the time the guard runs the branch has already
+been rewritten, so an unexpected bug inside it must never turn a completed
+rebase into a failed mission or skip the PR comment that follows. It also
+covers the part of the guard that runs *on* the push path: a failed pre-push
+observation degrades to "clobber check unverified", never to a push that
+silently does not happen or lands on a fallback remote instead.
 
 ## Mission status indicators (`koan/mission`)
 
@@ -124,7 +211,11 @@ Tracker files in `instance/` prevent duplicate work across daemon iterations.
 Examples include:
 
 - GitHub notification and reaction tracking.
-- Review comment dispatch fingerprints.
+- Review comment dispatch fingerprints (`.review-dispatch-tracker.json`).
+  Fetch failures (timeout/OS/`gh` error) return `None` rather than `[]`, so
+  the dispatch loop skips that PR without clearing its fingerprint — a
+  transient GitHub timeout must not re-dispatch the same unresolved comments
+  as a duplicate mission on the next successful poll.
 - CI dispatch fingerprints keyed by PR, SHA, and job.
 - Remote rename and default-branch tracking.
 - Burn-rate and quota-related state.

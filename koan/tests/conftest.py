@@ -29,15 +29,90 @@ if _xdist_worker and _xdist_worker != "master":
     (_per_worker_root / "instance").mkdir(parents=True, exist_ok=True)
     os.environ["KOAN_ROOT"] = str(_per_worker_root)
 
+# Agent-loop skill missions set KOAN_SUPPRESS_RUNNER_OUTCOME=1 so the runner's
+# ✅/❌ outcome line is deduped against the agent-loop completion line. When
+# pytest is launched under such a mission the flag inherits into every test
+# process. skill_env is built via ``{**os.environ, ...}``, so tests that assert
+# the key is *absent* for non-PR skills (or that notify_outcome still sends)
+# fail under agent-driven runs. Strip it at suite start; tests that need the
+# flag set it themselves via monkeypatch/setenv.
+os.environ.pop("KOAN_SUPPRESS_RUNNER_OUTCOME", None)
+
+
+@pytest.fixture
+def real_mission_scope_group_kill():
+    """Opt back in to ``mission_scope``'s real process-group kill.
+
+    Requested by the few tests that spawn a *real* subprocess and assert its
+    group is reaped. Everything else gets the no-op stub below, because the
+    group id a mocked ``Popen`` yields is an invented integer that may name a
+    live, unrelated process group on the host running the suite.
+    """
+    return True
+
+
+@pytest.fixture(autouse=True)
+def _no_real_mission_scopes(request):
+    """Keep the suite out of the host's systemd manager and its process groups.
+
+    ``run_claude_task`` / ``_run_skill_mission`` tests spawn real subprocesses
+    (``echo``, ``sh -c …``), and ``mission_scope`` wraps every mission spawn in a
+    transient systemd scope. On a Linux host with a reachable manager that would
+    create and stop a real scope per test — slow, dependent on a live manager,
+    and host-dependent in its outcome.
+
+    Report "no usable systemd-run" so every test exercises the documented
+    fallback path (``start_new_session=True`` + a kill of the mission's process
+    group), which is also what a macOS dev box does for real. Tests that want
+    the scope path stub the probe themselves (see tests/test_mission_scope.py).
+
+    That fallback path ends in a **real** ``os.killpg``, and tests that mock
+    ``Popen`` give it an invented pid: ``ScopedProcess._read_pgid`` resolves that
+    integer against the live host, so a same-user process that happens to lead
+    group 12345 would be SIGTERMed and SIGKILLed by whoever runs ``make test``.
+    Stub the group kill out; a test that genuinely needs it requests the
+    ``real_mission_scope_group_kill`` fixture above.
+
+    **Both** primitives are stubbed, because ``_kill_session_group`` calls two:
+    ``kill_orphaned_process_group(pgid)`` *and* ``kill_process_group(proc)``.
+    The latter only short-circuits on ``proc.poll() is not None``, and a
+    ``MagicMock`` whose ``poll()`` returns None sails past that guard straight
+    into ``os.getpgid(<invented pid>)`` / ``os.killpg``. Stubbing one and not the
+    other left the exact hazard this fixture documents.
+    """
+    try:
+        from app import mission_scope
+    except ImportError:
+        yield
+        return
+    mission_scope.reset_probe_cache()
+    try:
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(
+                mission_scope, "_probe_systemd_run", return_value=(None, []),
+            ))
+            if "real_mission_scope_group_kill" not in request.fixturenames:
+                stack.enter_context(patch.object(
+                    mission_scope, "kill_orphaned_process_group",
+                ))
+                stack.enter_context(patch.object(
+                    mission_scope, "kill_process_group",
+                ))
+            yield
+    finally:
+        mission_scope.reset_probe_cache()
+
 
 @pytest.fixture(autouse=True)
 def _reset_run_module_state():
     """Reset module-level mission flags in `app.run` before each test.
 
     `_maybe_retry_mission` short-circuits on `_last_mission_timed_out`,
-    `_last_mission_aborted`, or `_last_mission_stagnated`. Several test
-    files (e.g. test_run.py) leave these flags set; under pytest-xdist
-    that pollution leaks into whatever test runs next on the same worker.
+    `_last_mission_aborted`, `_last_mission_stagnated`, or
+    `_last_mission_memory_cap`. Several test files (e.g. test_run.py) leave
+    these flags set; under pytest-xdist that pollution leaks into whatever test
+    runs next on the same worker — a set flag silently turns every later
+    retry/fallback test into a no-op pass.
     Resetting globally keeps every test starting from a clean state.
     """
     try:
@@ -45,6 +120,7 @@ def _reset_run_module_state():
         run_mod._last_mission_timed_out = False
         run_mod._last_mission_aborted = False
         run_mod._last_mission_stagnated.clear()
+        run_mod._last_mission_memory_cap = ""
     except Exception:
         pass
     yield
@@ -107,6 +183,30 @@ def _mock_fetch_pr_state():
 
 
 @pytest.fixture(autouse=True)
+def _no_live_oauth_usage(monkeypatch):
+    """Keep the suite off the live OAuth usage endpoint.
+
+    ``app.oauth_usage.fetch_usage()`` reads the operator's real Claude CLI
+    access token and performs an authenticated GET against the Anthropic
+    usage API, honoring Retry-After sleeps on 429 — so any test that reaches
+    a usage refresh (usage_estimator, quota, status, audit paths) silently
+    burns real rate limit and 10-90s of wall clock per test. With no token,
+    ``fetch_usage()`` is a documented graceful no-op, degrading to the local
+    heuristic these tests were written against.
+
+    test_oauth_usage.py is unaffected: its token-reading tests call their own
+    imported binding of ``read_access_token`` (not this patched attribute),
+    and its ``fetch_usage`` tests patch ``oauth_usage.read_access_token``
+    explicitly, overriding this default within their scope.
+    """
+    try:
+        import app.oauth_usage as oauth_usage
+        monkeypatch.setattr(oauth_usage, "read_access_token", lambda: None)
+    except ImportError:
+        pass
+
+
+@pytest.fixture(autouse=True)
 def isolate_env(monkeypatch):
     """Ensure tests don't touch real instance/ or send real Telegram messages."""
     monkeypatch.setenv("KOAN_TELEGRAM_TOKEN", "fake-token")
@@ -125,6 +225,39 @@ def isolate_env(monkeypatch):
         pm._cached_workspace_mtime = None
     except Exception:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _reset_steering_context_log():
+    """Clear the module-global steering-summary batch between tests.
+
+    ``project_koan`` accumulates loaded steering files per prompt build and
+    suppresses a summary identical to the previous one. Without a reset, a
+    leftover batch or dedup signature from a prior test silently changes what a
+    later test sees on stderr.
+    """
+    try:
+        import app.project_koan as pk
+        pk.reset_context_load_log()
+    except Exception:
+        pass
+    yield
+    try:
+        import app.project_koan as pk
+        pk.reset_context_load_log()
+    except Exception:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _reset_outcome_reported():
+    """A runner process reports its outcome once; tests share one process."""
+    try:
+        import app.messaging_level as ml
+        ml._outcome_reported = False
+    except Exception:
+        pass
+    yield
 
 
 @pytest.fixture(autouse=True)
@@ -237,3 +370,15 @@ def patched_run_iteration(prep_result, extra_patches=None):
         for target, mock_obj in patches.items():
             stack.enter_context(patch(target, mock_obj))
         yield mock_prep
+
+
+@pytest.fixture(autouse=True)
+def _skuggi_promo_off(request, monkeypatch):
+    """Keep Skuggi messages out of tests that assert exact chat output.
+
+    The promo is on by default in production; only its own tests exercise it.
+    """
+    if request.module.__name__.endswith("test_skuggi_promo"):
+        return
+    import app.skuggi_promo as promo
+    monkeypatch.setattr(promo, "promo_enabled", lambda: False)

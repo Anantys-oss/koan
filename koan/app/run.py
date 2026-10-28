@@ -43,6 +43,10 @@ from app.pid_manager import acquire_pidfile, release_pidfile
 from app.restart_manager import (
     check_restart,
     clear_restart,
+    clear_runner_caps,
+    declare_runner_caps,
+    ensure_runner_caps,
+    is_force_restart,
     RESTART_EXIT_CODE,
     RESTART_RUN_FILE,
 )
@@ -72,6 +76,7 @@ from app.signals import (
 )
 from app.config import get_recovery_config
 from app.messaging_level import is_debug
+from app import mission_scope
 from app.subprocess_runner import kill_process_group
 from app.utils import atomic_write, koan_tmp_dir
 
@@ -158,6 +163,9 @@ class SignalState:
     claude_proc: Optional[subprocess.Popen] = None
     timeout: int = 10
     phase: str = ""  # Human-readable description of current activity
+    # Set while claude_proc is being published — see _sigusr2_deferred().
+    defer_force_restart: bool = False
+    pending_force_restart: str = ""
 
 
 _sig = SignalState()
@@ -201,6 +209,7 @@ def _kill_process_group(proc):
 
 def _on_sigint(signum, frame):
     """SIGINT handler: first press warns, second press aborts."""
+    global _last_mission_aborted
     if not _sig.task_running:
         raise KeyboardInterrupt
 
@@ -211,6 +220,12 @@ def _on_sigint(signum, frame):
             # Second CTRL-C within timeout — abort
             print()
             log("koan", "Confirmed. Aborting...")
+            # Record it the way /abort does (_on_sigusr1) *before* the kill:
+            # this SIGKILL is ours, and mission_scope.teardown must not read
+            # the resulting -9 exit as the memory cap firing — a cap hit is
+            # never retried, so a hand-aborted mission would be mislabelled
+            # and then permanently refused both retry paths.
+            _last_mission_aborted = True
             _kill_process_group(_sig.claude_proc)
             _sig.first_ctrl_c = 0
             _sig.task_running = False
@@ -241,6 +256,155 @@ def _on_sigusr1(signum, frame):
         Path(koan_root_path, ABORT_FILE).unlink(missing_ok=True)
     log("koan", "Abort signal received — killing current mission")
     _kill_process_group(proc)
+
+
+# How often the mission wait loop wakes to check abort / forced-restart signals.
+MISSION_POLL_INTERVAL = 30
+
+# Wall-clock time main_loop() started. Restart markers older than this are
+# leftovers from a previous incarnation and must not force a restart. Stays
+# 0.0 outside the daemon (tests, direct run_claude_task calls) → no filtering.
+_runner_start_time = 0.0
+
+
+@contextlib.contextmanager
+def _sigusr2_deferred():
+    """Hold off a forced restart until ``_sig.claude_proc`` is published.
+
+    Closes the publish race in :func:`run_claude_task`: SIGUSR2 delivered
+    between ``popen_cli()`` returning and ``_sig.claude_proc = proc`` would
+    find no process, kill nothing, and re-exec — orphaning a provider process
+    group started with ``start_new_session=True``.
+
+    The block must stay *short*, or a forced restart is silently swallowed for
+    its duration. :func:`run_claude_task` therefore takes the provider
+    invocation lock (``cli_exec.acquire_provider_lock``) before entering: that
+    is the one unbounded wait inside ``popen_cli``, and honouring a restart
+    during it is safe precisely because nothing has been forked yet. What
+    remains here is prompt-file setup plus ``fork``/``exec`` — milliseconds.
+
+    The deferral is done in :func:`_on_sigusr2` rather than with
+    ``pthread_sigmask``, because a signal mask is *per thread*: a
+    process-directed ``kill()`` is accepted by any thread that has not blocked
+    it (the runner always has some — the journal tail, the watchdog, the
+    stagnation monitor), and CPython then runs the Python-level handler on the
+    main thread regardless of the main thread's own mask. Recording the
+    request and replaying it on exit is independent of that thread topology:
+    the Python handler only ever runs on the main thread, which is the thread
+    sitting inside this block.
+    """
+    _sig.pending_force_restart = ""
+    _sig.defer_force_restart = True
+    in_flight: Optional[BaseException] = None
+    try:
+        yield
+    except BaseException as exc:
+        # Recorded, not handled: re-raised right below so the normal handlers
+        # still see it. Kept only so the replay in `finally` can log what it
+        # supersedes — a SystemExit raised there would otherwise discard e.g.
+        # the FileNotFoundError that says the provider binary is gone.
+        in_flight = exc
+        raise
+    finally:
+        _sig.defer_force_restart = False
+        reason = _sig.pending_force_restart
+        _sig.pending_force_restart = ""
+        if reason:
+            if in_flight is not None:
+                log(
+                    "error",
+                    "Forced restart supersedes an in-flight failure: "
+                    f"{type(in_flight).__name__}: {in_flight}",
+                )
+            _force_restart_now(reason)
+
+
+@contextlib.contextmanager
+def _sigusr2_undeferred():
+    """Lift an armed :func:`_sigusr2_deferred` window for an unbounded wait.
+
+    The deferral window must stay *short*, but ``mission_scope.launch_scoped``
+    retries the spawn unscoped after a failure, and that retry has to take a
+    **fresh** provider invocation lock (``popen_cli`` already released the
+    handed-over one) — the same contended, peer-held flock the first acquire
+    was hoisted out of. Taking it while deferred would suppress a forced
+    restart for as long as a peer Kōan holds the lock, potentially a whole peer
+    mission. Wrapping it here honours the restart at once instead, safe for the
+    same reason the first acquire is: nothing has been forked yet, so there is
+    nothing to orphan.
+
+    A request recorded before the lift is replayed immediately on entry rather
+    than waited out. Only ever used *inside* an armed window, so the exit
+    unconditionally re-arms.
+    """
+    _sig.defer_force_restart = False
+    try:
+        reason = _sig.pending_force_restart
+        if reason:
+            _sig.pending_force_restart = ""
+            _force_restart_now(reason)
+        yield
+    finally:
+        _sig.defer_force_restart = True
+
+
+def _force_restart_now(reason: str):
+    """Kill any in-flight mission and exit for re-launch — never returns.
+
+    The forced-restart path (``/restart --force``). Raising ``SystemExit`` in
+    the main thread unwinds through the mission's ``finally`` blocks (pidfile
+    released, status cleared) up to :func:`main`, which re-execs on
+    ``RESTART_EXIT_CODE``. The killed mission stays In Progress and is
+    re-queued by crash recovery on the next startup — or failed by it, once
+    the mission has exhausted ``max_crash_retries``.
+    """
+    global _last_mission_aborted
+    log("koan", f"{reason} — killing current mission and restarting now")
+    proc = _sig.claude_proc
+    if proc is not None and proc.poll() is None:
+        # Record it the way /abort does (_on_sigusr1) *before* the kill: the
+        # SIGKILL below is ours, and the mission-scope teardown that runs as
+        # the SystemExit unwinds must not read the resulting -9 exit as the
+        # memory cap firing — a cap hit is never retried, so a force-restarted
+        # mission would be mislabelled and then refused both retry paths.
+        _last_mission_aborted = True
+        _kill_process_group(proc)
+        if proc.poll() is None:
+            # kill_process_group degrades quietly when SIGKILL does not land
+            # (child wedged in uninterruptible I/O on a hung worktree mount,
+            # or killpg itself failing). The provider session runs in its own
+            # session (start_new_session=True), so it survives the re-exec and
+            # keeps burning quota and mutating the worktree the relaunched
+            # runner is about to use. Say so loudly — the operator saw a
+            # success reply.
+            log(
+                "error",
+                f"Forced restart could not kill mission subprocess {proc.pid} "
+                "— it may survive the restart and keep editing the worktree; "
+                "kill it manually",
+            )
+    elif _sig.task_running:
+        # A mission is in flight but its subprocess is not published yet (or
+        # already gone). Say so — a survivor would keep burning quota and
+        # mutating the worktree after the re-exec, invisibly.
+        log("warn", "Forced restart found no live mission subprocess to kill")
+    raise SystemExit(RESTART_EXIT_CODE)
+
+
+def _on_sigusr2(signum, frame):
+    """SIGUSR2 handler: forced restart from the bridge (``/restart --force``).
+
+    Unlike the between-missions restart check, this does not wait for the
+    current mission. Sent by the /restart skill; the forced marker on disk
+    is the fallback if the signal is lost.
+    """
+    reason = "Forced restart signal received"
+    if _sig.defer_force_restart:
+        # Mid-publication of the mission subprocess — restarting now would
+        # orphan it. :func:`_sigusr2_deferred` replays this on block exit.
+        _sig.pending_force_restart = reason
+        return
+    _force_restart_now(reason)
 
 
 def _start_stagnation_monitor(stdout_file: str, proc, project_name: str):
@@ -320,9 +484,11 @@ def run_claude_task(
     Returns the child exit code.
     """
     global _last_mission_timed_out, _last_mission_aborted
+    global _last_mission_memory_cap
     global _stagnation_pattern_type, _stagnation_pattern_excerpt
     _last_mission_timed_out = False
     _last_mission_aborted = False
+    _last_mission_memory_cap = ""
     _last_mission_stagnated.clear()
     _stagnation_pattern_type = ""
     _stagnation_pattern_excerpt = ""
@@ -338,7 +504,7 @@ def run_claude_task(
             stdout_file, instance_dir, project_name, run_num,
         )
 
-    from app.cli_exec import popen_cli
+    from app.cli_exec import acquire_provider_lock, popen_cli
     from app.config import (
         get_bash_foreground_timeout_ms,
         get_cli_provider_name,
@@ -351,14 +517,20 @@ def run_claude_task(
     # Give the agent enough foreground headroom to BLOCK on a long-but-bounded
     # command rather than backgrounding it (backgrounded children are orphaned
     # when the one-shot session ends — see the cli-execution-model prompt).
-    # BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS are Claude-CLI-specific, so
-    # only inject them for the Claude provider (inert but noise for others).
+    # These env vars are Claude-CLI-specific, so only inject them for the
+    # Claude provider (inert but noise for others).
     mission_env = dict(os.environ)
     _provider_name = getattr(provider, "name", "") or get_cli_provider_name()
-    _bash_ms = get_bash_foreground_timeout_ms()
-    if _bash_ms > 0 and _provider_name == "claude":
-        mission_env["BASH_DEFAULT_TIMEOUT_MS"] = str(_bash_ms)
-        mission_env["BASH_MAX_TIMEOUT_MS"] = str(_bash_ms)
+    if _provider_name == "claude":
+        # Without this the CLI auto-moves a foreground command that outlives
+        # the Bash timeout into the background; the model then ends its turn
+        # waiting for a notification that never comes, the CLI exits 0, and
+        # the mission is finalized Done without the result (#2249).
+        mission_env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] = "1"
+        _bash_ms = get_bash_foreground_timeout_ms()
+        if _bash_ms > 0:
+            mission_env["BASH_DEFAULT_TIMEOUT_MS"] = str(_bash_ms)
+            mission_env["BASH_MAX_TIMEOUT_MS"] = str(_bash_ms)
 
     # Per-mission TMPDIR: everything the agent creates via mktemp/$TMPDIR is
     # reaped in the outer finally below; crash leftovers are swept at startup
@@ -374,6 +546,12 @@ def run_claude_task(
     # Read once up front so the outer finally can always clear the liveness
     # signal, even if an exception fires before the subprocess loop (#2086).
     koan_root_active = os.environ.get("KOAN_ROOT", "")
+    # Bound before the try so the outer finally can always tear the mission's
+    # containment down and cancel the watchdog, even when an exception fires
+    # before the subprocess loop.
+    scoped = None
+    watchdog = None
+    cleanup = None
     try:
         with open(stdout_file, "w") as out_f, open(stderr_file, "w") as err_f:
             # provider is the role-resolved instance (cli: section); popen_cli
@@ -389,16 +567,60 @@ def run_claude_task(
                     child_env.get("PYTEST_ADDOPTS", ""), mission_tmp
                 )
                 popen_kwargs["env"] = child_env
-            try:
-                proc, cleanup = popen_cli(
-                    cmd,
-                    provider=provider,
-                    stdout=out_f,
-                    stderr=err_f,
-                    cwd=cwd,
-                    start_new_session=True,
-                    **popen_kwargs,
+            # Take the provider invocation lock BEFORE arming the deferral: it
+            # is a contended wait that a peer Kōan can hold for a whole mission,
+            # and a forced restart during it must be honoured at once (no child
+            # exists yet, so there is nothing to orphan). Ownership passes to
+            # popen_cli's cleanup(); any exit that does not reach a live child
+            # leaves it to us (see the launch `finally` below).
+            cli_lock = acquire_provider_lock(provider)
+            lock_handed_over = False
+            launched = False
+
+            def _spawn_in_scope(argv, launcher, **kwargs):
+                # popen_cli owns the provider's prompt-file stdin and the
+                # invocation lock, so the scope launcher is handed to it and
+                # prefixed there — after the prompt rewrite, never before.
+                # The pre-acquired lock transfers on the FIRST attempt only:
+                # launch_scoped retries unscoped after a spawn failure, and
+                # popen_cli has already released it by then, so the retry must
+                # take a fresh one instead of running unserialized. That second
+                # acquire is the same unbounded contended wait the first one was
+                # hoisted out of the deferral for, so it is taken with the
+                # window lifted — otherwise a forced restart stays suppressed
+                # for as long as a peer Kōan holds the provider lock.
+                nonlocal cleanup, lock_handed_over
+                if lock_handed_over:
+                    with _sigusr2_undeferred():
+                        handover = acquire_provider_lock(provider)
+                else:
+                    handover = cli_lock
+                    lock_handed_over = True
+                spawned, cleanup = popen_cli(
+                    argv, provider=provider, launcher=launcher,
+                    cli_lock=handover, **kwargs,
                 )
+                return spawned
+
+            try:
+                # Contain the mission in its own cgroup scope: the provider CLI
+                # spawns build tools that outlive it (a Gradle daemon detaches to
+                # PPID 1 in its own session), and only a cgroup catches those.
+                # A forced restart is held until claude_proc is published, so
+                # it can never re-exec past a just-spawned session.
+                with _sigusr2_deferred():
+                    scoped = mission_scope.launch_scoped(
+                        cmd,
+                        spawn=_spawn_in_scope,
+                        koan_root=koan_root_active or None,
+                        stdout=out_f,
+                        stderr=err_f,
+                        cwd=cwd,
+                        **popen_kwargs,
+                    )
+                    proc = scoped.proc
+                    _sig.claude_proc = proc
+                launched = True
             except FileNotFoundError as e:
                 # The provider binary vanished mid-session (the startup check +
                 # planner gate handle the common case). Fail this mission
@@ -414,7 +636,38 @@ def run_claude_task(
                     err_f.flush()
                 exit_code = 127
                 return exit_code
-            _sig.claude_proc = proc
+            finally:
+                # Single owner for every launch exit that leaves no live child:
+                # the FileNotFoundError return above (mission_scope pre-checks
+                # the binary *before* spawn, so popen_cli never received the
+                # lock), and the paths popen_cli's own failure handling never
+                # reaches — notably SystemExit raised by a deferred forced
+                # restart replaying when _sigusr2_deferred exits, *after*
+                # popen_cli returned. That success return handed us the
+                # cleanup that owns the prompt temp file (under koan_tmp_dir(),
+                # so no mission-TMPDIR reap or stray sweep covers it) and the
+                # stdin fd, plus the invocation lock. Both are idempotent, so
+                # releasing a lock popen_cli already dropped is harmless.
+                # On a successful launch ownership stays with cleanup(), which
+                # the wait loop's finally invokes.
+                if not launched:
+                    try:
+                        if cleanup is not None:
+                            # OSError only, at warning: this deletes the
+                            # mission prompt temp file (0600, full prompt
+                            # inside) that no reap or stray sweep covers, so a
+                            # recurring failure must be visible; and a
+                            # programming error in cleanup() must not be
+                            # swallowed as a filesystem hiccup.
+                            with suppress_logged(
+                                log, "warning", "Spawn cleanup failed", OSError,
+                            ):
+                                cleanup()
+                    finally:
+                        # Narrowing the suppression above means cleanup() can
+                        # now raise through — the lock release still cannot be
+                        # skipped, or the next mission polls it forever.
+                        cli_lock.release()
 
             # Record the live provider PID so status consumers can report
             # observed runtime state instead of an inferred timestamp (#2086).
@@ -436,7 +689,6 @@ def run_claude_task(
 
             from app.subprocess_runner import ProcessWatchdog
 
-            watchdog = None
             if mission_timeout > 0:
                 watchdog = ProcessWatchdog(
                     proc, mission_timeout,
@@ -454,7 +706,7 @@ def run_claude_task(
                 # otherwise block forever.
                 while True:
                     try:
-                        proc.wait(timeout=30)
+                        proc.wait(timeout=MISSION_POLL_INTERVAL)
                         break
                     except subprocess.TimeoutExpired:
                         # Check for abort signal (user sent /abort)
@@ -470,6 +722,12 @@ def run_claude_task(
                             except subprocess.TimeoutExpired:
                                 log("error", f"Process {proc.pid} unkillable after abort — abandoning")
                             break
+                        # Forced restart requested while the mission runs and
+                        # SIGUSR2 never landed (stale PID file, signal lost).
+                        if koan_root_path and is_force_restart(
+                            koan_root_path, "run", since=_runner_start_time,
+                        ):
+                            _force_restart_now("Forced restart marker detected")
                         if watchdog and watchdog.fired:
                             # Watchdog already fired but process survived —
                             # make one last kill attempt from the main thread.
@@ -499,7 +757,17 @@ def run_claude_task(
                         _last_mission_stagnated.set()
                         _stagnation_pattern_type = stagnation_monitor.pattern_type
                         _stagnation_pattern_excerpt = stagnation_monitor.pattern_excerpt
-                cleanup()
+                if cleanup is not None:
+                    # An OSError from cleanup() must not displace the exception
+                    # already in flight — notably the SystemExit(RESTART_EXIT_CODE)
+                    # a forced restart raises from the wait loop, which main()
+                    # would then never observe (the runner would exit as a crash
+                    # after the operator was promised a restart). Same narrow
+                    # class as the spawn-failure site above.
+                    with suppress_logged(
+                        log, "warning", "Mission cleanup failed", OSError,
+                    ):
+                        cleanup()
 
         exit_code = proc.returncode
         if _last_mission_aborted:
@@ -510,6 +778,29 @@ def run_claude_task(
         elif _last_mission_stagnated.is_set():
             exit_code = 1
     finally:
+        # Kill everything the mission left behind — the sweep that was missing
+        # from the success path. Runs before the TMPDIR reap so nothing is still
+        # writing into the scratch dir when it is removed. os.killpg alone is
+        # not enough: a Gradle daemon re-parents to PID 1 with its own session
+        # and has left the mission's process group by now, while a cgroup
+        # catches every descendant however often it double-forks.
+        if scoped is not None:
+            # _last_mission_aborted covers both the /abort file branch and the
+            # double-tap CTRL-C, which _on_sigint now records before it
+            # SIGKILLs the group — otherwise a hand-aborted mission's -9 exit
+            # is read as the memory cap firing and then refused a retry.
+            _koan_killed = bool(
+                _last_mission_aborted
+                or (watchdog is not None and watchdog.fired)
+                or _last_mission_stagnated.is_set()
+            )
+            try:
+                scoped.teardown(koan_initiated_kill=_koan_killed)
+            except Exception as e:
+                log("error", f"mission scope teardown failed: {e}")
+            if scoped.cap_exceeded:
+                _last_mission_memory_cap = scoped.cap_message()
+                log("error", f"Mission {_last_mission_memory_cap}")
         # Reap the mission's TMPDIR. In the rare "unkillable — abandoning"
         # path the child may still be alive; removing its scratch dir is safe
         # on POSIX (open fds survive) and the mission is already failed.
@@ -626,8 +917,16 @@ def run_startup(koan_root: str, instance: str, projects: list):
 # Notify helper
 # ---------------------------------------------------------------------------
 
-def _notify(instance: str, message: str):
-    """Send a formatted notification to Telegram."""
+def _notify(instance: str, message: str, *, verbatim: bool = False):
+    """Send a formatted notification to Telegram.
+
+    ``verbatim=True`` skips the Claude-CLI personality reformatter (see
+    ``_notify_raw``): for fixed-template lines whose exact text is the contract,
+    such as the end-of-mission lines.
+    """
+    if verbatim:
+        _notify_raw(instance, message)
+        return
     try:
         from app.notify import format_and_send
         format_and_send(message, instance_dir=instance)
@@ -686,6 +985,8 @@ def _notify_quota_warning(instance: str, body: str, raw_output: str = "") -> Non
     snippet = (raw_output or "").strip()
     message = f"{body}\n\n```\n{snippet}\n```" if snippet else body
     _notify_raw(instance, message)
+    from app import skuggi_promo
+    skuggi_promo.maybe_nudge(instance, "quota")
 
 
 def _is_ci_check_mission(mission_title: str) -> bool:
@@ -716,46 +1017,27 @@ def _mission_fail_icon(mission_title: str) -> str:
     return "🚦" if _is_ci_check_mission(mission_title) else "❌"
 
 
-_SKILL_COMPLETION = {
-    "review": ("🔍", "Reviewed"),
-    "fix": ("🐞", "Fixed"),
-    "rebase": ("🔄", "Rebased"),
-    "plan": ("🧠", "Planned"),
-    "implement": ("🔨", "Implemented"),
-}
-
-# Tracked skills whose canonical completion line carries the PR URL that the
-# runner's own outcome line would otherwise restate. For these the agent loop is
-# the sole reporter (the runner's duplicate line is suppressed). /plan is tracked
-# but deliberately excluded: it never opens a PR — it emits an *issue*/Jira URL or
-# an inline plan body that the PR-only canonical extraction cannot recover — so
-# its runner outcome line is the only place that content reaches the user and must
-# never be suppressed (#2153 follow-up).
-_PR_URL_SKILLS = {"review", "fix", "rebase", "implement"}
-
-
 def _skill_command_name(mission_title: str) -> str:
-    """Return the lowercased slash-command name of a mission, or "" if none."""
-    t = (mission_title or "").strip()
-    if not t.startswith("/"):
-        return ""
-    return t[1:].split(None, 1)[0].lower()
+    """Canonical slash-command name of a mission (aliases and a
+    ``[project:x]`` prefix resolved), or "" if it is not a skill mission."""
+    from app.skill_dispatch import mission_command_name
+    return mission_command_name((mission_title or "").strip())
 
 
-def _tracked_skill(mission_title: str):
-    """Return (emoji, past_tense) if the mission is a tracked skill, else None."""
+def _tracked_skill(mission_title: str) -> str:
+    """The ``outcome_line.SKILL_COMPLETION`` key of a mission, or ""."""
+    from app.outcome_line import SKILL_COMPLETION
     cmd = _skill_command_name(mission_title)
-    return _SKILL_COMPLETION.get(cmd) if cmd else None
+    return cmd if cmd in SKILL_COMPLETION else ""
 
 
-def _canonical_line_carries_url(mission_title: str) -> bool:
-    """True when the agent loop's canonical completion line carries the same URL
-    the runner's outcome line would, so the runner line can be safely suppressed.
+def _loop_reports_outcome(mission_title: str) -> bool:
+    """True when the agent loop sends the mission's one end message.
 
-    Only the PR-producing tracked skills qualify. /plan is tracked but its URL
-    (issue/Jira) or inline body cannot be recovered by the PR-only canonical
-    extraction, so it is excluded — its runner line is the sole reporter (#2153)."""
-    return _skill_command_name(mission_title) in _PR_URL_SKILLS
+    Every tracked skill's runner ends with ``messaging_level.report_outcome``,
+    which hands its URL / detail / reason over as stdout markers when the loop
+    owns the message, so the loop's message carries all of it (#2153)."""
+    return bool(_tracked_skill(mission_title))
 
 
 def _completion_pr_url(instance, project_name):
@@ -766,6 +1048,38 @@ def _completion_pr_url(instance, project_name):
         return ""
 
 
+def _completion_message(project_name: str, mission_title: str, url: str, detail: str) -> str:
+    """Fixed success line ("✅ [p] 🔍 Reviewed <url>" / "✅ [p] Done: <title>") + detail."""
+    from app import outcome_line as ol
+    skill = _tracked_skill(mission_title)
+    if not skill:
+        return ol.message(f"✅ [{project_name}] Done: {mission_title}", detail)
+    return ol.message(ol.success_line(project_name, skill, url), detail)
+
+
+def _failure_message(
+    project_name: str, mission_title: str, url: str, reason: str, detail: str = "",
+    *, sole_reporter: bool,
+) -> str:
+    """Fixed failure line ("❌ [p] 🔍 Review failed: <url|title>") + reason + detail.
+
+    *sole_reporter* is true when the runner handed its outcome over as stdout
+    markers instead of sending it (normal mode, a tracked skill — see
+    ``build_skill_env``). Then a missing reason is said out loud rather than
+    left blank.
+    """
+    from app import outcome_line as ol
+    icon = _mission_fail_icon(mission_title)
+    skill = _tracked_skill(mission_title)
+    if skill:
+        line = ol.failure_line(project_name, skill, url or mission_title, icon=icon)
+    else:
+        line = f"{icon} [{project_name}] Failed: {mission_title}"
+    if not reason and sole_reporter:
+        reason = ol.NO_REASON_GIVEN
+    return ol.message(line, reason, detail)
+
+
 def _notify_mission_normal(
     instance: str,
     project_name: str,
@@ -774,44 +1088,30 @@ def _notify_mission_normal(
     exit_code: int,
     mission_title: str,
     pr_url: str,
-):
-    """Normal-mode (quiet) end-of-mission emit. See _notify_mission_end."""
-    skill = _tracked_skill(mission_title)
+    reason: str = "",
+    detail: str = "",
+    reported: bool = False,
+) -> bool:
+    """Normal-mode (quiet) end-of-mission emit. See _notify_mission_end.
 
-    # Failures always surface (short form).
+    Returns False when the run was logged only (nothing sent to chat).
+    """
+    title = (mission_title or "").strip()
+    skill = _tracked_skill(title)
+
+    # Failures always surface: fixed line + reason.
     if exit_code != 0:
-        emoji = (skill[0] + " ") if skill else ""
-        prefix = _mission_fail_icon(mission_title)
-        label = mission_title or "Run"
-        _notify(instance, f"{prefix} [{project_name}] {emoji}Failed: {label}")
-        return
-
-    # Tracked skill success → concise "✅ [project] 🔍 Reviewed <pr-url>". Prefer
-    # the URL captured during post-mission processing (before pending.md was
-    # deleted); fall back to a best-effort re-read.
-    if skill is not None:
-        emoji, verb = skill
-        # /plan is tracked but the canonical line cannot carry its issue/Jira URL
-        # or inline body (PR-only extraction). The runner already emitted that
-        # content via notify_outcome (not suppressed), so emitting a bare
-        # "✅ [project] 🧠 Planned" here would just duplicate the row with less
-        # information. Log only and let the runner's line stand (#2153).
-        if not _canonical_line_carries_url(mission_title):
-            from app.run_log import log_safe
-            log_safe(
-                "mission",
-                f"[{project_name}] {verb} (runner emitted outcome line)",
-            )
-            return
-        url = pr_url or _completion_pr_url(instance, project_name)
-        _notify(instance, f"✅ [{project_name}] {emoji} {verb} {url}".rstrip())
-        return
+        msg = _failure_message(
+            project_name, title or "Run", pr_url if skill else "", reason, detail,
+            sole_reporter=_loop_reports_outcome(title),
+        )
+        _notify(instance, msg, verbatim=True)
+        return True
 
     # Genuinely autonomous background runs carry no mission title — suppress
     # those (log only). An operator-initiated mission (a user/Telegram-queued
     # task with a real title) still gets a minimal completion signal so
     # explicitly-requested work isn't silently dropped.
-    title = (mission_title or "").strip()
     if not title:
         from app.run_log import log_safe
         log_safe(
@@ -819,8 +1119,16 @@ def _notify_mission_normal(
             f"[{project_name}] Run {run_num}/{max_runs} done "
             "(normal mode, autonomous run suppressed)",
         )
-        return
-    _notify(instance, f"✅ [{project_name}] Done: {title}")
+        return False
+
+    # A runner that reported gave its final URL (possibly none). Otherwise prefer
+    # the URL captured during post-mission processing (before pending.md was
+    # deleted); fall back to a best-effort re-read.
+    url = ""
+    if skill:
+        url = pr_url if reported else (pr_url or _completion_pr_url(instance, project_name))
+    _notify(instance, _completion_message(project_name, title, url, detail), verbatim=True)
+    return True
 
 
 def _notify_mission_end(
@@ -831,51 +1139,89 @@ def _notify_mission_end(
     exit_code: int,
     mission_title: str = "",
     pr_url: str = "",
+    reason: str = "",
+    detail: str = "",
+    reported: bool = False,
 ):
+    """Send the end-of-mission message, then a Skuggi nudge when one is due.
+
+    No nudge when the outcome itself was not sent (a quiet autonomous run in
+    normal mode): the nudge must never be the only message about a run.
+    """
+    notified = _notify_mission_outcome(
+        instance, project_name, run_num, max_runs, exit_code,
+        mission_title, pr_url, reason, detail, reported,
+    )
+    if not notified:
+        return
+    from app import skuggi_promo
+    skuggi_promo.maybe_nudge_after_mission(instance, exit_code, pr_url)
+
+
+def _notify_mission_outcome(
+    instance: str,
+    project_name: str,
+    run_num: int,
+    max_runs: int,
+    exit_code: int,
+    mission_title: str = "",
+    pr_url: str = "",
+    reason: str = "",
+    detail: str = "",
+    reported: bool = False,
+) -> bool:
     """Send a notification when a mission or autonomous run completes.
 
+    The first line is a fixed template (``outcome_line``), sent verbatim (never
+    reformatted), and is the same in both messaging levels:
+
+    - success: ``✅ [project] 🔍 Reviewed <url>`` for tracked skills,
+      ``✅ [project] Done: <title>`` for other operator missions;
+    - failure: ``❌ [project] 🔍 Review failed: <url>`` (or ``Failed: <title>``)
+      with *reason* on the next line.
+
+    *detail* (the runner's extra lines: a gate note, a plan body…) follows.
+    *reported* means the runner handed its outcome over, so *pr_url* is final
+    (no pending.md guess).
+
     Honors messaging.level:
-    - normal (default): one short line for tracked skill missions
-      (✅ [project] 🔍 Reviewed <pr-url>); operator-initiated missions get a
-      minimal one-line success (✅ [project] Done: <title>); genuinely
-      autonomous background runs (no mission title) are logged only (no bridge
-      push); failures always surface (short form).
-    - debug: full lifecycle line + journal summary (legacy behavior).
+    - normal (default): only that message. Genuinely autonomous background
+      runs (no mission title) are logged only (no bridge push).
+    - debug: every run is reported; the run counter and the journal summary
+      (or failure context) follow. The runner also sends its own message.
     """
     if not is_debug():
-        _notify_mission_normal(
+        return _notify_mission_normal(
             instance, project_name, run_num, max_runs,
-            exit_code, mission_title, pr_url,
+            exit_code, mission_title, pr_url, reason, detail, reported,
         )
-        return
 
-    # ---- debug mode: legacy verbose behavior ----
+    title = (mission_title or "").strip()
+    url = pr_url if _tracked_skill(title) else ""
     if exit_code == 0:
-        prefix = "✅"
-        label = mission_title if mission_title else "Autonomous run"
-        msg = f"{prefix} [{project_name}] Run {run_num}/{max_runs} — {label}"
-        # Try to attach a brief summary from the journal
-        try:
-            from app.mission_summary import get_mission_summary
-            summary = get_mission_summary(instance, project_name, max_chars=300)
-            if summary:
-                msg += f"\n\n{summary}"
-        except Exception as e:
-            log("error", f"Mission summary extraction failed: {e}")
+        msg = _completion_message(project_name, title or "Autonomous run", url, detail)
+        journal = _journal_detail("get_mission_summary", instance, project_name)
     else:
-        prefix = _mission_fail_icon(mission_title)
-        label = mission_title if mission_title else "Run"
-        msg = f"{prefix} [{project_name}] Run {run_num}/{max_runs} — Failed: {label}"
-        # Try to attach error context from the journal
-        try:
-            from app.mission_summary import get_failure_context
-            context = get_failure_context(instance, project_name, max_chars=300)
-            if context:
-                msg += f"\n\n{context}"
-        except Exception as e:
-            log("error", f"Failure context extraction failed: {e}")
+        # Debug mode never hands the runner's outcome over: it sends its own.
+        msg = _failure_message(
+            project_name, title or "Run", url, reason, detail, sole_reporter=False,
+        )
+        journal = _journal_detail("get_failure_context", instance, project_name)
+    msg += f"\nRun {run_num}/{max_runs}"
+    if journal:
+        msg += f"\n\n{journal}"
+    _notify(instance, msg, verbatim=True)
+    return True
 
-    _notify(instance, msg)
+
+def _journal_detail(getter: str, instance: str, project_name: str) -> str:
+    """Debug-mode journal summary or failure context; "" when unavailable."""
+    try:
+        import app.mission_summary as summary
+        return getattr(summary, getter)(instance, project_name, max_chars=300)
+    except Exception as e:
+        log("error", f"Mission {getter} extraction failed: {e}")
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -1257,8 +1603,10 @@ def main_loop():
     # Parse projects (projects.yaml > KOAN_PROJECTS)
     projects = parse_projects()
 
-    # Record startup time
-    start_time = time.time()
+    # Record startup time — also published module-wide so the mission wait
+    # loop can ignore restart markers from a previous incarnation.
+    global _runner_start_time
+    start_time = _runner_start_time = time.time()
 
     # Acquire PID (flock-based exclusive lock)
     pidfile_lock = acquire_pidfile(Path(koan_root), "run")
@@ -1282,6 +1630,15 @@ def main_loop():
     # run_claude_task(). The file is still written for durability so a
     # missed signal (runner restarting, etc.) is recovered on next poll.
     signal.signal(signal.SIGUSR1, _on_sigusr1)
+
+    # Install SIGUSR2 handler — /restart --force. Kills the in-flight mission
+    # and exits with RESTART_EXIT_CODE instead of waiting for it to finish.
+    # The forced marker on disk is polled as a fallback if the signal is lost.
+    # Only once the handler exists do we advertise the capability: SIGUSR2's
+    # default disposition is terminate, so /restart --force must never signal a
+    # runner that predates this handler (it would orphan the provider session).
+    signal.signal(signal.SIGUSR2, _on_sigusr2)
+    declare_runner_caps(koan_root, os.getpid())
 
     # Initialize project state
     if projects:
@@ -1362,6 +1719,12 @@ def main_loop():
                 log("koan", "Restart requested. Exiting for re-launch...")
                 clear_restart(koan_root, target="run")
                 sys.exit(RESTART_EXIT_CODE)
+
+            # --- Runner capability marker (retry only) ---
+            # No-op unless the startup publish failed; without it every
+            # /restart --force is downgraded to a polite restart and reported
+            # as a pre-upgrade runner for the rest of this incarnation.
+            ensure_runner_caps(koan_root, os.getpid())
 
             # --- Memory watchdog (#2232) ---
             # All knobs are frozen at startup in _build_memory_monitor() — a
@@ -1517,6 +1880,8 @@ def main_loop():
         _session_registry = None
         # Cleanup
         Path(koan_root, STATUS_FILE).unlink(missing_ok=True)
+        # Withdraw the SIGUSR2 capability before the PID can be recycled.
+        clear_runner_caps(koan_root)
         release_pidfile(pidfile_lock, Path(koan_root), "run")
         log("koan", f"Shutdown. {count} runs executed.")
         _reset_terminal()
@@ -1956,6 +2321,10 @@ def _run_preflight_check(
 # Set by run_claude_task when the watchdog timer kills a runaway session.
 _last_mission_timed_out = False
 _last_mission_aborted = False
+# Human phrase for a mission the cgroup scope OOM-killed, e.g.
+# "exceeded memory cap (5.9G of 5.75G)"; "" when the mission fit. Read by
+# mission_runner (hook context) and mission_executor (never retry a cap hit).
+_last_mission_memory_cap = ""
 # Uses threading.Event for explicit cross-thread signaling between the
 # stagnation daemon (writer) and the main loop's _finalize_mission (reader).
 _last_mission_stagnated = threading.Event()
@@ -2052,6 +2421,12 @@ def _parallel_reap_sessions(
                 autonomous_mode=getattr(session, "autonomous_mode", "implement"),
                 start_time=int(session.started_at),
                 status_callback=lambda step: set_status(koan_root, f"[parallel] {step}"),
+                # This session's own cap verdict (read from its ScopedProcess
+                # in poll_sessions). The sequential loop's
+                # _last_mission_memory_cap belongs to a different mission and
+                # would be both a false positive here and a false negative for
+                # a session the scope really did OOM-kill.
+                memory_cap_detail=result.memory_cap_detail,
             )
         except Exception as e:
             log("error", f"[parallel] post-mission failed for {session.id}: {e}")
@@ -3395,6 +3770,14 @@ def _run_skill_mission(
     """
     from app.debug import debug_log
 
+    global _last_mission_memory_cap, _last_mission_aborted
+    _last_mission_memory_cap = ""
+    # Per-mission state, reset the way run_claude_task resets it: this path
+    # reads the flag at teardown to tell Kōan's own SIGKILL from the cap
+    # firing, so an abort left over from a previous mission would otherwise
+    # suppress this mission's cap verdict for the rest of the process.
+    _last_mission_aborted = False
+
     mission_start = int(time.time())
     koan_pkg_dir = os.path.join(koan_root, "koan")
     pending_path = Path(instance) / "journal" / "pending.md"
@@ -3438,32 +3821,59 @@ def _run_skill_mission(
     }
     if _mission_model_key:
         skill_env["KOAN_MISSION_MODEL_KEY"] = _mission_model_key
-    # For PR-producing tracked skills (/review, /fix, /rebase, /implement) the
-    # agent loop emits the canonical "✅ [project] 🔍 Reviewed <url>" completion
-    # line after the runner finishes (see _notify_mission_end). In normal mode the
-    # runner's own notify_outcome() line would advertise the same URL, producing a
-    # duplicate row in chat (#2153). Signal the subprocess to log-only its outcome
-    # line; debug mode keeps both for full verbosity. /plan is deliberately
-    # excluded — its canonical line cannot carry the issue/Jira URL or inline
-    # plan body, so suppressing the runner line would drop that content entirely.
-    if _canonical_line_carries_url(mission_title) and not is_debug():
+    # For tracked skills (outcome_line.SKILL_COMPLETION) the agent loop sends
+    # the one end message ("✅ [project] 🔍 Reviewed <url>" + detail) after the
+    # runner finishes (see _notify_mission_end). In normal mode the runner hands
+    # its outcome over as stdout markers instead of sending it, so chat gets one
+    # row, not two (#2153). Debug mode keeps both for full verbosity.
+    if _loop_reports_outcome(mission_title) and not is_debug():
         skill_env["KOAN_SUPPRESS_RUNNER_OUTCOME"] = "1"
     stderr_fh = None
     out_fh = None
+    scoped = None
+    # True once one of the timeout/exception branches below has already killed
+    # the process group, so teardown does not misread our own SIGKILL as the
+    # memory cap firing.
+    koan_killed = False
     try:
         stderr_fh = open(stderr_file, "w")
-        proc = subprocess.Popen(
-            skill_cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=stderr_fh,
-            cwd=koan_pkg_dir,
-            env=skill_env,
-            text=True,
-            start_new_session=True,
-        )
-        # Register for double-tap CTRL-C termination.
-        _sig.claude_proc = proc
+        # Same containment as the generic mission path: /review, /fix and
+        # /implement drive real build tools, and a Gradle daemon started here
+        # detaches to PPID 1 where no process group can reach it. The inner
+        # provider spawn in provider/__init__.py shares this runner's process
+        # group unless it opted into an idle bound (then it gets its own
+        # session); either way it inherits this cgroup, which comes from fork,
+        # not from the process group.
+        def _spawn_skill(argv, launcher, **kwargs):
+            # Spawn through this module's own subprocess binding so the scope
+            # wrapping stays invisible to callers (and to the existing
+            # @patch("app.run.subprocess.Popen") test targets).
+            return subprocess.Popen(list(launcher) + list(argv), **kwargs)
+
+        # Same publish race as the generic mission path: launch_scoped forces
+        # start_new_session, so the skill session is already alive in its own
+        # session/cgroup when it returns. A forced restart delivered before
+        # claude_proc is published would kill nothing and re-exec, leaving the
+        # just-spawned /review|/fix|/implement session editing the worktree the
+        # relaunched runner is about to hand to the next mission. Hold it until
+        # the handle is visible. The window is fork/exec only — this path takes
+        # no provider lock (the skill subprocess acquires its own, in its own
+        # process), so there is no unbounded wait to hoist out.
+        with _sigusr2_deferred():
+            scoped = mission_scope.launch_scoped(
+                skill_cmd,
+                spawn=_spawn_skill,
+                koan_root=koan_root or None,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=stderr_fh,
+                cwd=koan_pkg_dir,
+                env=skill_env,
+                text=True,
+            )
+            proc = scoped.proc
+            # Register for double-tap CTRL-C termination.
+            _sig.claude_proc = proc
 
         from app.subprocess_runner import ProcessWatchdog, LivenessWatchdog
 
@@ -3552,6 +3962,7 @@ def _run_skill_mission(
                 debug_log(f"[run] skill stderr: {skill_stderr[:2000]}")
     except subprocess.TimeoutExpired:
         _kill_process_group(proc)
+        koan_killed = True
         liveness_fired = liveness and liveness.fired
         timeout_kind = "liveness" if liveness_fired else "watchdog"
         timeout_val = first_output_timeout if liveness_fired else skill_timeout
@@ -3581,6 +3992,7 @@ def _run_skill_mission(
     except Exception as e:
         if proc is not None:
             _kill_process_group(proc)
+            koan_killed = True
         log("error", f"Skill runner failed: {e}\n{traceback.format_exc()}")
         debug_log(f"[run] skill exec: EXCEPTION {e}")
         exit_code = 1
@@ -3590,6 +4002,21 @@ def _run_skill_mission(
         skill_stdout = _read_back_or_tail(stdout_file, tail)
         skill_stderr = ""
     finally:
+        # Tear the mission's cgroup down before anything else in this block: the
+        # branch restore below runs git on the same worktree the skill was using,
+        # so no leaked build daemon should still be holding it.
+        if scoped is not None:
+            # A double-tap CTRL-C SIGKILLs this process group from _on_sigint,
+            # which records it as an abort — the only trace of a kill Kōan
+            # delivered on that path, and it must not read as the cap firing.
+            koan_killed = koan_killed or _last_mission_aborted
+            try:
+                scoped.teardown(koan_initiated_kill=koan_killed)
+            except Exception as e:
+                log("error", f"mission scope teardown failed: {e}")
+            if scoped.cap_exceeded:
+                _last_mission_memory_cap = scoped.cap_message()
+                log("error", f"Skill mission {_last_mission_memory_cap}")
         if out_fh is not None:
             with suppress_logged(log, "debug", "Skill stdout file close failed", OSError):
                 out_fh.close()
@@ -3639,6 +4066,8 @@ def _run_skill_mission(
             mission_tier=mission_tier,
             provider_name=_skill_provider_name,
             is_skill_dispatch=True,
+            # This mission's own cap result, set in the finally above.
+            memory_cap_detail=_last_mission_memory_cap,
         )
         if isinstance(post_result, dict) and post_result.get("quota_exhausted"):
             skill_result["quota_exhausted"] = True

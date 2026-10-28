@@ -37,6 +37,7 @@ from app.signals import (
     STATUS_FILE,
     STOP_FILE,
     pid_file,
+    ready_file,
 )
 
 
@@ -258,25 +259,153 @@ def check_pidfile(koan_root: Path, process_name: str) -> Optional[int]:
     return None
 
 
-PROCESS_NAMES = ("run", "awake", "ollama", "dashboard", "api")
+def _cmdline_matches(pid: int, needle: str) -> Optional[bool]:
+    """Best-effort check that *pid*'s command line contains *needle*.
+
+    Mitigates the PID-reuse race between :func:`check_pidfile` and
+    :func:`os.kill`: if the OS recycled a daemon's PID for an unrelated
+    process, SIGUSR1/SIGUSR2's default disposition would terminate it.
+
+    On Linux, reads ``/proc/<pid>/cmdline``. On macOS/BSD (no ``/proc``),
+    falls back to ``ps -ww -p <pid> -o command=`` — ``-ww`` defeats the
+    terminal-width truncation that would otherwise cut a long argv
+    (``.venv/bin/python app/run.py`` under a deep root) before *needle*
+    and report a false mismatch.
+
+    Tri-state: True (matches), False (definitely a different process, or
+    gone), None (could not verify — hardened ``/proc``, no ``ps``). Callers
+    must fail closed on None, but can report it as a distinct cause.
+    """
+    try:
+        return needle.encode() in Path(f"/proc/{pid}/cmdline").read_bytes()
+    except FileNotFoundError:
+        # Either no /proc at all (macOS/BSD) or the process is gone; ps tells
+        # the two apart.
+        pass
+    except OSError as exc:
+        print(
+            f"[pid_manager] cannot read /proc/{pid}/cmdline ({exc})",
+            file=sys.stderr,
+        )
+    try:
+        result = subprocess.run(
+            ["ps", "-ww", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, timeout=2,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        print(f"[pid_manager] cannot run ps for PID {pid} ({exc})", file=sys.stderr)
+        return None
+    if result.returncode == 0:
+        return needle in result.stdout
+    if not result.stdout.strip():
+        # ps exits non-zero with no output when the PID does not exist.
+        return False
+    print(
+        f"[pid_manager] ps failed for PID {pid} (rc={result.returncode})",
+        file=sys.stderr,
+    )
+    return None
+
+
+def signal_daemon(
+    koan_root: Path, process_name: str, sig: int, script: Optional[str] = None,
+) -> bool:
+    """Send *sig* to the running ``process_name`` daemon.
+
+    Verifies the PID still belongs to that daemon (``script``, defaulting to
+    ``<process_name>.py``) before signalling, so a recycled PID is never hit.
+    An *unverifiable* command line also blocks the signal — SIGUSR1/SIGUSR2
+    kill a process that does not handle them — but is reported separately so
+    the operator sees why the signal was withheld.
+
+    Distinct from the module's private :func:`_signal_process`, which signals a
+    daemon's whole **process group** (SIGTERM/SIGKILL for ``stop_processes``)
+    and proves identity from the pidfile mtime instead. This one signals the
+    single PID, for the runner-directed SIGUSR1/SIGUSR2 protocols.
+
+    Returns True when the signal was delivered.
+    """
+    script = script or f"{process_name}.py"
+    try:
+        pid = check_pidfile(koan_root, process_name)
+    except (OSError, ValueError) as exc:
+        print(
+            f"[pid_manager] cannot read the {process_name} pidfile ({exc})",
+            file=sys.stderr,
+        )
+        return False
+    if not pid:
+        return False
+    verified = _cmdline_matches(pid, script)
+    if verified is None:
+        print(
+            f"[pid_manager] cannot verify PID {pid} runs {script}; "
+            f"withholding signal {sig}",
+            file=sys.stderr,
+        )
+        return False
+    if not verified:
+        # A chronically stale pidfile degrades every /abort and
+        # /restart --force to the file-marker fallback; without this line the
+        # operator can only infer it from the repeated fallback replies.
+        print(
+            f"[pid_manager] PID {pid} from the {process_name} pidfile does not "
+            f"run {script} (exited, or the PID was recycled); "
+            f"withholding signal {sig}",
+            file=sys.stderr,
+        )
+        return False
+    try:
+        os.kill(pid, sig)
+    except ProcessLookupError:
+        # Raced with the daemon exiting — the caller's file-marker fallback
+        # covers it, and there is nothing an operator could act on.
+        return False
+    except (OSError, ValueError) as exc:
+        # Notably EPERM: the daemon runs as another uid (systemd-run vs.
+        # interactive split). That is a permanent misconfiguration, so it must
+        # not look like "no runner" on every /abort and /restart --force.
+        print(
+            f"[pid_manager] cannot signal PID {pid} with {sig} ({exc})",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+PROCESS_NAMES = ("run", "awake", "ollama", "dashboard", "api", "mcp")
 
 # Process startup verification timeouts
 DEFAULT_VERIFY_TIMEOUT = 3.0
 OLLAMA_VERIFY_TIMEOUT = 5.0
+# Extra wait, past the pidfile, for the MCP daemon to signal it is serving.
+# It covers the MCP SDK import, tool registration and the OpenAPI spec parse,
+# none of which the pidfile wait covers by design — see ``start_mcp``.
+MCP_READY_TIMEOUT = 20.0
 
 
 def _launch_python_process(
     koan_root: Path, script_name: str, process_name: str, verify_timeout: float,
-    extra_env: dict = None,
+    extra_env: dict = None, module_mode: bool = False,
 ) -> tuple:
     """Launch a Python process in the background and verify startup.
-    
+
     Args:
         koan_root: Root path of the Kōan installation.
-        script_name: Python script filename (e.g., "app/run.py").
+        script_name: Python script filename (e.g., "app/run.py") or, when
+            ``module_mode`` is set, a module name (e.g., "app.mcp").
         process_name: Process type identifier ("run" or "awake").
         verify_timeout: Seconds to wait for PID file verification.
-    
+        module_mode: Launch via ``python -m <script_name>`` instead of by
+            script path. Additive and off by default, so the argv for
+            ``run``/``awake``/``dashboard``/``api`` stays byte-identical.
+            CPython puts a *script's* own directory at ``sys.path[0]``, ahead
+            of ``PYTHONPATH`` and the stdlib, so any module in that directory
+            named after a stdlib top-level package shadows it for the whole
+            process. A module launch leaves ``sys.path[0]`` at the working
+            directory (``koan/``) and removes the hazard at its source rather
+            than one filename at a time.
+
     Returns:
         (success: bool, message: str)
     """
@@ -298,8 +427,9 @@ def _launch_python_process(
 
     log_fh = _open_log_file(koan_root, process_name)
     try:
+        argv = [python, "-m", script_name] if module_mode else [python, script_name]
         subprocess.Popen(
-            [python, script_name],
+            argv,
             cwd=str(koan_dir),
             env=env,
             stdin=subprocess.DEVNULL,
@@ -317,7 +447,14 @@ def _launch_python_process(
     while time.monotonic() < deadline:
         new_pid = check_pidfile(koan_root, process_name)
         if new_pid:
-            label = "Agent loop" if process_name == "run" else "Bridge"
+            labels = {
+                "run": "Agent loop",
+                "awake": "Bridge",
+                "dashboard": "Dashboard",
+                "api": "REST API",
+                "mcp": "MCP HTTP",
+            }
+            label = labels.get(process_name, process_name.capitalize())
             return True, f"{label} started (PID {new_pid})"
         time.sleep(0.3)
 
@@ -480,6 +617,109 @@ def start_api(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT) -
     return _launch_python_process(koan_root, "app/api/server.py", "api", verify_timeout)
 
 
+def start_mcp(
+    koan_root: Path,
+    verify_timeout: float = DEFAULT_VERIFY_TIMEOUT,
+    ready_timeout: float = MCP_READY_TIMEOUT,
+) -> tuple:
+    """Start the MCP Streamable HTTP daemon as a detached subprocess.
+
+    Only launched when ``mcp.enabled: true`` and ``mcp.transport: http`` —
+    stdio mode is client-launched and never daemonized.
+    Returns (success: bool, message: str).
+
+    The daemon claims its pidfile early, before the MCP SDK import and the
+    OpenAPI spec parse, so that slow-but-healthy startup is not reported as a
+    launch failure. That makes the pidfile proof of existence, not of service:
+    an incompatible SDK or a registration error still exits afterwards. So the
+    pidfile wait is followed by a wait on the daemon's readiness marker, which
+    it touches only once it is about to accept requests.
+    """
+    ready = koan_root / ready_file("mcp")
+    # A marker left by an earlier run would otherwise read as this run's
+    # readiness. The daemon clears its own on exit; a SIGKILL does not.
+    ready.unlink(missing_ok=True)
+
+    ok, msg = _launch_python_process(
+        koan_root, "app.mcp", "mcp", verify_timeout, module_mode=True,
+    )
+    if not ok:
+        return ok, msg
+
+    deadline = time.monotonic() + ready_timeout
+    while time.monotonic() < deadline:
+        if ready.exists():
+            return True, msg
+        if not check_pidfile(koan_root, "mcp"):
+            return False, (
+                "MCP HTTP exited during startup — see logs/mcp.log"
+            )
+        time.sleep(0.1)
+    return False, (
+        f"MCP HTTP did not report ready within {ready_timeout:g}s "
+        "— see logs/mcp.log"
+    )
+
+
+def _mcp_management_error() -> str:
+    """Message describing why MCP cannot be managed, else an empty string.
+
+    Two cases produce one: an unrecognised ``mcp.transport`` (which resolves to
+    ``stdio``, never a listener, so ``make start`` would otherwise report
+    success with nothing bound on the configured port), and a config read that
+    fails outright (which would otherwise silently downgrade MCP to "not
+    configured", hiding a live daemon from `make status`).
+    """
+    try:
+        from app.config import (
+            MCP_TRANSPORTS,
+            get_mcp_enabled,
+            get_mcp_transport_setting,
+        )
+        from app.utils import config_read_error
+
+        # Probe the file itself first. Every ``get_mcp_*`` getter reads through
+        # ``load_config``, which swallows a parse or permission error and
+        # returns ``{}`` — so an unreadable config would arrive here as
+        # ``mcp.enabled: false`` and silently drop MCP from both `make start`
+        # and `make status` instead of being reported.
+        read_error = config_read_error()
+        if read_error:
+            return f"MCP configuration unreadable: {read_error}"
+        if not get_mcp_enabled():
+            return ""
+        value = get_mcp_transport_setting()
+        if value in MCP_TRANSPORTS:
+            return ""
+        expected = "/".join(sorted(MCP_TRANSPORTS))
+        return (
+            f"unknown mcp.transport {value!r} (expected {expected}) — "
+            "no MCP daemon started"
+        )
+    except (ImportError, OSError, ValueError) as e:
+        return f"MCP configuration unreadable: {e}"
+
+
+def _is_mcp_http_enabled() -> bool:
+    """Whether the MCP HTTP daemon should be managed by the process manager.
+
+    Only HTTP mode is daemon-managed; stdio is launched by MCP clients and is
+    never started by ``make start``.
+
+    Read failures are deliberately **not** caught here. Answering "not
+    configured" for a config this function could not read is the exact
+    degradation ``_mcp_management_error()`` exists to prevent: it would drop
+    ``mcp`` from `make status` and `make stop` while a daemon still holds
+    ``.koan-pid-mcp``. ``_mcp_management_error()`` probes the file separately
+    and stays the single place that decides how an unreadable MCP config is
+    reported, so a failure that lands here — a read that broke between the two
+    probes — propagates to callers rather than the two disagreeing.
+    """
+    from app.config import get_mcp_enabled, get_mcp_transport
+
+    return get_mcp_enabled() and get_mcp_transport() == "http"
+
+
 def _is_api_enabled() -> bool:
     """Check if REST API is enabled in config.yaml and allowed by the deploy gate.
 
@@ -521,6 +761,15 @@ def get_status_processes(koan_root: Path) -> tuple:
     provider = _detect_provider(koan_root)
     dashboard = _is_dashboard_enabled()
     api = _is_api_enabled()
+    # An unreadable MCP config keeps `mcp` in the status list: a daemon may be
+    # running, and omitting it would report a clean stack while a listener is
+    # untracked. A read that fails only after _mcp_management_error() probed
+    # the file arrives here as an exception, and is treated the same way.
+    try:
+        mcp = bool(_mcp_management_error()) or _is_mcp_http_enabled()
+    except (ImportError, OSError, ValueError) as e:
+        print(f"[pid_manager] MCP management check failed: {e}", file=sys.stderr)
+        mcp = True
     names = list(PROCESS_NAMES)
     if not _needs_ollama(provider):
         names.remove("ollama")
@@ -528,6 +777,8 @@ def get_status_processes(koan_root: Path) -> tuple:
         names.remove("dashboard")
     if not api:
         names.remove("api")
+    if not mcp:
+        names.remove("mcp")
     return tuple(names)
 
 
@@ -685,6 +936,14 @@ def format_status_all(koan_root: Path) -> list:
         else:
             lines.append("  dashboard: not running")
 
+    # --- MCP HTTP (conditional) ---
+    if "mcp" in process_names:
+        mcp_pid = check_pidfile(koan_root, "mcp")
+        if mcp_pid:
+            lines.append(f"  mcp: running (PID {mcp_pid})")
+        else:
+            lines.append("  mcp: not running")
+
     return lines
 
 
@@ -792,6 +1051,22 @@ def start_all(koan_root: Path, provider: str = None, show_banner: bool = True) -
         ok, msg = start_api(koan_root)
         results["api"] = (ok, msg)
 
+    # 6. Start MCP HTTP daemon after the API it depends on
+    mcp_error = _mcp_management_error()
+    manage_mcp = False
+    if not mcp_error:
+        try:
+            manage_mcp = _is_mcp_http_enabled()
+        except (ImportError, OSError, ValueError) as e:
+            # A read that broke between the two probes is a start failure, not
+            # a silent "MCP is not configured".
+            mcp_error = f"MCP configuration unreadable: {e}"
+    if mcp_error:
+        results["mcp"] = (False, mcp_error)
+    elif manage_mcp:
+        ok, msg = start_mcp(koan_root)
+        results["mcp"] = (ok, msg)
+
     return results
 
 
@@ -855,13 +1130,104 @@ def _bootout_launchd_service(name: str) -> bool:
         return False
 
 
+# A pid file is written by the daemon once it is already running, so its mtime
+# is never earlier than the process's own start time. The slack absorbs coarse
+# `ps etime` granularity and clock nudges, not a PID recycled across a reboot —
+# that one starts long after the file it would be matched against.
+_PIDFILE_START_TOLERANCE = 60.0
+
+
+def _pidfile_still_names_its_process(pid: int, pidfile: Optional[Path]) -> bool:
+    """True only when *pid* can still be the process *pidfile* was written for.
+
+    ``check_pidfile`` verifies identity via the flock probe only. A non-Python
+    daemon (``ollama``) or one that died without its file being cleaned falls
+    through to a bare liveness check, which a **recycled** PID passes — and
+    after a reboot with ``.koan-pid-*`` files still on disk that PID is
+    typically an unrelated session leader. Escalating to ``killpg`` on that
+    basis takes a stranger's whole session down, so it is allowed only against
+    the same start-time proof :func:`app.mission_scope.stop_registered_scopes`
+    demands of its own PID records.
+    """
+    if pidfile is None:
+        return False
+    try:
+        written_at = pidfile.stat().st_mtime
+    except OSError:
+        return False
+    from app.mission_scope import _process_start_time
+    started_at = _process_start_time(pid)
+    if started_at is None:
+        return False
+    return started_at <= written_at + _PIDFILE_START_TOLERANCE
+
+
+def _signal_process(pid: int, sig: int, pidfile: Optional[Path] = None) -> bool:
+    """Signal *pid*'s process group, falling back to the bare PID.
+
+    Returns False only when the target is already gone. Kōan starts every
+    daemon with ``start_new_session=True``, so the daemon leads its own group
+    and ``killpg`` reaches its children too; the ``pgid != pid`` fallback covers
+    a pid file written by something that is not a group leader.
+
+    The group is signalled only when *pidfile* still verifiably names *pid* —
+    a destructive action verifies its target first. Anything unconfirmed
+    degrades to the single-PID ``os.kill`` that predates group signalling, so a
+    stale pid file costs one wrong signal rather than a stranger's session.
+
+    The caller's own group is never signalled, and that is structural rather
+    than incidental: if a daemon ever calls ``stop_processes`` over a set that
+    includes itself, ``killpg`` would take the caller down mid-sweep and leave
+    the remaining daemons running with their pid files intact. Mirrors the
+    guard in :func:`app.subprocess_runner.kill_orphaned_process_group`.
+
+    Only ``ProcessLookupError`` means "already gone". Every other ``OSError``
+    (notably EPERM, from a group member running under different credentials)
+    means the group signal could not be delivered, not that the daemon is dead —
+    reporting False there would make ``stop_processes`` record ``not_running``,
+    skip its SIGKILL escalation and leave the daemon live, where the single-PID
+    ``os.kill`` this function predates would have stopped it. So those fall
+    through to the bare PID instead.
+    """
+    try:
+        pgid = os.getpgid(pid)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        pgid = None
+    if (
+        pgid == pid
+        and pgid != os.getpgrp()
+        and _pidfile_still_names_its_process(pid, pidfile)
+    ):
+        try:
+            os.killpg(pgid, sig)
+            return True
+        except ProcessLookupError:
+            return False
+        except OSError:
+            pass
+    try:
+        os.kill(pid, sig)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
 def stop_processes(koan_root: Path, timeout: float = 5.0) -> dict:
     """Stop all running Kōan processes (run + awake + ollama).
 
-    Detects and boots out launchd services first (prevents respawn),
-    then sends SIGTERM to each running process, waits up to timeout
-    seconds for termination. Creates .koan-stop signal file for
+    Detects and boots out launchd services first (prevents respawn), tears down
+    any live mission cgroup scope, then signals each running process's group
+    (SIGTERM, then SIGKILL on timeout). Creates .koan-stop signal file for
     graceful shutdown.
+
+    Signalling the *group* rather than the bare PID from the pid file is what
+    makes ``make stop`` actually stop: everything Kōan spawns is started with
+    ``start_new_session=True``, so each daemon leads its own group, and the old
+    single-PID SIGTERM left every descendant (the provider CLI and whatever it
+    started) running. A daemon that detached further still needs the mission
+    scope, which is why that is stopped first.
 
     Returns dict mapping process name to result: "stopped", "not_running",
     or "force_killed".
@@ -892,16 +1258,28 @@ def stop_processes(koan_root: Path, timeout: float = 5.0) -> dict:
     for name in PROCESS_NAMES:
         _bootout_launchd_service(name)
 
+    # Stop any live mission scope before the daemons: a build daemon that
+    # re-parented to PID 1 with its own session is outside every process group
+    # here, so only its cgroup can take it down.
+    try:
+        from app.mission_scope import stop_registered_scopes
+        stopped_scopes = stop_registered_scopes(str(koan_root))
+        if stopped_scopes:
+            print(f"[pid_manager] stopped mission scope(s): "
+                  f"{', '.join(stopped_scopes)}")
+    except Exception as e:
+        print(f"[pid_manager] mission scope teardown failed: {e}", file=sys.stderr)
+
     for name in PROCESS_NAMES:
         pid = check_pidfile(koan_root, name)
         if not pid:
             results[name] = "not_running"
             continue
+        pidfile = _pidfile_path(koan_root, name)
 
-        # Send SIGTERM
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except (OSError, ProcessLookupError):
+        # Send SIGTERM to the whole group so children die with the daemon —
+        # but only to a group whose leader the pid file still vouches for.
+        if not _signal_process(pid, signal.SIGTERM, pidfile):
             results[name] = "not_running"
             continue
 
@@ -910,14 +1288,12 @@ def stop_processes(koan_root: Path, timeout: float = 5.0) -> dict:
             results[name] = "stopped"
         else:
             # Force kill
-            with contextlib.suppress(OSError, ProcessLookupError):
-                os.kill(pid, signal.SIGKILL)
+            _signal_process(pid, signal.SIGKILL, pidfile)
             # Wait briefly for SIGKILL to take effect
             _wait_for_exit(pid, 1.0)
             results[name] = "force_killed"
 
         # Clean up PID file
-        pidfile = _pidfile_path(koan_root, name)
         pidfile.unlink(missing_ok=True)
 
     return results
@@ -933,25 +1309,23 @@ def stop_process(koan_root: Path, name: str, timeout: float = 5.0) -> str:
     pid = check_pidfile(koan_root, name)
     if not pid:
         return "not_running"
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except (OSError, ProcessLookupError):
+    pidfile = _pidfile_path(koan_root, name)
+    if not _signal_process(pid, signal.SIGTERM, pidfile):
         return "not_running"
     if _wait_for_exit(pid, timeout):
         result = "stopped"
     else:
-        with contextlib.suppress(OSError, ProcessLookupError):
-            os.kill(pid, signal.SIGKILL)
+        _signal_process(pid, signal.SIGKILL, pidfile)
         _wait_for_exit(pid, 1.0)
         result = "force_killed"
-    _pidfile_path(koan_root, name).unlink(missing_ok=True)
+    pidfile.unlink(missing_ok=True)
     return result
 
 
 def _print_stack_results(results: dict) -> int:
     """Print stack start results and return exit code (0=ok, 1=failure)."""
     any_failed = False
-    for name in ("ollama", "awake", "run", "dashboard"):
+    for name in ("ollama", "awake", "run", "dashboard", "api", "mcp"):
         if name not in results:
             continue
         ok, msg = results[name]

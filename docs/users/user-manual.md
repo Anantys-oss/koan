@@ -1,10 +1,10 @@
 ---
 type: doc
 title: "Kōan User Manual"
-description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
+description: "A tiered walkthrough of Kōan, from first missions through REST/MCP skill discovery, parallel sessions, exploration, and configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-18
+updated: 2026-09-17
 ---
 
 # Kōan User Manual
@@ -47,6 +47,7 @@ This manual is organized in three progressive tiers. Start with the basics, then
   - [Configuration Deep-Dive](#configuration-deep-dive)
   - [Per-Project Overrides](#per-project-overrides)
   - [Custom Skills](#custom-skills)
+  - [REST and MCP Skill Discovery](#rest-and-mcp-skill-discovery)
   - [GitHub @mention Integration](#github-mention-integration)
   - [CLI Providers](#cli-providers)
   - [Language Preference](#language-preference)
@@ -115,6 +116,8 @@ By default, Kōan processes one mission at a time. When idle, it picks the next 
 Just send a regular message — Kōan classifies it automatically. Short conversational messages get instant replies (chat mode). Task-like messages get queued as missions.
 
 **Bare skill shortcut:** if the first word of a plain message is the name (or alias) of a core skill, Kōan treats the whole message as that slash command — `time` runs `/time`, `review <url>` runs `/review <url>`. Only core skills trigger this; custom/instance skills do not. If a common word collides with a skill name and you meant to chat, prefix with `/chat`.
+
+**Bang prefix:** `!command` works everywhere `/command` does — `!help`, `!status`, `!review <url>`. Useful if you came from Slack, where `!` avoids clashing with Slack's own slash commands. A bang before a non-letter (`!!`, `!42`) is plain text. On Telegram there's no autocomplete for `!`, and in a group with Privacy Mode ON Telegram never delivers `!` messages to the bot — use `/` there.
 
 If Kōan misclassifies your message, use `/chat` to force chat mode:
 
@@ -473,6 +476,8 @@ The master tracking issue then synthesizes the set with three optional sections:
 
 **`/plan`** — Deep-think an idea and produce a structured, task-level implementation plan as a tracker issue.
 
+For an existing Jira issue, Koan keeps one **current plan** comment, signed off with a `Koan current plan (rev …)` footer. A plan too big for one Jira comment becomes consecutive `Part N of M` comments linked with previous/next jump links — Jira's public API has no threaded replies — and shrinking a later plan retires the leftover parts. `/implement` reassembles such a plan before it starts work, joining the parts of the newest revision in numeric order and putting back exactly what the split consumed, so a code example never comes back as two blocks and a list is never cut by a paragraph break; if some parts are missing it uses the ones available, joining across the gap as plain paragraphs rather than applying a missing neighbour's join instructions to the wrong part. It stages the generated plan locally, retries publishing three times, and reports success only after Jira hands that exact revision back on a read-back — so a write Jira accepted but never showed is reported as a failure rather than a ✅. If Jira remains unavailable the mission fails honestly, and the staged plan is retried on the next run without spending another model call to regenerate it; after three failed runs Koan drops the stage so the next `/plan` starts fresh.
+
 Plans include a **File Map** (table of every file to create/modify/test), **checkbox steps** within each phase (write test → implement → verify → commit), and **actual code blocks** in steps that change code. Each code block is wrapped in a collapsible `<details>` block so the plan stays scannable — readers see step descriptions first and expand the code only when needed. A built-in self-review pass checks spec coverage, scans for placeholders, and verifies name consistency across phases before output. Multi-subsystem ideas trigger a scope check suggesting separate plans per subsystem. Before posting, an advisory **assumptions audit** pressure-tests the plan's hidden assumptions and folds any unverified-critical ones into the plan's *Open Questions* section — so you can resolve them on the issue before `/implement` (which receives the same findings as "verify before coding" context; the audit never blocks either skill — toggle with `plan_review.assumptions_check`).
 
 - **Usage:** `/plan [--iterations N] <idea>`, `/plan <project> <idea>`, `/plan <issue-url>` (iterate on existing)
@@ -524,6 +529,8 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 </details>
 
 **`/implement`** — Queue an implementation mission for a GitHub or Jira issue. Never bails on ambiguity — resolves blockers with the simplest viable solution and retries once before surfacing a problem.
+
+For Jira plans split into `Part N of M` comments, `/implement` selects the newest verified plan generation and joins its available parts in numeric order before reviewing or implementing it. If it cannot verify a single part as Kōan's own — a tenant that drops comment properties plus a rotated API account, say — the plan text it works from opens with a warning naming the ignored parts, and when the issue holds no other plan text the mission fails with a message counting the excluded parts and pointing at the account and comment-property settings to check — not a bare "no plan found" that would send you to re-run `/plan` — rather than quietly implementing the pre-plan issue description.
 
 - **Usage:** `/implement <issue-url> [additional context]`
 - **Aliases:** `/impl`
@@ -594,8 +601,22 @@ The debug loop enforces four steps:
   - `--errors` — Run an additional **silent-failure-hunter** pass that scans for swallowed exceptions, silent null returns, unhandled promises, and other silent error paths. Also auto-triggered when the diff contains error-handling patterns (`try/except`, `catch`, etc.)
   - `--comments` — Comment quality review (factual accuracy, completeness, stale TODOs, misleading language)
   - `--bot-comments` — Triage inline comments from code-review bots (CodeRabbit, Copilot Review, Sourcery) and post replies to actionable findings
-- **Output:** Findings are grouped into severity buckets (🔴 Blocking / 🟡 Important / 🟢 Suggestions), each folded into a collapsible section. Every finding's location is shown on its own line inside the summary as a **clickable link** that jumps straight to the exact file and lines on GitHub, pinned to the reviewed commit (so the link stays accurate even after the PR gets new commits). The request-changes verdict and its red/yellow alert are derived from this same final list, so a blocking verdict always names at least one categorized Blocking or Important finding.
+- **Tool boundary:** A review is advisory — it reads, and it never commits, pushes, or merges. The tool set is a **positive allowlist** (`Read`, `Glob`, `Grep`, `Bash`): anything not named — `Write`, `Edit`, `MultiEdit`, and `Task`/`Skill`, which could otherwise spawn a write-capable subagent — is withheld by construction rather than by being enumerated as forbidden. MCP servers are not inherited either, so a review's reach does not depend on what you happen to have installed. On Codex the same posture comes from an OS-level read-only sandbox. `skip_permissions: true` is deliberately ignored for reviews. The boundary **fails closed**: on any provider Kōan cannot *prove* enforces it (`cline`, `haze`, `copilot`, `grok`, `gemini`), the review is refused with a configuration error rather than run unrestricted — pin `cli.review_mode` to `claude`, `codex`, or `ollama-launch`. Those providers remain available for every other role.
+- **The review shell:** reviews can run read-only inspection commands (`git log`, `git blame`, `git grep`, `rg`, `sed -n '10,40p'`, `find`, …) so a finding can be checked against history and real callers instead of guessed from the diff. Every command is adjudicated by a hook before it runs: one simple command per call, no pipeline (a `|` **inside a quoted regex pattern**, e.g. `git grep -n 'a|b'`, is fine), no chaining, no command substitution, and no writer, network client, or interpreter. Redirection is rejected too, except `2>/dev/null` and `2>&1` — discarding or merging stderr writes nothing. Paths are confined to the pinned worktree by resolution, so an absolute path inside it works just like a relative one. A rejected command is refused, never silently rewritten.
+- **What the review reads:** each review runs in a fresh, disposable checkout of the pull request's head commit — not your working copy, and not the base branch. If that checkout cannot be prepared the review **fails** rather than falling back, because a review of the wrong code that reports its findings as fact is worse than no review. Expect `Could not prepare a clean checkout of PR #N` when git cannot reach the remote. On `claude`/`ollama-launch` the reviewed repository's own `.claude/` settings and `CLAUDE.md` are **not** loaded — a pull request must not be able to configure the agent that judges it — though its conventions are still passed to the model as untrusted text. (On `codex` that suppression is not yet wired, so it still reads the reviewed `AGENTS.md`; see `docs/providers/codex.md`.)
+- **Output:** Findings are grouped into severity buckets (🔴 Blocking /
+  🟡 Important / 🟢 Suggestions), each folded into a collapsible section.
+  Finding IDs increment across all buckets and continue into Silent Failure
+  Analysis, so an ID uniquely identifies one finding within the review.
+  Every finding's location is shown as a clickable link pinned to the reviewed
+  commit. A valid second-pass reflection filters the final list authoritatively:
+  rejected findings are not restored by their original checklist references or
+  verdict, and failed checklist entries supported only by rejected findings are
+  removed. The request-changes verdict and its red/yellow alert are derived from
+  the retained findings. Malformed reflection metadata fails open to the complete
+  primary review.
 - **Project memory:** Reviews automatically inject the project's filtered learnings plus human-curated `context.md`/`priorities.md`, ranked against the PR's title, body, and diff via the SQLite FTS5 memory index. Set `review_memory.enabled: true` in `config.yaml` to *also* include recent typed project memory (decisions, observations) for extra reviewer context. Both apply to `/review` and the backend private review gate.
+- **Structural quality:** The main review passes (default, plan-aware, and `--architecture`) also judge whether the change leaves the surrounding code simpler or messier — ad-hoc branches bolted onto unrelated flows, feature logic in a shared module, a bespoke helper duplicating a canonical one, or a file pushed past a healthy size (the limit your repo's convention docs state, else ~1000 lines). Findings name the structural remedy and stay 🟢 Suggestions unless concrete harm is named, so they never block a merge on style alone.
 - **Prior review context:** On a re-review, the bot's own most recent structured review is surfaced in a dedicated, head-preserving prompt slot so the new review builds on it (confirming whether prior findings are resolved) instead of losing it to the recency-truncated conversation thread. That prior review comment is also collapsed to a short "superseded" pointer so it doesn't echo or crowd out human feedback — set `review_history.preserve_previous: true` to keep it intact instead. Tune the prompt slot via `review_context` in `config.yaml` (`include_bot_feedback`, `prior_review_max_chars`).
 
 <details>
@@ -802,6 +823,7 @@ After completion, Kōan posts a structured comment on the PR with these sections
 **`/pr`** — Review and update a GitHub pull request (interactive).
 
 - **Usage:** `/pr <pr-url>`
+- The pipeline rebases the branch, addresses review feedback, then runs a refactor pass, a quality-review pass, and a readability-only **simplify pass** (when a refactor skill is available) before re-running tests and force-pushing. The simplify pass amends the head commit on single-commit branches, otherwise it lands as its own `refactor:` commit.
 
 <details>
 <summary>Use cases</summary>
@@ -1397,6 +1419,14 @@ schedule:
 # Skill execution limits
 skill_timeout: 3600           # Max seconds for /fix, /implement, /incident
 first_output_timeout: 600     # Kill silent skills after N seconds (0 disables)
+                              # /review derives its own per-pass stall bound
+                              # from this (this value minus 60s), so a stalled
+                              # review pass fails on its own instead of the
+                              # whole runner being killed. Under /rebase it
+                              # derives from rebase_first_output_timeout
+                              # instead — whichever budget run.py is using.
+                              # Not separately configurable —
+                              # see docs/design/provider-stall-bounds.md.
 rebase_first_output_timeout: 1800  # Optional longer silence budget for /rebase
 rebase_review_idle_timeout: 1800   # /rebase review phase: kill on inactivity
 rebase_review_max_duration: 10800  # /rebase review phase: absolute cap
@@ -1631,7 +1661,7 @@ projects:
 ```
 
 Key per-project settings:
-- **`cli_provider`** — `claude`, `cline`, `codex`, `copilot`, `haze`, `grok`, `local`, or `ollama-launch`
+- **`cli_provider`** — `claude`, `cline`, `codex`, `copilot`, `haze`, `grok`, `gemini`, `local`, or `ollama-launch`
 - **`models`** — Override model selection per role
 - **`tools`** — Restrict available tools
 - **`git_auto_merge`** — Auto-merge completed PRs (strategy: squash/merge/rebase)
@@ -1799,6 +1829,24 @@ This invokes Claude to produce a valid SKILL.md + handler.py stub in `instance/s
 
 See [koan/skills/README.md](../../koan/skills/README.md) for the full authoring guide.
 
+### REST and MCP Skill Discovery
+
+Authenticated API and MCP clients can discover `/audit`, `/brief`, `/ci_check`,
+`/doc`, `/explain`, `/fix`, `/gh_request`, `/implement`, `/plan`, `/rebase`,
+and `/review`. `GET /v1/skills` and `koan_skills_list` provide descriptions,
+usage, aliases, and flags. `koan_missions_create` also advertises these
+canonical verbs, so queue a review like this:
+
+```json
+{
+  "command": "/review https://github.com/owner/repo/pull/42"
+}
+```
+
+Use free-form `text` only when no exposed skill covers the work. Control-plane,
+destructive, and private instance commands remain outside this catalog. API
+exposure is independent of chat or GitHub/Jira availability.
+
 ### GitHub @mention Integration
 
 Ten skills can be triggered by commenting `@koan-bot <command>` on GitHub issues and PRs:
@@ -1832,6 +1880,7 @@ Kōan supports multiple CLI backends. Configure globally via `KOAN_CLI_PROVIDER`
 | **GitHub Copilot** | Teams with existing Copilot licenses | [copilot.md](../providers/copilot.md) |
 | **Haze** | Minimal multi-backend agentic CLI (OpenAI, OpenRouter, local endpoints) — [official docs](https://denizokcu.github.io/haze/) | [haze.md](../providers/haze.md) |
 | **Grok Build** | xAI Grok Build CLI (`grok`) with headless streaming-json | [grok.md](../providers/grok.md) |
+| **Gemini** | Google Gemini CLI (`gemini`) with headless stream-json | [gemini.md](../providers/gemini.md) |
 | **Ollama Launch** | Local/offline models behind the Claude CLI harness | [ollama-launch.md](../providers/ollama-launch.md) |
 | **OpenRouter** (via Claude CLI) | Claude CLI behavior with OpenRouter's model catalog/billing | [openrouter.md](../providers/openrouter.md) |
 
@@ -1889,6 +1938,19 @@ fresh install — no `/english` needed.
 - `/en` — Switch back to English
 - `/language reset` — Reply in the same language as each incoming message
 </details>
+
+The preference covers the prose Kōan *writes*: chat replies, Telegram/Slack
+messages, the morning and evening rituals, and the model-written parts of a PR
+review — finding titles and bodies, the summary, and thread replies. Reviews
+honour it as of this change; before, the review path ignored `/language`
+entirely and the model picked a language on its own.
+
+Fixed scaffolding around a review stays English on purpose: the `## PR Review`
+heading, the `Blocking` / `Important` / `Suggestions` tier names, and the verdict
+line. Those are structure, not conversation — a stable heading is what lets you
+scan any PR the same way, and Kōan matches on it to recover a review from
+unstructured model output. So a non-English preference gives you translated prose
+inside English headings.
 
 > **Upgrade note:** English is now the default when no preference is set. Two
 > cohorts change behavior on upgrade:
@@ -1962,12 +2024,31 @@ fresh install — no `/english` needed.
 - `/reset` — Resume from a max_runs pause without losing current state
 </details>
 
-**`/restart`** — Restart both agent and bridge processes without pulling new code.
+**`/restart [--force]`** — Restart both agent and bridge processes without pulling new code.
+
+Plain `/restart` is polite: the bridge re-execs right away, and the agent loop
+finishes the mission it is on before exiting for re-launch. `/restart --force`
+(also `-f`) does not wait — it kills the in-flight mission immediately and
+restarts. The killed mission is usually not lost: crash recovery moves it back
+to Pending on the next startup, with its `pending.md` context. A mission that
+has already exhausted its crash retries (`max_crash_retries`, default 3) is
+escalated to Failed instead — repeated forced restarts on the same mission
+eventually stop re-queueing it.
+
+Right after an update, the agent loop may still be running the older code while
+it finishes its current mission. Forcing it then is unsafe, so Kōan detects that
+case and falls back to a polite restart, telling you that in the reply. On a host
+where Kōan cannot confirm which process the loop is (no way to read process start
+times, for instance) it withholds the kill signal but still files the forced
+request; the reply says so, because that fallback is weaker — it interrupts a
+normal mission within ~30 s, but a skill mission (`/review`, `/fix`,
+`/implement`) runs to the end and restarts after it.
 
 <details>
 <summary>Use cases</summary>
 
-- `/restart` — Force a restart when Kōan is already up to date but you need a fresh start
+- `/restart` — Restart when Kōan is already up to date but you need a fresh start
+- `/restart --force` — The run loop is wedged on a mission and `/abort` isn't landing; restart both daemons now
 </details>
 
 **`/snapshot`** — Export memory state to a portable snapshot file for backup or migration.
@@ -2467,7 +2548,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/update` | `/upgrade` | P | Update to latest commit on main, restart |
 | `/update_last_release` | — | P | Update to most recent release tag, restart |
 | `/reset` | — | P | Reset run counter to 0 |
-| `/restart` | — | P | Restart processes (no code pull) |
+| `/restart [--force]` | — | P | Restart processes (no code pull); `--force` kills the in-flight mission |
 | `/snapshot` | — | P | Export memory state |
 | `/add_project <url>` | `/add_project` | P | Add a project from GitHub |
 | `/delete_project <name>` | `/delete`, `/del` | P | Remove a project from workspace |

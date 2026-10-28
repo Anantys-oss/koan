@@ -442,7 +442,17 @@ class TestSquashOutcomeGating:
         monkeypatch.setattr(sp, "_run_squash_impl", _impl)
         ok, _ = sp.run_squash("o", "r", "7", "/tmp/x")
         assert ok is True
-        assert sent == ["✅ Squashed https://github.com/o/r/pull/7"]
+        assert sent == ["✅ [x] 🗜️ Squashed https://github.com/o/r/pull/7"]
+
+    def test_skip_says_skipped(self, monkeypatch):
+        import app.squash_pr as sp
+        sent = []
+        monkeypatch.setattr("app.messaging_level.is_debug", lambda: False)
+        monkeypatch.setattr("app.notify.send_telegram", lambda m, **k: sent.append(m))
+        msg = "PR #7 is already merged — skipping squash."
+        monkeypatch.setattr(sp, "_run_squash_impl", lambda *a, **k: (True, msg))
+        sp.run_squash("o", "r", "7", "/tmp/x")
+        assert sent == [f"✅ [x] 🗜️ Squashed https://github.com/o/r/pull/7\n{msg}"]
 
     def test_failure_outcome_with_context(self, monkeypatch):
         import app.squash_pr as sp

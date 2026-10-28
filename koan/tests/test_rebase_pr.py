@@ -40,6 +40,7 @@ from app.rebase_pr import (
     _is_conflict_failure,
     _push_with_fallback,
     _rebase_with_conflict_resolution,
+    _run_force_push_guard,
     check_pr_state,
     _run_ci_check_and_fix,
     _run_ci_fix_step_with_timeout_retry,
@@ -383,9 +384,16 @@ class TestGetConflictedFiles:
         with patch("app.rebase_pr.subprocess.run", return_value=mock_result):
             assert _get_conflicted_files("/project") == []
 
-    def test_exception_returns_empty(self):
+    def test_exception_returns_none_not_empty(self):
+        """"Could not tell" must stay distinguishable from "nothing conflicted"."""
         with patch("app.rebase_pr.subprocess.run", side_effect=OSError("fail")):
-            assert _get_conflicted_files("/project") == []
+            assert _get_conflicted_files("/project") is None
+
+    def test_non_zero_status_returns_none(self):
+        mock_result = MagicMock(
+            stdout="", stderr="fatal: index.lock exists", returncode=128)
+        with patch("app.rebase_pr.subprocess.run", return_value=mock_result):
+            assert _get_conflicted_files("/project") is None
 
     def test_paths_with_spaces(self):
         mock_result = MagicMock(
@@ -693,6 +701,38 @@ class TestBuildRebaseComment:
         assert "the feedback step timed out" in result
         # Callout comes before the collapsed Actions section.
         assert result.index("[!WARNING]") < result.index("<details>")
+
+    def test_reviewer_refs_do_not_autolink(self):
+        # The feedback agent numbers reviewer points after the review comment's
+        # own finding IDs. A bare "#5" would auto-link to issue/PR 5 in this
+        # repo, which is a different, unrelated thing.
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            ["Rebased onto origin/main", "Applied review feedback"],
+            {"title": "Fix bug", "review_comments": "please fix the typo"},
+            change_summary=(
+                "APPLIED:\n"
+                "- `koan/app/mcp/http.py` \u2014 audit write failure now logs (reviewer #5).\n"
+                "SKIPPED:\n"
+                "- #7 (transport fallback): intentional fail-closed design."
+            ),
+        )
+        assert "reviewer \uFF035" in result
+        assert "\uFF037 (transport fallback)" in result
+        assert "#5" not in result
+        assert "#7" not in result
+
+    def test_escaping_keeps_headings_and_code_intact(self):
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            ["Rebased onto origin/main", "Applied review feedback"],
+            {"title": "Fix bug"},
+            diffstat="22 files changed, 811 insertions(+), 66 deletions(-)",
+            change_summary="Reverted the `#3` marker verbatim.",
+        )
+        assert "### Stats" in result
+        assert "## Rebase with requested adjustments" in result
+        assert "`#3`" in result
 
     def test_feedback_failed_warning_has_default_reason(self):
         result = _build_rebase_comment(
@@ -1662,16 +1702,18 @@ class TestRunRebase:
     @patch("app.messaging_level.notify_outcome")
     def test_outcome_warns_when_feedback_unapplied(self, mock_outcome, mock_impl):
         """A rebase that succeeds but drops feedback must surface a warning
-        outcome (not a green check) so the dropped feedback is noticed."""
+        under the outcome line so the dropped feedback is noticed."""
         def impl(*args, **kwargs):
             kwargs["outcome_meta"]["feedback_unapplied"] = "timed out"
             return True, "PR #42 rebased."
         mock_impl.side_effect = impl
-        run_rebase("o", "r", "42", "/p", notify_fn=MagicMock())
-        msg = mock_outcome.call_args.args[0]
-        assert "⚠️" in msg
-        assert "feedback NOT applied" in msg
-        assert "timed out" in msg
+        notify = MagicMock()
+        run_rebase("o", "r", "42", "/p", notify_fn=notify)
+        assert notify.call_args.args[0] == (
+            "✅ [p] 🔄 Rebased https://github.com/o/r/pull/42\n"
+            "⚠️ Review feedback NOT applied (timed out); the reviewer comments "
+            "still need attention."
+        )
 
     @patch("app.rebase_pr._run_rebase_impl")
     @patch("app.messaging_level.notify_outcome")
@@ -1679,10 +1721,9 @@ class TestRunRebase:
         def impl(*args, **kwargs):
             return True, "PR #42 rebased."
         mock_impl.side_effect = impl
-        run_rebase("o", "r", "42", "/p", notify_fn=MagicMock())
-        msg = mock_outcome.call_args.args[0]
-        assert msg.startswith("✅")
-        assert "NOT applied" not in msg
+        notify = MagicMock()
+        run_rebase("o", "r", "42", "/p", notify_fn=notify)
+        assert notify.call_args.args[0] == "✅ [p] 🔄 Rebased https://github.com/o/r/pull/42"
 
     @patch("app.rebase_pr.fetch_pr_context")
     def test_fetch_failure(self, mock_ctx):
@@ -2289,6 +2330,55 @@ class TestApplyReviewFeedback:
         assert summary == skipped
 
     @patch("app.rebase_pr.run_claude_step")
+    def test_agent_self_commit_is_reported_as_committed(self, mock_step):
+        """A commit the agent made itself must not fail as "no disposition".
+
+        Regression: the agent honoured a "rename PROJ-101 to PROJ-99" request
+        with ``git commit --amend``. That leaves a clean worktree, so the step
+        reported no runner commit and the finished rebase was thrown away
+        unpushed instead of being force-pushed.
+        """
+        from app.claude_step import StepResult
+
+        summary_text = "APPLIED:\n- Renamed the commit subject to TECH PROJ-99"
+        mock_step.return_value = StepResult(
+            committed=True, output=summary_text, self_committed=True,
+        )
+        context = {
+            "title": "Fix", "body": "", "branch": "br", "base": "main",
+            "diff": "+code", "review_comments": "fix this",
+            "reviews": "", "issue_comments": "",
+        }
+        actions = []
+        meta = {}
+        summary = _apply_review_feedback(
+            context, "42", "/project", actions,
+            skill_dir=REBASE_SKILL_DIR, result_meta=meta,
+        )
+        assert meta["status"] == "committed"
+        assert summary == summary_text
+        assert any("committed by the agent itself" in a for a in actions)
+
+    @patch("app.rebase_pr.run_claude_step")
+    def test_runner_commit_does_not_claim_agent_authorship(self, mock_step):
+        from app.claude_step import StepResult
+
+        mock_step.return_value = StepResult(committed=True, output="APPLIED:\n- edit")
+        context = {
+            "title": "Fix", "body": "", "branch": "br", "base": "main",
+            "diff": "+code", "review_comments": "fix this",
+            "reviews": "", "issue_comments": "",
+        }
+        actions = []
+        meta = {}
+        _apply_review_feedback(
+            context, "42", "/project", actions,
+            skill_dir=REBASE_SKILL_DIR, result_meta=meta,
+        )
+        assert meta["status"] == "committed"
+        assert not any("committed by the agent itself" in a for a in actions)
+
+    @patch("app.rebase_pr.run_claude_step")
     def test_sets_feedback_timeout_metadata(self, mock_step):
         from app.claude_step import StepResult
 
@@ -2576,7 +2666,11 @@ class TestRunRebaseClaude:
              patch("app.rebase_pr._get_current_branch", return_value="main"), \
              patch("app.rebase_pr._checkout_pr_branch"), \
              patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
-             patch("app.rebase_pr._run_git", side_effect=["abc123\n", ""]), \
+             patch(
+                 "app.rebase_pr._run_git",
+                 # pre-rebase head capture, rebase checkpoint, timeout-recovery reset
+                 side_effect=["def456\n", "abc123\n", ""],
+             ), \
              patch("app.rebase_pr._fix_existing_ci_failures", return_value=False), \
              patch("app.rebase_pr._enqueue_ci_check", return_value="CI queued"), \
              patch("app.rebase_pr._push_with_fallback", return_value={
@@ -2777,6 +2871,23 @@ class TestMain:
             assert call_args[0][:3] == ("sukria", "koan", "42")
             assert call_args[0][3] == "/project"
             assert str(call_args[1]["skill_dir"]).endswith("skills/core/recreate")
+
+    @pytest.mark.parametrize("recreate_ok, note", [
+        (True, "KOAN_OUTCOME_DETAIL: The rebase conflicted, so PR #42 was recreated as a new PR."),
+        (False, "KOAN_OUTCOME_DETAIL: The rebase conflicted, and the /recreate fallback failed too."),
+    ])
+    def test_main_fallback_tells_the_loop_how_it_ended(
+        self, recreate_ok, note, monkeypatch, capsys,
+    ):
+        """The loop's one '🔄 Rebased/Rebase failed' message says the PR was recreated."""
+        monkeypatch.setenv("KOAN_SUPPRESS_RUNNER_OUTCOME", "1")
+        conflict_msg = "Rebase conflict on `main` (tried origin and upstream). Manual resolution required."
+        open_ctx = {"state": "OPEN", "branch": "feat", "base": "main"}
+        with patch("app.rebase_pr.run_rebase", return_value=(False, conflict_msg)), \
+             patch("app.rebase_pr.fetch_pr_context", return_value=open_ctx), \
+             patch("app.recreate_pr.run_recreate", return_value=(recreate_ok, "done")):
+            rebase_main(["https://github.com/sukria/koan/pull/42", "--project-path", "/project"])
+        assert note in capsys.readouterr().out.splitlines()
 
     def test_main_non_conflict_failure_no_fallback(self):
         """Non-conflict failures should NOT trigger recreate fallback."""
@@ -3019,6 +3130,490 @@ class TestResolveRebaseConflicts:
         assert failure_detail == [
             "conflict-resolution agent failed: exit 1: merge tool crashed"
         ]
+
+
+class TestContinueRebaseStagesResolvedTree:
+    """`git rebase --continue` needs a fully staged tracked tree.
+
+    Observed failure: the resolution agent also edited a file that was not
+    conflicted, to keep the merged tree coherent, and left it unstaged. No
+    unmerged path remained, so the loop believed the round succeeded, but
+    every `git rebase --continue` was refused with "You must edit all merge
+    conflicts..." until the rounds ran out.
+    """
+
+    @staticmethod
+    def _record_git_calls(git_calls, subprocess_results=None):
+        """Patches that record every git command `_continue_rebase` issues."""
+        results = subprocess_results or {}
+
+        def fake_run_git(cmd, **kwargs):
+            git_calls.append(cmd)
+            return ""
+
+        def fake_subprocess_run(cmd, **kwargs):
+            git_calls.append(cmd)
+            key = "continue" if "--continue" in cmd else "status"
+            return results.get(
+                key, MagicMock(returncode=0, stdout="", stderr=""))
+
+        return (
+            patch("app.rebase_pr._run_git", side_effect=fake_run_git),
+            patch("app.rebase_pr.subprocess.run", side_effect=fake_subprocess_run),
+        )
+
+    def test_stages_tracked_edits_before_continuing(self):
+        from app.rebase_pr import _continue_rebase
+
+        git_calls = []
+        run_git_patch, subprocess_patch = self._record_git_calls(git_calls)
+
+        with run_git_patch, subprocess_patch, \
+             patch("app.rebase_pr._has_rebase_in_progress", side_effect=[True, False]):
+            outcome = _continue_rebase("/project")
+
+        assert outcome.completed is True
+        assert outcome.detail == ""
+        assert ["git", "add", "-u"] in git_calls
+        assert git_calls.index(["git", "add", "-u"]) < len(git_calls) - 1
+        assert git_calls[-1][:3] == ["git", "rebase", "--continue"]
+
+    def test_untracked_files_are_not_swept_into_the_commit(self):
+        """`add -u` only — scratch files never block `--continue`."""
+        from app.rebase_pr import _continue_rebase
+
+        git_calls = []
+        run_git_patch, subprocess_patch = self._record_git_calls(git_calls)
+
+        with run_git_patch, subprocess_patch, \
+             patch("app.rebase_pr._has_rebase_in_progress", side_effect=[True, False]):
+            _continue_rebase("/project")
+
+        assert ["git", "add", "-A"] not in git_calls
+        assert ["git", "add", "-u"] in git_calls
+
+    def test_unmerged_check_never_uses_the_unreliable_diff_filter(self):
+        """The backstop must ask `git status --porcelain`, not a worktree diff.
+
+        `git diff --name-only --diff-filter=U` can under-report during
+        `--onto` rebases and merge linearisation; an empty listing there would
+        let `git add -u` stage conflict markers verbatim.
+        """
+        from app.rebase_pr import _continue_rebase
+
+        git_calls = []
+        run_git_patch, subprocess_patch = self._record_git_calls(git_calls)
+
+        with run_git_patch, subprocess_patch, \
+             patch("app.rebase_pr._has_rebase_in_progress", side_effect=[True, False]):
+            _continue_rebase("/project")
+
+        assert not any("--diff-filter=U" in cmd for cmd in git_calls)
+        staged_at = git_calls.index(["git", "add", "-u"])
+        assert ["git", "status", "--porcelain"] in git_calls[:staged_at]
+
+    def test_untracked_resolution_artifacts_reach_the_actions_log(self):
+        """A new file `add -u` leaves behind must reach the human, not stderr."""
+        from app.rebase_pr import _continue_rebase
+
+        def fake_run_git(cmd, **kwargs):
+            if "ls-files" in cmd:
+                return "app/new_helper.py\n"
+            return ""
+
+        actions_log = []
+        with patch("app.rebase_pr._run_git", side_effect=fake_run_git), \
+             patch("app.rebase_pr.subprocess.run", return_value=MagicMock(
+                 returncode=0, stdout="", stderr="")), \
+             patch("app.rebase_pr._has_rebase_in_progress", side_effect=[True, False]):
+            _continue_rebase("/project", actions_log=actions_log)
+
+        assert any("app/new_helper.py" in entry for entry in actions_log)
+
+    def test_unlistable_untracked_files_are_reported_not_swallowed(self):
+        """An unanswered `ls-files` must not read as "nothing was dropped"."""
+        from app.rebase_pr import _continue_rebase
+
+        def fake_run_git(cmd, **kwargs):
+            if "ls-files" in cmd:
+                raise RuntimeError("fatal: Unable to create index.lock")
+            return ""
+
+        actions_log = []
+        with patch("app.rebase_pr._run_git", side_effect=fake_run_git), \
+             patch("app.rebase_pr.subprocess.run", return_value=MagicMock(
+                 returncode=0, stdout="", stderr="")), \
+             patch("app.rebase_pr._has_rebase_in_progress", side_effect=[True, False]):
+            outcome = _continue_rebase("/project", actions_log=actions_log)
+
+        assert outcome.completed is True
+        assert any(
+            "could not check for untracked" in entry for entry in actions_log
+        )
+
+    def test_a_rebase_the_agent_finished_itself_is_a_success(self):
+        """The agent may run `--continue` itself; the rebase is then done.
+
+        Asking git again earns "fatal: No rebase in progress?" — reporting a
+        finished rebase as a failure.
+        """
+        from app.rebase_pr import _continue_rebase
+
+        git_calls = []
+        run_git_patch, subprocess_patch = self._record_git_calls(git_calls)
+
+        with run_git_patch, subprocess_patch, \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=False):
+            outcome = _continue_rebase("/project")
+
+        assert outcome.completed is True
+        assert outcome.detail == ""
+        assert git_calls == []
+
+    def test_refuses_to_stage_when_a_path_is_still_unmerged(self):
+        """`add -u` would commit conflict markers verbatim — never guess."""
+        from app.rebase_pr import _continue_rebase
+
+        git_calls = []
+        run_git_patch, subprocess_patch = self._record_git_calls(
+            git_calls,
+            {"status": MagicMock(returncode=0, stdout="UU a.py\n", stderr="")},
+        )
+
+        with run_git_patch, subprocess_patch, \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=True):
+            outcome = _continue_rebase("/project")
+
+        assert outcome.completed is False
+        assert "still unmerged" in outcome.detail and "a.py" in outcome.detail
+        # The agent left work behind; retrying the round would not change that.
+        assert outcome.retryable is False
+        assert ["git", "add", "-u"] not in git_calls
+
+    def test_unverifiable_tree_is_retryable_not_terminal(self):
+        """A failed check is not a clean tree — and nothing was attempted."""
+        from app.rebase_pr import _continue_rebase
+
+        git_calls = []
+        run_git_patch, subprocess_patch = self._record_git_calls(
+            git_calls,
+            {"status": MagicMock(
+                returncode=128, stdout="", stderr="fatal: index.lock exists")},
+        )
+
+        with run_git_patch, subprocess_patch, \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=True):
+            outcome = _continue_rebase("/project")
+
+        assert outcome.completed is False
+        assert "could not verify the tree is unmerged-free" in outcome.detail
+        assert "index.lock" in outcome.detail
+        assert outcome.retryable is True
+        assert ["git", "add", "-u"] not in git_calls
+        assert not any("--continue" in cmd for cmd in git_calls)
+
+    def test_failed_staging_is_the_reported_cause(self):
+        """A refused `git add -u` must not surface as the `--continue` symptom."""
+        from app.rebase_pr import _continue_rebase
+
+        def fake_run_git(cmd, **kwargs):
+            raise RuntimeError("fatal: Unable to create index.lock")
+
+        with patch("app.rebase_pr._run_git", side_effect=fake_run_git), \
+             patch("app.rebase_pr.subprocess.run", return_value=MagicMock(
+                 returncode=0, stdout="", stderr="")), \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=True):
+            outcome = _continue_rebase("/project")
+
+        assert outcome.completed is False
+        assert "staging the resolved tree failed" in outcome.detail
+        assert "index.lock" in outcome.detail
+
+    def test_continue_timeout_is_a_failure_even_with_the_rebase_dir_gone(self):
+        """A killed git is no evidence the rebase finished — never report done.
+
+        git unlinks `.git/rebase-merge` before the last commit is replayed, so
+        a missing directory after a SIGKILL can hide a rebase stopped
+        mid-flight; claiming success there force-pushes a half-rebased branch.
+        """
+        from app.rebase_pr import _continue_rebase
+
+        def fake_subprocess_run(cmd, **kwargs):
+            if "--continue" in cmd:
+                raise subprocess.TimeoutExpired(cmd, 60)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("app.rebase_pr._run_git", return_value=""), \
+             patch("app.rebase_pr.subprocess.run", side_effect=fake_subprocess_run), \
+             patch("app.rebase_pr._has_rebase_in_progress", side_effect=[True, False]):
+            outcome = _continue_rebase("/project")
+
+        assert outcome.completed is False
+        assert "git rebase --continue failed" in outcome.detail
+
+    def test_continue_timeout_with_rebase_still_running_fails(self):
+        from app.rebase_pr import _continue_rebase
+
+        def fake_subprocess_run(cmd, **kwargs):
+            if "--continue" in cmd:
+                raise subprocess.TimeoutExpired(cmd, 60)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("app.rebase_pr._run_git", return_value=""), \
+             patch("app.rebase_pr.subprocess.run", side_effect=fake_subprocess_run), \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=True):
+            outcome = _continue_rebase("/project")
+
+        assert outcome.completed is False
+        assert "git rebase --continue failed" in outcome.detail
+
+    def test_refused_continue_returns_git_error_text(self):
+        from app.rebase_pr import _continue_rebase
+
+        run_git_patch, subprocess_patch = self._record_git_calls(
+            [],
+            {"continue": MagicMock(
+                returncode=1, stdout="",
+                stderr="You must edit all merge conflicts")},
+        )
+
+        with run_git_patch, subprocess_patch, \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=True):
+            outcome = _continue_rebase("/project")
+
+        assert outcome.completed is False
+        assert "You must edit all merge conflicts" in outcome.detail
+
+    def test_non_zero_exit_with_the_rebase_dir_gone_is_not_success(self):
+        """A rejected commit hook tears the rebase down without committing."""
+        from app.rebase_pr import _continue_rebase
+
+        run_git_patch, subprocess_patch = self._record_git_calls(
+            [],
+            {"continue": MagicMock(
+                returncode=1, stdout="",
+                stderr="commit-msg hook refused the commit")},
+        )
+
+        with run_git_patch, subprocess_patch, \
+             patch("app.rebase_pr._has_rebase_in_progress", side_effect=[True, False]):
+            outcome = _continue_rebase("/project")
+
+        assert outcome.completed is False
+        assert "commit-msg hook refused the commit" in outcome.detail
+
+    def test_next_commit_conflict_is_not_an_error(self):
+        """A `--continue` that stops on the next commit reports no detail."""
+        from app.rebase_pr import _continue_rebase
+
+        with patch("app.rebase_pr._run_git", return_value=""), \
+             patch("app.rebase_pr.subprocess.run", return_value=MagicMock(
+                 returncode=0, stdout="", stderr="")), \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=True):
+            outcome = _continue_rebase("/project")
+
+        assert outcome.completed is False
+        assert outcome.detail == ""
+
+
+class TestResolveRebaseConflictsProgress:
+    """The round loop must not spin when the rebase cannot advance."""
+
+    def test_stuck_continue_fails_fast_with_the_real_cause(self):
+        from app.rebase_pr import _ContinueOutcome
+
+        failure_detail = []
+        continues = []
+
+        def fake_continue(project_path, actions_log=None):
+            continues.append(project_path)
+            return _ContinueOutcome(
+                False, "git rebase --continue failed: unstaged changes")
+
+        with patch("app.rebase_pr._get_conflicted_files", return_value=[]), \
+             patch("app.rebase_pr._continue_rebase", side_effect=fake_continue):
+            result = _resolve_rebase_conflicts(
+                "main", "", "/project", {}, [], max_rounds=10,
+                failure_detail=failure_detail,
+            )
+
+        assert result is False
+        # One attempt, not ten — a stuck rebase never becomes unstuck by retrying.
+        assert len(continues) == 1
+        assert failure_detail == [
+            "git rebase --continue failed: unstaged changes"
+        ]
+
+    def test_exhausted_rounds_report_that_reason(self):
+        from app.rebase_pr import _ContinueOutcome
+
+        failure_detail = []
+        # Per round: conflicted → resolved → the next commit conflicts again.
+        from itertools import cycle
+        rounds = cycle([["a.py"], [], ["b.py"]])
+        with patch("app.rebase_pr._get_conflicted_files",
+                   side_effect=lambda *_a, **_k: next(rounds)), \
+             patch("app.cli_provider.build_full_command", return_value=["agent"]), \
+             patch("app.rebase_pr.run_claude", return_value={"success": True}), \
+             patch("app.rebase_pr._continue_rebase",
+                   return_value=_ContinueOutcome(False, "")), \
+             patch("app.rebase_pr.get_rebase_conflict_timeout", return_value=600):
+            result = _resolve_rebase_conflicts(
+                "main", "", "/project", {}, [], max_rounds=2,
+                skill_dir=REBASE_SKILL_DIR, failure_detail=failure_detail,
+            )
+
+        assert result is False
+        assert failure_detail == ["exceeded 2 conflict-resolution rounds"]
+
+    def test_unresolved_files_report_the_files_not_the_initial_error(self):
+        failure_detail = []
+        with patch("app.rebase_pr._get_conflicted_files", return_value=["a.py"]), \
+             patch("app.cli_provider.build_full_command", return_value=["agent"]), \
+             patch("app.rebase_pr.run_claude", return_value={"success": True}), \
+             patch("app.rebase_pr.get_rebase_conflict_timeout", return_value=600):
+            result = _resolve_rebase_conflicts(
+                "main", "", "/project", {}, [], max_rounds=1,
+                skill_dir=REBASE_SKILL_DIR, failure_detail=failure_detail,
+            )
+
+        assert result is False
+        assert failure_detail == [
+            "1 file(s) still conflicted after resolution: a.py"
+        ]
+
+    def test_unreadable_status_retries_instead_of_aborting(self):
+        """A git that could not answer is not a rebase that cannot advance."""
+        from app.rebase_pr import _ContinueOutcome
+
+        failure_detail = []
+        # Round 1: status unreadable. Round 2: no conflicts, continue succeeds.
+        statuses = [None, []]
+        with patch("app.rebase_pr._get_conflicted_files",
+                   side_effect=lambda *_a, **_k: statuses.pop(0)), \
+             patch("app.rebase_pr.time.sleep"), \
+             patch("app.rebase_pr._continue_rebase",
+                   return_value=_ContinueOutcome(True, "")) as cont:
+            result = _resolve_rebase_conflicts(
+                "main", "", "/project", {}, [], max_rounds=3,
+                failure_detail=failure_detail,
+            )
+
+        assert result is True
+        assert cont.call_count == 1
+        assert failure_detail == []
+
+    def test_persistently_unreadable_status_reports_gits_own_error(self):
+        """Round exhaustion must not stand in for "git was never queried"."""
+        failure_detail = []
+
+        def fake_status(project_path, errors=None):
+            if errors is not None:
+                errors.append("fatal: Unable to create index.lock")
+            return None
+
+        with patch("app.rebase_pr._get_conflicted_files",
+                   side_effect=fake_status), \
+             patch("app.rebase_pr.time.sleep") as sleep:
+            result = _resolve_rebase_conflicts(
+                "main", "", "/project", {}, [], max_rounds=10,
+                failure_detail=failure_detail,
+            )
+
+        assert result is False
+        # Bounded: three attempts with a pause between them, not ten instant ones.
+        assert sleep.call_count == 2
+        assert failure_detail == [
+            "git status could not be read after 3 attempts: "
+            "fatal: Unable to create index.lock"
+        ]
+
+    def test_unverifiable_continue_keeps_the_rebase_alive(self):
+        """Nothing staged, nothing continued — retry, don't abort the rebase.
+
+        Aborting here would discard conflict resolutions already paid for in
+        LLM quota because one `git status` hit a momentary lock.
+        """
+        from app.rebase_pr import _ContinueOutcome
+
+        failure_detail = []
+        outcomes = [
+            _ContinueOutcome(
+                False, "could not verify the tree is unmerged-free: locked",
+                True),
+            _ContinueOutcome(True, ""),
+        ]
+        with patch("app.rebase_pr._get_conflicted_files", return_value=[]), \
+             patch("app.rebase_pr.time.sleep"), \
+             patch("app.rebase_pr._continue_rebase",
+                   side_effect=lambda *_a, **_k: outcomes.pop(0)) as cont:
+            result = _resolve_rebase_conflicts(
+                "main", "", "/project", {}, [], max_rounds=3,
+                failure_detail=failure_detail,
+            )
+
+        assert result is True
+        assert cont.call_count == 2
+        assert failure_detail == []
+
+    def test_persistently_unverifiable_continue_reports_gits_own_error(self):
+        """A lock that only blocks the pre-staging check must still be named.
+
+        The top-of-round `git status` succeeds every round here, so the
+        conflicts were never "too complex" — no conflict was ever attempted.
+        """
+        from app.rebase_pr import _ContinueOutcome
+
+        failure_detail = []
+        with patch("app.rebase_pr._get_conflicted_files", return_value=[]), \
+             patch("app.rebase_pr.time.sleep") as sleep, \
+             patch("app.rebase_pr._continue_rebase", return_value=_ContinueOutcome(
+                 False,
+                 "could not verify the tree is unmerged-free: "
+                 "fatal: Unable to create index.lock",
+                 True,
+             )) as cont:
+            result = _resolve_rebase_conflicts(
+                "main", "", "/project", {}, [], max_rounds=10,
+                failure_detail=failure_detail,
+            )
+
+        assert result is False
+        # Bounded, and never reached round exhaustion.
+        assert cont.call_count == 3
+        assert sleep.call_count == 2
+        assert failure_detail == [
+            "git status could not be read after 3 attempts: "
+            "could not verify the tree is unmerged-free: "
+            "fatal: Unable to create index.lock"
+        ]
+
+    def test_unreadable_status_after_continue_is_not_reported_as_stuck(self):
+        """The stuck branch needs a confident "nothing conflicted", not a guess."""
+        from app.rebase_pr import _ContinueOutcome
+
+        failure_detail = []
+        # Empty, then unreadable after the continue, then the real conflicts.
+        statuses = [[], None, ["a.py"]]
+        with patch("app.rebase_pr._get_conflicted_files",
+                   side_effect=lambda *_a, **_k: statuses.pop(0)), \
+             patch("app.rebase_pr.time.sleep"), \
+             patch("app.rebase_pr._continue_rebase",
+                   return_value=_ContinueOutcome(False, "")), \
+             patch("app.cli_provider.build_full_command", return_value=["agent"]), \
+             patch("app.rebase_pr.run_claude", return_value={
+                 "success": False, "error": "boom",
+             }), \
+             patch("app.rebase_pr.get_rebase_conflict_timeout", return_value=600):
+            result = _resolve_rebase_conflicts(
+                "main", "", "/project", {}, [], max_rounds=3,
+                failure_detail=failure_detail,
+                skill_dir=REBASE_SKILL_DIR,
+            )
+
+        assert result is False
+        # Reached the resolution agent — not aborted as "made no progress".
+        assert failure_detail == ["conflict-resolution agent failed: boom"]
 
 
 class TestFetchPrContextHeadOwner:
@@ -4547,7 +5142,7 @@ class TestRebaseOutcomeGating:
         monkeypatch.setattr(rp, "_run_rebase_impl", lambda *a, **k: (True, "done"))
         ok, summary = rp.run_rebase("o", "r", "7", "/tmp/x")
         assert ok is True
-        assert sent == ["✅ Rebased https://github.com/o/r/pull/7"]
+        assert sent == ["✅ [x] 🔄 Rebased https://github.com/o/r/pull/7"]
 
     def test_failure_emits_outcome_with_context(self, monkeypatch):
         import app.rebase_pr as rp
@@ -4573,4 +5168,594 @@ class TestRebaseOutcomeGating:
         monkeypatch.setattr(rp, "_run_rebase_impl", _impl)
         rp.run_rebase("o", "r", "7", "/tmp/x")
         assert not any("..." in m for m in sent)  # progress gated
-        assert sent == ["✅ Rebased https://github.com/o/r/pull/7"]
+        assert sent == ["✅ [x] 🔄 Rebased https://github.com/o/r/pull/7"]
+
+
+# ---------------------------------------------------------------------------
+# Force-push content-preservation guard integration
+# ---------------------------------------------------------------------------
+
+class TestPushGuardComment:
+    def test_section_rendered_at_top(self):
+        section = "> [!CAUTION]\n> content was dropped"
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            ["Rebased onto origin/main", "Force-pushed `koan/fix` to origin"],
+            {"title": "Fix bug"},
+            diffstat="1 file changed",
+            push_guard_section=section,
+        )
+        assert section in result
+        # The guard alert comes before every other section of the comment.
+        assert result.index("[!CAUTION]") < result.index("### Stats")
+        assert result.index("[!CAUTION]") < result.index("<details>")
+
+    def test_no_section_by_default(self):
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            ["Rebased onto origin/main"],
+            {"title": "Fix bug"},
+        )
+        assert "[!CAUTION]" not in result
+
+
+class TestPushWithFallbackGuardKeys:
+    def test_success_reports_remote_observed_and_pushed_heads(self):
+        mock_result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("app.claude_step.subprocess.run", return_value=mock_result), \
+             patch("app.rebase_pr._run_git", return_value="beef" * 10 + "\n"), \
+             patch(
+                 "app.rebase_pr.force_push_guard.observe_remote_head",
+                 return_value="cafe" * 10,
+             ) as observe:
+            result = _push_with_fallback(
+                "koan/fix", "main", "sukria/koan", "42",
+                {"title": "Fix", "url": "https://..."}, "/project",
+            )
+        assert result["success"] is True
+        assert result["remote"] == "origin"
+        assert result["pre_push_remote_heads"] == ["cafe" * 10]
+        assert result["pushed_head"] == "beef" * 10
+        observe.assert_called_once_with("origin", "koan/fix", "/project")
+
+    def test_lease_rejection_records_the_tip_that_caused_it(self):
+        """A rejected --force-with-lease means the remote moved after the first
+        observation; the tip the plain --force is about to clobber must be
+        observed too, or the guard can never name it."""
+        def mock_run(cmd, **kwargs):
+            if "--force-with-lease" in cmd:
+                raise RuntimeError("stale info")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        observed = ["cafe" * 10, "dead" * 10]  # tip before, tip after it moved
+        with patch("app.claude_step.subprocess.run", side_effect=mock_run), \
+             patch("app.rebase_pr._run_git", return_value="beef" * 10 + "\n"), \
+             patch(
+                 "app.rebase_pr.force_push_guard.observe_remote_head",
+                 side_effect=observed,
+             ):
+            result = _push_with_fallback(
+                "koan/fix", "main", "sukria/koan", "42",
+                {"title": "Fix", "url": "https://..."}, "/project",
+            )
+        assert result["success"] is True
+        assert result["pre_push_remote_heads"] == observed
+
+    def test_unchanged_tip_is_not_observed_twice(self):
+        """The lease can also fail for reasons other than a moved tip — the
+        same SHA must not be listed twice."""
+        def mock_run(cmd, **kwargs):
+            if "--force-with-lease" in cmd:
+                raise RuntimeError("stale info")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("app.claude_step.subprocess.run", side_effect=mock_run), \
+             patch("app.rebase_pr._run_git", return_value="beef" * 10 + "\n"), \
+             patch(
+                 "app.rebase_pr.force_push_guard.observe_remote_head",
+                 return_value="cafe" * 10,
+             ):
+            result = _push_with_fallback(
+                "koan/fix", "main", "sukria/koan", "42",
+                {"title": "Fix", "url": "https://..."}, "/project",
+            )
+        assert result["pre_push_remote_heads"] == ["cafe" * 10]
+
+    def test_observations_of_a_failed_remote_are_not_reported(self):
+        """A tip seen on a remote whose push then failed was never overwritten;
+        reporting it would raise a false 'concurrent push clobbered' alarm."""
+        def mock_run(cmd, **kwargs):
+            if cmd[:2] == ["git", "push"] and "origin" in cmd:
+                raise RuntimeError("permission denied")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("app.claude_step.subprocess.run", side_effect=mock_run), \
+             patch("app.rebase_pr._run_git", return_value="beef" * 10 + "\n"), \
+             patch(
+                 "app.rebase_pr.force_push_guard.observe_remote_head",
+                 side_effect=["cafe" * 10, "cafe" * 10, "dead" * 10],
+             ):
+            result = _push_with_fallback(
+                "koan/fix", "main", "sukria/koan", "42",
+                {"title": "Fix", "url": ""}, "/project",
+            )
+        assert result["remote"] == "upstream"
+        assert result["pre_push_remote_heads"] == ["dead" * 10]
+
+    def test_unobservable_remote_is_flagged_not_assumed_clean(self):
+        """`ls-remote` failing is 'could not look', not 'nothing was there'."""
+        mock_result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("app.claude_step.subprocess.run", return_value=mock_result), \
+             patch("app.rebase_pr._run_git", return_value="beef" * 10 + "\n"), \
+             patch(
+                 "app.rebase_pr.force_push_guard.observe_remote_head",
+                 return_value=None,
+             ):
+            result = _push_with_fallback(
+                "koan/fix", "main", "sukria/koan", "42",
+                {"title": "Fix", "url": ""}, "/project",
+            )
+        assert result["pre_push_remote_heads"] == []
+        assert result["observation_failed"] is True
+
+    def test_observation_crash_does_not_block_the_push(self):
+        """The observation runs on the live push path. The guard detects and
+        warns — an unexpected failure inside it must not gate the push, divert
+        it to another remote, or fail the rebase."""
+        mock_result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("app.claude_step.subprocess.run", return_value=mock_result), \
+             patch("app.rebase_pr._run_git", return_value="beef" * 10 + "\n"), \
+             patch(
+                 "app.rebase_pr.force_push_guard.observe_remote_head",
+                 side_effect=AttributeError("guard bug"),
+             ):
+            result = _push_with_fallback(
+                "koan/fix", "main", "sukria/koan", "42",
+                {"title": "Fix", "url": ""}, "/project",
+            )
+        assert result["success"] is True
+        assert result["remote"] == "origin"  # not diverted to the fallback
+        assert result["pushed_head"] == "beef" * 10
+        assert result["observation_failed"] is True
+
+    def test_lease_hook_crash_still_pushes_and_reports_unverified(self):
+        """Same on the lease-failure re-observation, which runs between the
+        rejected --force-with-lease and the plain --force."""
+        def mock_run(cmd, **kwargs):
+            if "--force-with-lease" in cmd:
+                raise RuntimeError("stale info")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("app.claude_step.subprocess.run", side_effect=mock_run), \
+             patch("app.rebase_pr._run_git", return_value="beef" * 10 + "\n"), \
+             patch(
+                 "app.rebase_pr.force_push_guard.observe_remote_head",
+                 side_effect=["cafe" * 10, RuntimeError("guard bug")],
+             ):
+            result = _push_with_fallback(
+                "koan/fix", "main", "sukria/koan", "42",
+                {"title": "Fix", "url": ""}, "/project",
+            )
+        assert result["success"] is True
+        assert result["pre_push_remote_heads"] == ["cafe" * 10]
+        assert result["observation_failed"] is True
+
+    def test_failed_push_reports_no_pushed_head(self):
+        """A SHA that never reached the remote must not be reported as pushed."""
+        def mock_run(cmd, **kwargs):
+            if cmd[:2] == ["git", "push"]:
+                raise RuntimeError("rejected")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("app.claude_step.subprocess.run", side_effect=mock_run), \
+             patch("app.rebase_pr._run_git", return_value="beef" * 10 + "\n"), \
+             patch(
+                 "app.rebase_pr.force_push_guard.observe_remote_head",
+                 return_value="cafe" * 10,
+             ):
+            result = _push_with_fallback(
+                "koan/fix", "main", "sukria/koan", "42",
+                {"title": "Fix", "url": ""}, "/project",
+            )
+        assert result["success"] is False
+        assert not result.get("pushed_head")
+
+
+class TestRunForcePushGuard:
+    def _run(self, *, pre_rebase_head="a" * 40, findings="unused",
+             section="", actions_log=None, notify_calls=None):
+        actions_log = actions_log if actions_log is not None else []
+        notify_calls = notify_calls if notify_calls is not None else []
+        with patch(
+            "app.rebase_pr.force_push_guard.verify_content_preserved",
+            return_value=findings,
+        ), patch(
+            "app.rebase_pr.force_push_guard.build_push_warning",
+            return_value=section,
+        ):
+            result = _run_force_push_guard(
+                pre_rebase_head=pre_rebase_head,
+                target_ref="origin/main",
+                project_path="/project",
+                push_state={
+                    "remote": "origin",
+                    "pushed_head": "c" * 40,
+                    "observations": ["b" * 40],
+                },
+                branch="koan/fix",
+                pr_number="42",
+                actions_log=actions_log,
+                notify_fn=notify_calls.append,
+            )
+        return result, actions_log, notify_calls
+
+    def test_findings_produce_section_action_and_notification(self):
+        section = "> [!CAUTION]\n> boom"
+        result, log, notified = self._run(section=section)
+        assert result == section
+        assert any("Force-push guard" in a and "see the warning" in a for a in log)
+        assert len(notified) == 1
+        assert "PR #42" in notified[0]
+
+    def test_alert_is_not_progress_gated(self):
+        """The guard finding is a safety outcome: it must reach the human even
+        in normal mode, where progress messages are suppressed."""
+        from app.messaging_level import progress_notify
+        sent = []
+        with patch("app.messaging_level.is_debug", return_value=False):
+            notifier = progress_notify(sent.append, log_category="rebase")
+            notifier("Pushing `koan/fix`...")  # progress — suppressed
+            with patch(
+                "app.rebase_pr.force_push_guard.verify_content_preserved",
+                return_value="findings",
+            ), patch(
+                "app.rebase_pr.force_push_guard.build_push_warning",
+                return_value="> [!CAUTION]\n> boom",
+            ):
+                _run_force_push_guard(
+                    pre_rebase_head="a" * 40,
+                    target_ref="origin/main",
+                    project_path="/project",
+                    push_state={"remote": "origin", "pushed_head": "c" * 40},
+                    branch="koan/fix",
+                    pr_number="42",
+                    actions_log=[],
+                    notify_fn=notifier,
+                )
+        assert len(sent) == 1
+        assert "Force-push guard" in sent[0]
+
+    def test_alert_delivery_failure_is_non_fatal(self):
+        def boom(_msg):
+            raise RuntimeError("telegram down")
+
+        with patch(
+            "app.rebase_pr.force_push_guard.verify_content_preserved",
+            return_value="findings",
+        ), patch(
+            "app.rebase_pr.force_push_guard.build_push_warning",
+            return_value="> [!CAUTION]\n> boom",
+        ):
+            section = _run_force_push_guard(
+                pre_rebase_head="a" * 40,
+                target_ref="origin/main",
+                project_path="/project",
+                push_state={"remote": "origin", "pushed_head": "c" * 40},
+                branch="koan/fix",
+                pr_number="42",
+                actions_log=[],
+                notify_fn=boom,
+            )
+        # The PR comment still carries the finding even if chat delivery failed.
+        assert section == "> [!CAUTION]\n> boom"
+
+    def test_clean_check_logs_preserved(self):
+        result, log, notified = self._run(section="")
+        assert result == ""
+        assert any("verified preserved" in a for a in log)
+        assert notified == []
+
+    def test_guard_failure_is_non_fatal(self):
+        result, log, notified = self._run(findings=None, section="")
+        assert result == ""
+        assert any("could not run" in a for a in log)
+        assert notified == []
+
+    def test_unexpected_guard_exception_does_not_fail_the_rebase(self):
+        """The branch is already pushed by the time the guard runs: an
+        unexpected failure must not turn a completed rebase into a failed
+        mission or skip the PR comment that follows."""
+        log = []
+        with patch(
+            "app.rebase_pr.force_push_guard.verify_content_preserved",
+            side_effect=AttributeError("boom"),
+        ):
+            result = _run_force_push_guard(
+                pre_rebase_head="a" * 40,
+                target_ref="origin/main",
+                project_path="/project",
+                push_state={"remote": "origin", "pushed_head": "c" * 40},
+                branch="koan/fix",
+                pr_number="42",
+                actions_log=log,
+                notify_fn=lambda m: None,
+            )
+        assert result == ""
+        assert any("unexpected guard failure" in a for a in log)
+
+    def test_unexpected_render_exception_does_not_fail_the_rebase(self):
+        log = []
+        with patch(
+            "app.rebase_pr.force_push_guard.verify_content_preserved",
+            return_value="findings",
+        ), patch(
+            "app.rebase_pr.force_push_guard.build_push_warning",
+            side_effect=TypeError("boom"),
+        ):
+            result = _run_force_push_guard(
+                pre_rebase_head="a" * 40,
+                target_ref="origin/main",
+                project_path="/project",
+                push_state={"remote": "origin", "pushed_head": "c" * 40},
+                branch="koan/fix",
+                pr_number="42",
+                actions_log=log,
+                notify_fn=lambda m: None,
+            )
+        assert result == ""
+        assert any("unexpected guard failure" in a for a in log)
+
+    def test_missing_baseline_skips(self):
+        log = []
+        result = _run_force_push_guard(
+            pre_rebase_head="",
+            target_ref="origin/main",
+            project_path="/project",
+            push_state={},
+            branch="koan/fix",
+            pr_number="42",
+            actions_log=log,
+            notify_fn=lambda m: None,
+        )
+        assert result == ""
+        assert any("pre-rebase head was not captured" in a for a in log)
+
+
+class TestGatePushStatePropagation:
+    def test_gate_push_feeds_observation_into_push_state(self):
+        """push_gate_fix must surface its own fresh observation + pushed SHA
+        so the guard also covers the gate-push window (review finding #3)."""
+        push_state = {
+            "remote": "origin",
+            "pushed_head": "old0" * 10,
+            "observations": ["pre0" * 10],
+        }
+
+        def fake_gate(**kwargs):
+            kwargs["push_fn"]()  # the gate pushes a fix
+            return SimpleNamespace(ran=True, summary="ok", skipped_reason="")
+
+        with patch("app.rebase_pr._push_with_fallback", return_value={
+            "success": True,
+            "actions": ["Force-pushed `koan/fix` to origin"],
+            "error": "",
+            "remote": "origin",
+            "pre_push_remote_heads": ["obs1" * 10],
+            "pushed_head": "new1" * 10,
+        }), patch("app.private_review_gate.run_private_review_gate",
+                  side_effect=fake_gate), \
+             patch("app.utils.project_name_for_path", return_value="proj"):
+            from app.rebase_pr import _run_rebase_private_review_gate
+            _run_rebase_private_review_gate(
+                owner="o", repo="r", pr_number="42", branch="koan/fix",
+                base="main", full_repo="o/r", context={"url": ""},
+                project_path="/tmp", head_remote=None,
+                notify_fn=lambda m: None, skill_dir=None, actions_log=[],
+                push_state=push_state,
+            )
+
+        assert push_state["remote"] == "origin"
+        assert push_state["pushed_head"] == "new1" * 10
+        assert push_state["observations"] == ["pre0" * 10, "obs1" * 10]
+
+    def test_gate_push_to_another_remote_drops_stale_observations(self):
+        """Observations only describe the remote they were taken on. If the
+        gate lands somewhere else, the earlier tips belong to a branch this
+        pipeline never overwrote — keeping them would be a false clobber."""
+        push_state = {
+            "remote": "origin",
+            "pushed_head": "old0" * 10,
+            "observations": ["pre0" * 10],
+            "observation_failed": True,
+        }
+
+        def fake_gate(**kwargs):
+            kwargs["push_fn"]()
+            return SimpleNamespace(ran=True, summary="ok", skipped_reason="")
+
+        with patch("app.rebase_pr._push_with_fallback", return_value={
+            "success": True,
+            "actions": [],
+            "error": "",
+            "remote": "upstream",
+            "pre_push_remote_heads": ["obs1" * 10],
+            "observation_failed": False,
+            "pushed_head": "new1" * 10,
+        }), patch("app.private_review_gate.run_private_review_gate",
+                  side_effect=fake_gate), \
+             patch("app.utils.project_name_for_path", return_value="proj"):
+            from app.rebase_pr import _run_rebase_private_review_gate
+            _run_rebase_private_review_gate(
+                owner="o", repo="r", pr_number="42", branch="koan/fix",
+                base="main", full_repo="o/r", context={"url": ""},
+                project_path="/tmp", head_remote=None,
+                notify_fn=lambda m: None, skill_dir=None, actions_log=[],
+                push_state=push_state,
+            )
+
+        assert push_state["remote"] == "upstream"
+        assert push_state["observations"] == ["obs1" * 10]
+        assert push_state["observation_failed"] is False
+
+    def test_gate_push_without_confirmed_sha_clears_pushed_head(self):
+        """If the gate pushed but its SHA capture failed, the step-6 SHA is
+        stale: keeping it would fake a post-push race. Clearing it makes the
+        guard skip instead — the honest outcome."""
+        push_state = {
+            "remote": "origin",
+            "pushed_head": "old0" * 10,
+            "observations": ["pre0" * 10],
+        }
+
+        def fake_gate(**kwargs):
+            kwargs["push_fn"]()
+            return SimpleNamespace(ran=True, summary="ok", skipped_reason="")
+
+        with patch("app.rebase_pr._push_with_fallback", return_value={
+            "success": True,
+            "actions": [],
+            "error": "",
+            "remote": "origin",
+            "pre_push_remote_heads": [],
+            "pushed_head": "",
+        }), patch("app.private_review_gate.run_private_review_gate",
+                  side_effect=fake_gate), \
+             patch("app.utils.project_name_for_path", return_value="proj"):
+            from app.rebase_pr import _run_rebase_private_review_gate
+            _run_rebase_private_review_gate(
+                owner="o", repo="r", pr_number="42", branch="koan/fix",
+                base="main", full_repo="o/r", context={"url": ""},
+                project_path="/tmp", head_remote=None,
+                notify_fn=lambda m: None, skill_dir=None, actions_log=[],
+                push_state=push_state,
+            )
+
+        assert push_state["pushed_head"] == ""
+
+
+def _git_cmd(cwd, *args):
+    """Run git in *cwd* with a deterministic identity, raising on failure."""
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+         "-c", "commit.gpgsign=false", *args],
+        cwd=str(cwd), check=True, capture_output=True, text=True,
+    )
+
+
+def _commit_file(repo, name, content, message):
+    (repo / name).write_text(content)
+    _git_cmd(repo, "add", name)
+    _git_cmd(repo, "commit", "-m", message)
+
+
+def _make_repo_hermetic(repo):
+    """Pin identity/signing/hooks in *repo* so git works without a global config.
+
+    The rebase pipeline shells out to plain ``git``, so it inherits none of
+    ``_git_cmd``'s ``-c`` flags. On a CI runner there is no global identity and
+    the auto-detected one is rejected (``user@host.(none)``), which would fail
+    the replayed commits rather than the behaviour under test.
+    """
+    _git_cmd(repo, "config", "user.email", "t@t")
+    _git_cmd(repo, "config", "user.name", "t")
+    _git_cmd(repo, "config", "commit.gpgsign", "false")
+    _git_cmd(repo, "config", "core.hooksPath", str(repo / ".no-hooks"))
+
+
+class TestConcurrentPushDuringPrePushCiFix:
+    """Step 5 (pre-push CI fix) is inside the guard's observation window.
+
+    ``_fix_existing_ci_failures`` amends the local commit and never pushes —
+    the pipeline's first force-push is Step 6, whose pre-push observation is
+    taken *after* Step 5 returns. A commit someone else lands while the CI fix
+    is running is therefore still observed, and named in the PR comment after
+    the force-push erases it.
+    """
+
+    @pytest.fixture
+    def repos(self, tmp_path):
+        """Bare remote + seed clone (the human) + work clone (the pipeline)."""
+        bare = tmp_path / "remote.git"
+        bare.mkdir()
+        _git_cmd(bare, "init", "--bare", "-b", "main", ".")
+
+        seed = tmp_path / "seed"
+        _git_cmd(tmp_path, "clone", str(bare), "seed")
+        _make_repo_hermetic(seed)
+        # An empty clone takes its branch name from init.defaultBranch on older
+        # git, so name it explicitly rather than inheriting the runner's setting.
+        _git_cmd(seed, "symbolic-ref", "HEAD", "refs/heads/main")
+        _commit_file(seed, "a.txt", "one", "c1")
+        _git_cmd(seed, "push", "origin", "main")
+        _git_cmd(seed, "checkout", "-b", "feature")
+        _commit_file(seed, "f1.txt", "f1", "feature work")
+        _git_cmd(seed, "push", "origin", "feature")
+        _git_cmd(seed, "checkout", "main")
+        _commit_file(seed, "b.txt", "two", "c2")
+        _git_cmd(seed, "push", "origin", "main")
+
+        work = tmp_path / "work"
+        _git_cmd(tmp_path, "clone", str(bare), "work")
+        _make_repo_hermetic(work)
+        return SimpleNamespace(bare=bare, seed=seed, work=work)
+
+    def _context(self):
+        return {
+            "title": "Fix auth",
+            "body": "",
+            "branch": "feature",
+            "base": "main",
+            "state": "OPEN",
+            "author": "",
+            "url": "https://github.com/o/r/pull/1",
+            "diff": "",
+            "review_comments": "",
+            "reviews": "",
+            "issue_comments": "",
+            "head_owner": "o",
+        }
+
+    def test_commit_landing_during_ci_fix_is_named_in_pr_comment(self, repos):
+        posted: list = []
+
+        def fake_gh(*args, **_kwargs):
+            posted.append(args)
+            return ""
+
+        def human_pushes_during_ci_fix(**_kwargs):
+            """The Step 5 CI fix runs while a human lands a commit on the PR."""
+            _git_cmd(repos.seed, "fetch", "origin")
+            _git_cmd(repos.seed, "checkout", "feature")
+            _commit_file(
+                repos.seed, "hotfix.txt", "urgent", "human hotfix mid-rebase",
+            )
+            _git_cmd(repos.seed, "push", "origin", "feature")
+            return False
+
+        gate_skipped = SimpleNamespace(
+            ran=False, summary="", skipped_reason="not a backend project",
+        )
+
+        with patch("app.rebase_pr.resolve_pr_location", return_value=("o", "r")), \
+             patch("app.rebase_pr.fetch_pr_context", return_value=self._context()), \
+             patch("app.rebase_pr._check_if_already_solved", return_value=(False, None)), \
+             patch("app.commit_conventions.get_project_commit_guidance", return_value=""), \
+             patch("app.rebase_pr._find_remote_for_repo", return_value="origin"), \
+             patch("app.rebase_pr._fix_existing_ci_failures",
+                   side_effect=human_pushes_during_ci_fix), \
+             patch("app.rebase_pr._enqueue_ci_check", return_value=""), \
+             patch("app.rebase_pr._get_diffstat", return_value=""), \
+             patch("app.rebase_pr.run_gh", side_effect=fake_gh), \
+             patch("app.private_review_gate.run_private_review_gate",
+                   return_value=gate_skipped):
+            success, summary = run_rebase(
+                "o", "r", "1", str(repos.work), notify_fn=MagicMock(),
+            )
+
+        assert success is True, f"rebase pipeline failed: {summary}"
+        comments = [a for a in posted if a[:2] == ("pr", "comment")]
+        assert comments, "the pipeline must comment on the PR"
+        body = comments[-1][-1]
+        assert "human hotfix mid-rebase" in body
+        assert "force-push" in body.lower()
+        assert "guard" in summary.lower()

@@ -6,6 +6,7 @@ emoji: 🔨
 description: "Implement a tracker issue (GitHub or Jira)"
 version: 1.0.0
 audience: hybrid
+api_exposed: true
 caveman: true
 model_key: mission
 github_enabled: true

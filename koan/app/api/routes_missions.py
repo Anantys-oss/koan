@@ -12,23 +12,233 @@ from app.api.mission_index import (
     get_mission,
     list_missions,
     load_full_result,
-    record_mission,
     reconcile,
+    record_mission,
     update_mission_text,
 )
+from app.api.openapi_metadata import openapi_operation, query_parameter
+from app.api.skill_catalog import API_COMMAND_NAMES, canonical_command_name
 
 bp = Blueprint("missions", __name__)
 
-# Validate command-style missions
-_COMMAND_RE = re.compile(r"^/[a-zA-Z0-9_]+")
+# Validate command-style missions. The verb class mirrors what the dispatcher
+# actually resolves — ``skill_dispatch.parse_skill_mission`` takes everything up
+# to the first whitespace — so dotted (``/claude.md``, ``/core.plan``) and
+# non-ASCII (``/français``) commands keep working. Narrowing it to ``\w`` would
+# reject commands REST queued before this endpoint validated anything. The
+# leading slash is mandatory: it is the only signal separating "dispatch this
+# skill" from free-form work, so prose whose first word happens to name a
+# runner must not be silently turned into a skill dispatch.
+_COMMAND_RE = re.compile(
+    r"^/(?P<name>[^\s/]+)"
+    r"(?P<arguments>(?:\s+[\s\S]+)?)$"
+)
+
+
+def _command_property_schema() -> dict:
+    description = (
+        "Slash-command mission; prefer this for work covered by an "
+        "existing Kōan skill. Append arguments to the selected verb, "
+        'for example "/review '
+        'https://github.com/owner/repo/pull/42". '
+        "Use text only when no exposed skill covers the work."
+    )
+    if not API_COMMAND_NAMES:
+        return {
+            "type": "string",
+            "description": description,
+        }
+
+    verbs = "|".join(
+        re.escape(name.removeprefix("/"))
+        for name in API_COMMAND_NAMES
+    )
+    return {
+        "anyOf": [
+            {
+                "type": "string",
+                "enum": list(API_COMMAND_NAMES),
+            },
+            {
+                "type": "string",
+                "pattern": rf"^/(?:{verbs})(?:\s+[\s\S]+)?$",
+            },
+        ],
+        "description": description,
+    }
+
+_CREATE_MISSION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "command": _command_property_schema(),
+        "text": {
+            "type": "string",
+            "description": "Free-form mission text for work no exposed skill covers.",
+        },
+        "project": {
+            "type": "string",
+            "description": "Optional project name added as a project tag.",
+        },
+        "urgent": {
+            "type": "boolean",
+            "default": False,
+            "description": "Insert the mission at the front of the pending queue.",
+        },
+    },
+    "anyOf": [
+        {
+            "required": ["command"],
+            "properties": {"command": {"pattern": r"\S"}},
+        },
+        {
+            "required": ["text"],
+            "properties": {"text": {"pattern": r"\S"}},
+        },
+    ],
+}
+
+_REORDER_MISSION_SCHEMA = {
+    "type": "object",
+    "required": ["mission_id", "target_position"],
+    "properties": {
+        "mission_id": {
+            "type": "string",
+            "pattern": r"\S",
+            "description": "Identifier of the pending mission to move.",
+        },
+        "target_position": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "One-indexed position in the pending queue.",
+        },
+    },
+}
+
+_EDIT_MISSION_SCHEMA = {
+    "type": "object",
+    "required": ["text"],
+    "properties": {
+        "text": {"type": "string", "pattern": r"\S"},
+    },
+}
+
+_LIST_MISSIONS_QUERY_PARAMETERS = (
+    query_parameter(
+        "status",
+        {
+            "type": "string",
+            "enum": ["pending", "in_progress", "done", "failed"],
+        },
+        "Restrict results to one mission-store state.",
+    ),
+    query_parameter(
+        "project",
+        {"type": "string"},
+        "Restrict results to one project.",
+    ),
+    query_parameter(
+        "limit",
+        {"type": "integer", "minimum": 1},
+        (
+            "Cap the rows returned per state. Omit for unlimited; "
+            "a non-integer or < 1 value is rejected with 422."
+        ),
+    ),
+)
+
+_MISSION_ID_DESCRIPTION = "Mission identifier returned when the mission was queued."
 
 
 def _instance_dir() -> Path:
     return current_app.config["INSTANCE_DIR"]
 
 
+def _invalid_request(message: str):
+    """422 `invalid_request`, the house shape for a rejected parameter."""
+    return jsonify({"error": {"code": "invalid_request", "message": message}}), 422
+
+
+def _parse_limit(raw: str | None):
+    """Parse ``?limit``; returns ``(limit, error_response)``.
+
+    A malformed bound is rejected rather than coerced to "unlimited": that
+    fallback would widen the response to the caller's whole mission history,
+    the opposite of what a capped query asked for.
+    """
+    if not raw:
+        return None, None
+    try:
+        limit = int(raw)
+    except ValueError:
+        return None, _invalid_request(f"'limit' must be an integer, got '{raw}'")
+    if limit < 1:
+        return None, _invalid_request("'limit' must be >= 1")
+    return limit, None
+
+
+def _match_key(text: str) -> str:
+    """Identity key shared by both sides of the sidecar ↔ store join.
+
+    ``canonical_mission_key()`` is the repo's canonical identity helper: it
+    strips the lifecycle markers, ``[r:N]``, ``[complexity:X]``,
+    ``[verify-failed: …]`` and a leading ``"- "`` while keeping
+    ``[project:X]``. The queue appends that metadata to a mission *after* it
+    was recorded in the sidecar, so a looser normalizer would make the two
+    sides diverge the moment the loop tags a mission.
+    """
+    from app.missions import canonical_mission_key
+    return canonical_mission_key(text)
+
+
+def _sidecar_ids_by_text(instance_dir: Path) -> dict:
+    """Map canonical mission key → API sidecar id.
+
+    The list is store-backed, but every single-mission route
+    (``GET``/``PATCH``/``DELETE /v1/missions/{id}``, ``/result``, ``/reorder``)
+    resolves ids through the sidecar. Emitting the store's rowid as ``id``
+    would hand clients a handle that 404s everywhere else, so ``id`` keeps
+    meaning "sidecar id" and the store identity travels as ``store_id``.
+    Later records win: a re-queued mission resolves to its newest record.
+    """
+    ids: dict = {}
+    for rec in list_missions(instance_dir):
+        if rec.get("status") == "removed":
+            continue
+        key = _match_key(rec.get("text", ""))
+        if key:
+            ids[key] = rec["id"]
+    return ids
+
+
 def _missions_file() -> Path:
     return _instance_dir() / "missions.md"
+
+
+def _normalize_command(command: str) -> str:
+    """Normalize a slash-command mission to its canonical verb.
+
+    ``API_COMMAND_NAMES`` is the *advertised* surface — the OpenAPI enum and
+    the MCP tool schema built from it — deliberately **not** an accept-list.
+    REST has always queued any slash command, so gating on the catalogue would
+    break existing callers of every other command without buying any safety:
+    ``text`` carries a slash command through unvalidated anyway. Aliases of
+    exposed skills are still resolved so a client following the advertised
+    catalogue queues the canonical verb.
+
+    A value without a leading slash is rejected rather than promoted to a
+    command: ``command`` means "dispatch a skill", and free-form work belongs
+    in ``text``.
+    """
+    match = _COMMAND_RE.fullmatch(command)
+    if match is None:
+        raise ValueError(
+            "'command' must be a slash command: a leading '/', a "
+            "command name, then optional arguments. Use 'text' for "
+            "free-form mission text."
+        )
+
+    canonical = canonical_command_name(match.group("name"))
+    return f"/{canonical}" + match.group("arguments")
 
 
 def _validate_mission_body(data: dict):
@@ -36,13 +246,20 @@ def _validate_mission_body(data: dict):
 
     Returns (text, project, urgent) or raises ValueError.
     """
-    command = data.get("command", "").strip()
-    text = data.get("text", "").strip()
+    raw_command = data.get("command", "")
+    raw_text = data.get("text", "")
+    if raw_command is not None and not isinstance(raw_command, str):
+        raise ValueError("'command' must be a string")
+    if raw_text is not None and not isinstance(raw_text, str):
+        raise ValueError("'text' must be a string")
+
+    command = (raw_command or "").strip()
+    text = (raw_text or "").strip()
 
     if not command and not text:
         raise ValueError("One of 'command' or 'text' is required")
 
-    mission_text = command or text
+    mission_text = _normalize_command(command) if command else text
 
     # Sanitize
     from app.missions import sanitize_mission_text
@@ -51,8 +268,17 @@ def _validate_mission_body(data: dict):
     if not mission_text:
         raise ValueError("Mission text cannot be empty after sanitization")
 
-    project = data.get("project", "").strip() or None
-    urgent = bool(data.get("urgent", False))
+    raw_project = data.get("project", "")
+    if raw_project is not None and not isinstance(raw_project, str):
+        raise ValueError("'project' must be a string")
+    project = (raw_project or "").strip() or None
+
+    # Reject rather than coerce: bool("false") is True, so a coerced string
+    # would silently jump the mission to the front of the queue — the opposite
+    # of what the caller wrote — while openapi.yaml advertises "boolean".
+    urgent = data.get("urgent", False)
+    if not isinstance(urgent, bool):
+        raise ValueError("'urgent' must be a boolean")
 
     return mission_text, project, urgent
 
@@ -88,23 +314,91 @@ def _find_pending_position(content: str, stored_text: str):
 
 
 @bp.route("/v1/missions", methods=["GET"])
+@openapi_operation(
+    query_parameters=_LIST_MISSIONS_QUERY_PARAMETERS,
+    mcp=True,
+    mcp_description=(
+        "Use this to browse or filter queues. Do not poll it for one mission's "
+        "completion; use `koan_missions_get` with that mission id."
+    ),
+)
 @require_token
 def list_missions_route():
+    """List missions from the authoritative mission store.
+
+    The store is the same source ``GET /v1/status`` counts, so a mission
+    queued from Slack/GitHub/dashboard is visible here even when it was never
+    recorded in the API sidecar. Rows are grouped by state in
+    ``pending``/``in_progress``/``done``/``failed`` order — queue order within
+    the live states, most-recent-first within the terminal ones. ``?status``
+    filters to one state, ``?project`` to one project, and ``?limit`` caps the
+    rows returned *per state* (so a limit with no ``?status`` can return up to
+    four times that many rows).
+    """
+    from app.mission_store import VALID_STATES, get_mission_store
+    from app.mission_store.transition import ensure_store_synced
+
     status_filter = request.args.get("status")
     project_filter = request.args.get("project")
-    records = list_missions(_instance_dir(), status_filter, project_filter)
-    # Reconcile each record
+
+    limit, limit_error = _parse_limit(request.args.get("limit"))
+    if limit_error is not None:
+        return limit_error
+
+    if status_filter and status_filter not in VALID_STATES:
+        return _invalid_request(
+            f"Unknown status '{status_filter}'. Valid: {', '.join(VALID_STATES)}"
+        )
+
+    instance = _instance_dir()
+    ensure_store_synced(str(instance))
+    store = get_mission_store(str(instance))
+    sidecar_ids = _sidecar_ids_by_text(instance)
+
+    states = [status_filter] if status_filter else list(VALID_STATES)
+
     out = []
-    for rec in records:
-        rec = reconcile(_instance_dir(), _missions_file(), rec["id"])
-        if rec:
-            out.append(rec)
+    for state in states:
+        out.extend(
+            {
+                "id": sidecar_ids.get(_match_key(m.text)),
+                "store_id": m.id,
+                "text": m.text,
+                "status": m.state,
+                "project": m.project,
+                "sequence": m.sequence,
+                "complexity": m.complexity,
+                "queued_at": m.queued_at,
+                "started_at": m.started_at,
+                "completed_at": m.completed_at,
+            }
+            for m in store.list_by_state(state, project=project_filter, limit=limit)
+        )
     return jsonify(out)
 
 
 @bp.route("/v1/missions", methods=["POST"])
+@openapi_operation(
+    request_schema=_CREATE_MISSION_SCHEMA,
+    mcp=True,
+    mcp_description=(
+        "Prefer `command` for anything an existing Kōan skill does. "
+        "Pass the slash command with its arguments, for example "
+        '"/review https://github.com/owner/repo/pull/42". '
+        "Call `koan_skills_list` for the full catalogue, usage, aliases, "
+        "and per-command flags. Use `text` only for work no exposed "
+        "skill covers. The returned id identifies queued work, not a "
+        "completed result. Poll `koan_missions_get`, then call "
+        "`koan_missions_result` after status becomes `done`."
+    ),
+)
 @require_token
 def create_mission():
+    """Queue a new mission.
+
+    The mission is appended to the pending queue for a later agent cycle.
+    Setting `urgent` inserts it at the front instead.
+    """
     data = request.get_json(silent=True) or {}
     try:
         text, project, urgent = _validate_mission_body(data)
@@ -121,8 +415,20 @@ def create_mission():
 
 
 @bp.route("/v1/missions/reorder", methods=["POST"])
+@openapi_operation(
+    request_schema=_REORDER_MISSION_SCHEMA,
+    mcp=True,
+    mcp_description=(
+        "Only pending missions can be reordered. Obtain the mission id from "
+        "`koan_missions_list` and use a one-indexed target position."
+    ),
+)
 @require_token
 def reorder_mission_route():
+    """Move a pending mission to a new position.
+
+    Reordering changes queue priority without editing the mission text.
+    """
     data = request.get_json(silent=True)
     if data is None:
         return jsonify(
@@ -177,8 +483,23 @@ def reorder_mission_route():
 
 
 @bp.route("/v1/missions/<mission_id>", methods=["GET"])
+@openapi_operation(
+    mcp=True,
+    mcp_description=(
+        "Use this to poll one queued mission. When its status is `done`, "
+        "fetch the complete structured result with `koan_missions_result`."
+    ),
+    path_parameter_descriptions={
+        "mission_id": _MISSION_ID_DESCRIPTION,
+    },
+)
 @require_token
 def get_mission_route(mission_id: str):
+    """Fetch one mission by id.
+
+    Returns lifecycle state, outcome metadata, result references, and
+    aggregated usage for the selected mission.
+    """
     rec = get_mission(_instance_dir(), mission_id)
     if rec is None:
         return jsonify({"error": {"code": "not_found", "message": "Mission not found"}}), 404
@@ -188,6 +509,7 @@ def get_mission_route(mission_id: str):
     rec.setdefault("outcome", None)
 
     from datetime import date, datetime
+
     from app.cost_tracker import aggregate_mission_usage
 
     start = None
@@ -213,8 +535,24 @@ def get_mission_route(mission_id: str):
 
 
 @bp.route("/v1/missions/<mission_id>/result", methods=["GET"])
+@openapi_operation(
+    mcp=True,
+    mcp_description=(
+        "Call this after `koan_missions_get` reports `done`. It returns the "
+        "complete structured result and reports not found when no structured "
+        "result is available."
+    ),
+    path_parameter_descriptions={
+        "mission_id": _MISSION_ID_DESCRIPTION,
+    },
+)
 @require_token
 def get_mission_result_route(mission_id: str):
+    """Fetch a finished mission's result.
+
+    Inline and spilled results use the same HTTP response, so clients never
+    need filesystem access.
+    """
     if get_mission(_instance_dir(), mission_id) is None:
         return jsonify({"error": {"code": "not_found", "message": "Mission not found"}}), 404
     # reconcile so a just-completed mission gets its result attached first
@@ -228,8 +566,23 @@ def get_mission_result_route(mission_id: str):
 
 
 @bp.route("/v1/missions/<mission_id>", methods=["DELETE"])
+@openapi_operation(
+    mcp=True,
+    mcp_description=(
+        "This destructive tool is available only when "
+        "`mcp.tools_allow_destructive` is enabled, and it accepts pending "
+        "missions only."
+    ),
+    path_parameter_descriptions={
+        "mission_id": _MISSION_ID_DESCRIPTION,
+    },
+)
 @require_token
 def delete_mission(mission_id: str):
+    """Remove a pending mission.
+
+    The mission is removed from the queue and its API record is cancelled.
+    """
     rec = get_mission(_instance_dir(), mission_id)
     if rec is None:
         return jsonify({"error": {"code": "not_found", "message": "Mission not found"}}), 404
@@ -264,8 +617,10 @@ def delete_mission(mission_id: str):
 
 
 @bp.route("/v1/missions/<mission_id>", methods=["PATCH"])
+@openapi_operation(request_schema=_EDIT_MISSION_SCHEMA)
 @require_token
 def edit_mission(mission_id: str):
+    """Change a pending mission."""
     rec = get_mission(_instance_dir(), mission_id)
     if rec is None:
         return jsonify({"error": {"code": "not_found", "message": "Mission not found"}}), 404

@@ -1,10 +1,10 @@
 ---
 type: doc
 title: "Skills Reference"
-description: "Complete reference for all Koan slash commands (mission management, code/PR operations, scheduling, status, configuration, and system commands) usable via Telegram, Slack, or GitHub @mentions."
+description: "Complete reference for Koan slash commands across messaging, GitHub mentions, and the curated REST/MCP skill catalog."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-22
+updated: 2026-09-11
 ---
 
 # Skills Reference
@@ -51,13 +51,13 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 |---------|---------|-------------|:-:|
 | `/plan [--iterations N] <desc>` | — | Deep-think an idea, create a tracker issue with task-level plan (file map, checkbox steps, code blocks, self-review). `--iterations N` (1-5) runs N critique+refine rounds. Loads project MCP servers when `plan` is in `mcp_roles` (default). | — |
 | `/deepplan <desc>` | `/deeplan` | Spec-first design: explore approaches, post spec, queue /plan | — |
-| `/implement <issue>` | `/impl` | Queue implementation for a GitHub or Jira issue; creates a draft PR, then privately reviews/fixes Important+ findings by default | Yes |
+| `/implement <issue>` | `/impl` | Queue implementation for a GitHub or Jira issue; reassembles the newest verified multipart Jira plan when needed, then creates a draft PR and privately reviews/fixes Important+ findings by default | Yes |
 | `/fix <issue>` | — | Diagnose → understand → plan → test → implement → submit PR, then privately reviews/fixes Important+ findings by default. Use `--skip-diagnose` to bypass the diagnostic. On a PR, including GitHub `@bot fix`, this is queued explicitly as `/rebase --fix`; bare `@bot rebase` remains a simple rebase. Trailing context is passed to the feedback prompt. | Yes |
 | `/debug <issue>` | `/dbg` | Structured 4-step debug loop: reproduce → hypothesize → minimal fix → verify. Auto-queued when `/fix` fails (opt-in via `debug_escalation.on_fix_failure` in config.yaml) | Yes |
-| `/review <PR> [PR ...] [--bot-comments]` | `/rv`, `/rereview`, `/re_review` | Review one or more pull requests; each URL queues a separate review mission. `--bot-comments` triages bot findings | Yes |
+| `/review <PR> [PR ...] [--bot-comments]` | `/rv`, `/rereview`, `/re_review` | Review one or more pull requests; each URL queues a separate review mission. Reviews are read-only and run against a fresh checkout of the PR head: the tool set is a positive allowlist, every shell command is gated by a hook (read-only inspection only, one command per call), and a provider that cannot enforce that is refused rather than run unrestricted. `--bot-comments` triages bot findings | Yes |
 | `/ultrareview <PR>` | `/urv` | Ultra-thorough review: architecture + silent-failure passes combined | Yes |
 | `/explain <PR>` | `/xp` | Explain a PR's changes in plain language with examples and alternative approaches | Yes |
-| `/rebase [--fix] <PR> [focus area]` | `/rb` | Rebase a PR onto its base branch. **By default rebases only.** Add `--fix` to also address review feedback (implied when you add a focus area or severity keyword after the URL); trailing text is threaded into the mission as focus context. Conflict resolution has a 10-minute per-round budget before the existing recreate fallback. | Yes |
+| `/rebase [--fix] <PR> [focus area]` | `/rb` | Rebase a PR onto its base branch. **By default rebases only.** Add `--fix` to also address review feedback (implied when you add a focus area or severity keyword after the URL); trailing text is threaded into the mission as focus context — including a commit-message-only request such as "rename the subject to PROJ-99", which is amended onto the branch and pushed like any other change. Conflict resolution has a 10-minute per-round budget before the existing recreate fallback. | Yes |
 | `/squash <PR>` | `/sq` | Squash all PR commits into one clean commit | Yes |
 | `/recreate <PR>` | `/rc` | Re-implement a PR from scratch on a fresh branch | Yes |
 | `/refactor <desc>` | `/rf` | Targeted refactoring mission | Yes |
@@ -96,6 +96,15 @@ human-curated context/priorities into the review prompt, ranked against the PR
 content. Enable `review_memory` in `config.yaml` to also include recent typed
 project memory (decisions, observations) from the SQLite memory index.
 
+**Structural quality:** The main review passes (default, plan-aware, and
+`--architecture`) also judge whether the change leaves the surrounding code
+simpler or messier — spaghetti growth from ad-hoc branches bolted onto unrelated
+flows, feature logic landing in a shared module, a bespoke helper duplicating a
+canonical one, thin pass-through wrappers, and files the PR pushes past a healthy
+size (the limit your repo's convention docs state, else ~1000 lines). Findings
+name the structural remedy rather than a cosmetic one. The severity bar is unchanged: these are 🟢 Suggestions unless the reviewer
+can name concrete harm, so they never block a merge on style alone.
+
 **Inline comments (opt-in):** Set `review_inline_comments.enabled: true` in
 `config.yaml` to also post each finding as an inline PR comment anchored to its
 code location, in addition to the bucketed summary comment (which is unchanged).
@@ -105,11 +114,17 @@ detail, so reviewers can react or resolve in place. Cap the volume with
 idempotent (already-anchored findings are skipped); multi-line findings anchor
 to their full range; if all posts fail, you are notified. Disabled by default.
 
-**Verdict consistency:** The formal APPROVE / REQUEST_CHANGES state and its
-green/red/yellow alert are derived from the final bucketed findings. Reflection
-cannot leave a failed checklist item pointing at a hidden finding, and Kōan will
-not submit REQUEST_CHANGES unless the summary lists at least one 🔴 Blocking or
-🟡 Important finding.
+Summary findings receive one sequence of IDs across Blocking, Important,
+Suggestions, and Silent Failure Analysis sections. Numbering never restarts at
+a section boundary, so follow-up requests can identify any finding by ID alone.
+
+**Verdict consistency:** A valid reflection pass is authoritative for the final
+finding list. Findings rejected below the configured threshold stay hidden;
+checklist references are remapped, and a failed checklist entry is removed when
+all of its referenced findings were rejected. The formal APPROVE /
+REQUEST_CHANGES state and its green/red/yellow alert are then derived from the
+retained findings. If reflection returns malformed or inconsistent metadata,
+Kōan preserves the primary review unchanged.
 
 **Stale-HEAD alert:** the review comment's footer shows the commit it was run
 against (`HEAD=<short-sha>`). A review can take minutes, and you may push (or
@@ -264,7 +279,7 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 | `/update` | `/upgrade` | Update to latest commit on main, restart |
 | `/update_last_release` | — | Update to most recent release tag, restart |
 | `/reset` | — | Reset run counter to 0 (resumes if paused by max_runs) |
-| `/restart` | — | Restart processes (no code pull) |
+| `/restart [--force]` | — | Restart processes (no code pull); `--force` kills the in-flight mission |
 | `/snapshot` | — | Export memory state to a portable file |
 
 ## Project Management
@@ -291,6 +306,27 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 - **Instant** (`worker: false`) — Executes immediately, returns a response. Examples: `/status`, `/list`, `/gha_audit`.
 - **Worker** (`worker: true`) — Runs in a background thread (Claude calls, API requests). Examples: `/magic`, `/chat`, `/sparring`.
 - **Hybrid** (`audience: hybrid`) — Available from both Telegram/Slack and as agent-dispatched skills. Examples: `/plan`, `/implement`, `/review`.
+
+## REST and MCP Skill Discovery
+
+Authenticated REST and MCP clients *advertise* a deliberately small command
+subset: `/audit`, `/brief`, `/ci_check`, `/doc`, `/explain`, `/fix`,
+`/gh_request`, `/implement`, `/plan`, `/rebase`, and `/review`. This is a
+discovery surface, not a restriction — `POST /v1/missions` still queues any
+slash command, so existing REST and `koan-cli` callers are unaffected.
+
+`GET /v1/skills` and `koan_skills_list` return descriptions, usage, aliases,
+and flags. `koan_missions_create` advertises the canonical verbs directly. Send
+a review request through its `command` field:
+
+```json
+{
+  "command": "/review https://github.com/owner/repo/pull/42"
+}
+```
+
+Chat-control and destructive commands are not advertised. This catalog is
+separate from chat and GitHub/Jira availability.
 
 ## Custom Skills
 

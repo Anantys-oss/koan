@@ -3,7 +3,7 @@
 import re
 import shutil
 import subprocess
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from app.provider.base import CLIProvider
 from app.run_log import log_safe
@@ -73,7 +73,9 @@ class ClineProvider(CLIProvider):
     def is_available(self) -> bool:
         return shutil.which(self.binary()) is not None
 
-    def build_permission_args(self, skip_permissions: bool = False) -> List[str]:
+    def build_permission_args(
+        self, skip_permissions: bool = False, read_only: bool = False,
+    ) -> List[str]:
         # Cline uses --auto-approve for unattended execution.
         # When skip_permissions=True, pass --auto-approve true.
         # When False, pass --auto-approve false to prevent headless deadlock
@@ -91,6 +93,7 @@ class ClineProvider(CLIProvider):
         self,
         allowed_tools: Optional[List[str]] = None,
         disallowed_tools: Optional[List[str]] = None,
+        restrict_tools: Optional[Sequence[str]] = None,
     ):
         # Cline CLI does not support per-tool allow/disallow flags.
         # Tool access is controlled via CLINE_COMMAND_PERMISSIONS environment variable.
@@ -165,6 +168,7 @@ class ClineProvider(CLIProvider):
         effort: str = "",
         resume_session_id: str = "",
         project_context: bool = True,
+        read_only: bool = False,
     ) -> List[str]:
         """Build a complete Cline CLI command.
 
@@ -187,7 +191,7 @@ class ClineProvider(CLIProvider):
         cmd = [self.binary()]
 
         # Global flags come before the positional prompt
-        cmd.extend(self.build_permission_args(skip_permissions))
+        cmd.extend(self.build_permission_args(skip_permissions, read_only=read_only))
         cmd.extend(self.build_project_context_args(project_context))
         cmd.extend(self.build_model_args(model, fallback))
         cmd.extend(self.build_output_args(output_format))

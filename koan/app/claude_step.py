@@ -37,9 +37,14 @@ class StepResult:
     callers that need it (e.g. extracting change summaries).  Failed steps
     also expose quota classification so CI loops can stop as transient quota
     exhaustion instead of treating the result as "no changes".
+
+    ``committed`` means "this step produced a commit", regardless of who ran
+    ``git commit``: the runner staging a dirty worktree, or the agent itself.
+    ``self_committed`` distinguishes the latter for logging and for callers
+    that need to know the commit message is the agent's, not *commit_msg*.
     """
 
-    __slots__ = ("committed", "error", "output", "quota_exhausted")
+    __slots__ = ("committed", "error", "output", "quota_exhausted", "self_committed")
 
     def __init__(
         self,
@@ -48,11 +53,13 @@ class StepResult:
         *,
         quota_exhausted: bool = False,
         error: str = "",
+        self_committed: bool = False,
     ):
         self.committed = committed
         self.output = output
         self.quota_exhausted = quota_exhausted
         self.error = error
+        self.self_committed = self_committed
 
     def __bool__(self) -> bool:
         return self.committed
@@ -459,7 +466,8 @@ def run_claude(
     # Accumulation mirrors run_command_streaming / mission_runner:
     # - Block-style events (Claude assistant blocks, Haze message_end) append
     #   full segments joined with newlines.
-    # - Delta-style events (Grok ``{"type":"text","data":"…"}``) buffer into
+    # - Delta-style events (Grok ``{"type":"text","data":"…"}``, Gemini
+    #   assistant message deltas — see provider._is_text_delta_event) buffer into
     #   stream_text_delta_parts and flush as one segment so "hel"+"lo" becomes
     #   "hello", not "hel\\nlo". Joining deltas with "\\n" shredded Grok replies
     #   into one-token-per-line bullets on /rebase PR comments.
@@ -472,6 +480,9 @@ def run_claude(
     # exhaustion as a stdout JSONL ``rate_limit_event``, never on stderr.
     stream_summary_lines: List[str] = []
     stream_final_result: Optional[str] = None
+    # Set when a terminal stream event reports the session did NOT complete
+    # (cancelled ``end``, failed ``result``). Exit 0 alone does not clear it.
+    stream_failure: str = ""
 
     def _flush_stream_deltas() -> None:
         if stream_text_delta_parts:
@@ -480,13 +491,17 @@ def run_claude(
 
     if use_stream_json:
         from app.provider import (
+            _error_message,
             _extract_assistant_text_chunks,
             _extract_result_text,
+            _is_cancelled_end_event,
+            _is_failed_result_event,
+            _is_text_delta_event,
             _summarize_stream_event,
         )
 
         def on_line(line: str) -> None:
-            nonlocal stream_final_result
+            nonlocal stream_final_result, stream_failure
             if not line:
                 return
             try:
@@ -498,10 +513,7 @@ def run_claude(
                 print(summary, flush=True)
                 stream_summary_lines.append(summary)
                 chunks = _extract_assistant_text_chunks(parsed)
-                if (
-                    parsed.get("type") == "text"
-                    and isinstance(parsed.get("data"), str)
-                ):
+                if _is_text_delta_event(parsed):
                     stream_text_delta_parts.extend(chunks)
                 else:
                     _flush_stream_deltas()
@@ -509,6 +521,27 @@ def run_claude(
                 result_text = _extract_result_text(parsed)
                 if result_text is not None:
                     stream_final_result = result_text
+                # Same soft-success hole run_command_streaming closes: a
+                # cancelled ``end`` (Grok permission denial) or a terminal
+                # ``result`` reporting a failed status exits 0 with partial
+                # prose, and commit_with_claude would derive a commit subject
+                # from it as if the step had succeeded.
+                if _is_cancelled_end_event(parsed):
+                    stream_failure = (
+                        "CLI session cancelled (stopReason=Cancelled) — often "
+                        "a headless permission denial. Ensure "
+                        "skip_permissions: true."
+                    )
+                elif _is_failed_result_event(parsed):
+                    status = str(parsed.get("status") or "")
+                    reason = _error_message(parsed.get("error"))
+                    detail = f" ({reason})" if reason else ""
+                    stream_failure = (
+                        f"CLI session ended with status={status}{detail} — "
+                        "often a headless permission denial. Set "
+                        "skip_permissions: true so tool calls are not left "
+                        "waiting on a confirmation prompt."
+                    )
             else:
                 # Stray non-JSON line (warning printed before the stream): keep
                 # it both on screen and as fallback text.
@@ -608,6 +641,23 @@ def run_claude(
             "success": False,
             "output": stdout_text,
             "error": f"Exit code {returncode}: {stderr_snippet}",
+            "stderr": stderr_text,
+            "stream_summary": stream_summary,
+            "exit_code": returncode,
+        }
+
+    if stream_failure:
+        # Checked AFTER the non-zero-exit branch above, so quota/auth
+        # classification still sees stderr and the exit code first.
+        log_event(SUBPROCESS_EXEC, details={
+            "cmd": _redact_list(cmd),
+            "cwd": cwd,
+            "exit_code": 0,
+        }, result="failure")
+        return {
+            "success": False,
+            "output": stdout_text,
+            "error": stream_failure,
             "stderr": stderr_text,
             "stream_summary": stream_summary,
             "exit_code": returncode,
@@ -827,15 +877,102 @@ def _commit_with_hook_fallback(
         raise
 
 
+# A HEAD snapshot is best-effort context, never a gate: a non-zero git exit
+# (``run_git_strict`` raises RuntimeError), a hung git, or a missing binary all
+# mean "could not look", and must leave the pre-existing commit detection alone.
+_HEAD_STATE_EXCEPTIONS = (RuntimeError, subprocess.SubprocessError, OSError)
+
+
+def _capture_head_state(project_path: str) -> Optional[Tuple[str, str]]:
+    """Snapshot ``(ref_name, head_sha)`` before an agent step runs.
+
+    Paired with :func:`_agent_committed_itself` so a step whose agent commits
+    (or amends) on its own is still recognised as having produced work.
+    Returns None when the snapshot itself fails — callers then fall back to
+    worktree-only detection rather than guessing.
+    """
+    try:
+        ref = _run_git(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=project_path, timeout=10,
+        ).strip()
+        head = _run_git(
+            ["git", "rev-parse", "HEAD"], cwd=project_path, timeout=10,
+        ).strip()
+    except _HEAD_STATE_EXCEPTIONS as e:
+        print(f"[claude_step] Could not capture HEAD state: {e}", file=sys.stderr)
+        return None
+    return (ref, head) if head else None
+
+
+def _head_only_rewound(project_path: str, before_sha: str, after_sha: str) -> bool:
+    """Return whether HEAD moved *backwards* along its own history.
+
+    ``git reset --hard HEAD~1`` moves HEAD without touching the worktree, so it
+    is indistinguishable from a real commit by SHA alone. Dropping commits is
+    not work the step produced, and this result feeds a force push — so a pure
+    rewind must not be credited. ``--amend`` is unaffected: it replaces HEAD
+    with a sibling, which is not an ancestor of the old HEAD.
+
+    Fails open (returns False) when the ancestry check itself cannot run: the
+    post-push content-preservation guard, not this probe, is the safety net.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", after_sha, before_sha],
+            stdin=subprocess.DEVNULL,
+            capture_output=True, text=True,
+            cwd=project_path, timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        print(f"[claude_step] HEAD ancestry check failed: {e}", file=sys.stderr)
+        return False
+    return proc.returncode == 0
+
+
+def _agent_committed_itself(
+    project_path: str, before: Optional[Tuple[str, str]],
+) -> bool:
+    """Return whether the step's agent moved HEAD on the same ref itself.
+
+    ``commit_if_changes`` only sees work still sitting in the worktree, so an
+    agent that ran ``git commit`` — or ``git commit --amend``, the only way to
+    carry out a commit-message-only request — left a clean tree and was
+    reported as having changed nothing.  The pipeline then discarded a
+    finished rebase as "no changes and no explanation".
+
+    The comparison is deliberately ref-scoped and makes no forward-ancestry
+    claim: ``--amend`` replaces HEAD rather than descending from it, and a step
+    that wandered onto another branch is *not* credited — the rebase pipeline
+    restores the expected branch and would not push that commit anyway. A
+    backwards-only move is rejected via :func:`_head_only_rewound`.
+    """
+    if not before:
+        return False
+    after = _capture_head_state(project_path)
+    if not after:
+        return False
+    ref_before, head_before = before
+    ref_after, head_after = after
+    if ref_after != ref_before or head_after == head_before:
+        return False
+    return not _head_only_rewound(project_path, head_before, head_after)
+
+
 def commit_if_changes(
     project_path: str,
     message: str,
     *,
+    amend: bool = False,
     bypass_hook_failures: bool = False,
 ) -> bool:
     """Stage all changes and commit if there are any.
 
-    Returns True if a commit was created.
+    Args:
+        amend: If True, fold the changes into the previous commit
+            (``--amend --no-edit``) instead of creating a new one.
+
+    Returns True if a commit was created (or amended).
     """
     status = subprocess.run(
         ["git", "status", "--porcelain"],
@@ -846,8 +983,9 @@ def commit_if_changes(
         return False
 
     _run_git(["git", "add", "-A"], cwd=project_path)
+    commit_args = ["--amend", "--no-edit"] if amend else ["-m", message]
     _commit_with_hook_fallback(
-        ["-m", message],
+        commit_args,
         project_path,
         _run_git,
         bypass_hook_failures=bypass_hook_failures,
@@ -869,6 +1007,7 @@ def run_claude_step(
     use_skill: bool = False,
     use_convention_subject: bool = False,
     bypass_hook_failures: bool = False,
+    amend: bool = False,
 ) -> StepResult:
     """Run a Claude Code step: invoke CLI, commit changes, log result.
 
@@ -878,6 +1017,8 @@ def run_claude_step(
         use_convention_subject: If True, parse COMMIT_SUBJECT from Claude's
                    output and use it instead of *commit_msg*. Falls back to
                    *commit_msg* if no valid subject is found.
+        amend: If True, fold the step's changes into the previous commit
+                   instead of creating a new one.
 
     Returns:
         A :class:`StepResult` — truthy when a commit was created (backward
@@ -929,6 +1070,11 @@ def run_claude_step(
     from app.commit_conventions import parse_commit_subject
     from app.config import get_first_output_timeout
 
+    # Snapshot HEAD before the agent runs: a step whose agent commits (or
+    # amends) on its own leaves a clean worktree, which commit_if_changes
+    # reports as "nothing changed". See _agent_committed_itself.
+    head_before = _capture_head_state(project_path)
+
     # Emit periodic heartbeat to keep the parent process's LivenessWatchdog
     # alive. Print-mode CLI sessions produce no stdout during tool use,
     # which would trigger the outer first_output_timeout (default 600s).
@@ -964,11 +1110,20 @@ def run_claude_step(
         committed = commit_if_changes(
             project_path,
             effective_msg,
+            amend=amend,
             bypass_hook_failures=bypass_hook_failures,
         )
+        self_committed = False
+        if not committed:
+            self_committed = _agent_committed_itself(project_path, head_before)
+            committed = self_committed
         if committed and success_label:
             actions_log.append(success_label)
-        return StepResult(committed=committed, output=cleaned_output)
+        return StepResult(
+            committed=committed,
+            output=cleaned_output,
+            self_committed=self_committed,
+        )
     elif failure_label:
         error_detail = result['error'][:200]
         # Claude CLI often reports errors via stdout, not stderr.
@@ -1409,11 +1564,24 @@ def _owner_token_push(remote: str, branch: str, project_path: str) -> bool:
     return False
 
 
-def _force_push(remote: str, branch: str, project_path: str) -> None:
+def _force_push(
+    remote: str,
+    branch: str,
+    project_path: str,
+    on_lease_failure: Optional[Callable[[], None]] = None,
+) -> None:
     """Force-push branch, trying --force-with-lease first then --force.
 
     On a permission failure (e.g. the PR branch lives on another logged-in gh
     account's fork) it retries once with that account's token before giving up.
+
+    *on_lease_failure* is invoked between the two attempts. A rejected lease
+    usually means the remote moved since the last fetch, and the plain
+    ``--force`` fallback is about to overwrite whatever moved it — this is the
+    hook the content-preservation guard uses to observe (and so be able to
+    name) that tip before it is gone. The hook owns its own error handling and
+    telemetry (see ``rebase_pr._push_to_remote``); the ``except`` below is only
+    a backstop so a hook can never break a push it merely observes.
 
     Raises on total failure.
     """
@@ -1425,6 +1593,11 @@ def _force_push(remote: str, branch: str, project_path: str) -> None:
         return
     except Exception as e:
         print(f"[claude_step] --force-with-lease failed, falling back to --force: {e}", file=sys.stderr)
+    if on_lease_failure is not None:
+        try:
+            on_lease_failure()
+        except Exception as e:
+            print(f"[claude_step] lease-failure hook failed: {e}", file=sys.stderr)
     try:
         _run_git(
             ["git", "push", remote, branch, "--force"],

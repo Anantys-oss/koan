@@ -4,7 +4,7 @@ title: "Skill Spec — review"
 description: "Documents the `/review` skill that queues a code-review mission on PRs/issues, posting findings as a comment with severity-driven LGTM logic and re-review comment handling, covered by the eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-07-22
+updated: 2026-10-13
 ---
 
 # Skill Spec — `review`
@@ -63,6 +63,7 @@ See `docs/users/skills.md` for the end-user `/review` reference and
 | closed/merged target | skipped unless `--force` |
 | pause-label present | success-with-skip unless `--force` (see invariant) |
 | unresolved project | alias resolution then skip if unknown |
+| runner failure (any path that returns a failure: checkout pin, provider, post) | exactly one `❌ [project] 🔍 Review failed: <pr-url>` message with the reason below (see invariant) |
 
 ## Integration hooks
 
@@ -74,6 +75,127 @@ See `docs/users/skills.md` for the end-user `/review` reference and
 
 - Multi-URL queues preserve order via a single atomic locked insert.
 - Findings are advisory comments — `/review` never merges or pushes code.
+- **Every failed review run tells the operator why.** A failed run ends with
+  exactly one `❌ [project] 🔍 Review failed: <pr-url>` message with the reason on
+  the next line, regardless of `messaging.level` (in `normal` mode the agent loop
+  sends it, from the runner's handed-over markers). Failure paths that only return
+  their summary are reported once by `review_runner.main()`
+  (`report_failure_unless_reported`). The reason is secret-redacted and capped.
+- **Read-only is enforced by a positive allowlist, not by omission.**
+  `review_mode` is a member of `app.provider.READ_ONLY_ROLES`, so every review
+  pass is restricted to `READ_ONLY_TOOLS` via `--tools` and *additionally* denies
+  `SIDE_EFFECT_TOOLS`. Passing only
+  `["Read","Glob","Grep"]` to `allowed_tools` does **not** withhold the rest:
+  `--allowedTools` pre-approves invocations, it does not restrict which tools
+  exist — the CLI's own reference says *"To restrict which tools are available,
+  use `--tools` instead"*. Verified on Claude CLI 2.1.234: under
+  `--allowedTools Read,Glob,Grep` a `Bash` call still succeeds, while under
+  `--disallowedTools Bash` it is blocked. Enforcement strength is
+  provider-dependent: Claude and ollama-launch deny by name; Codex ignores tool
+  arguments entirely and is instead pinned to `--sandbox read-only`. Every other
+  adapter declares neither and is refused — for reasons that differ per provider
+  (`cline`/`haze` cannot express a restriction at all; `copilot`'s adapter does
+  not wire up the CLI's `--deny-tool`; `grok` emits tool flags but Kōan has not
+  measured that they withhold, and it auto-approves unconditionally). See
+  `specs/components/providers.md` for the per-provider detail — the predicate is
+  a claim about Kōan's adapter, not about the vendor CLI. A read-only role
+  also refuses to honour `skip_permissions`, because
+  `--dangerously-skip-permissions` / `--dangerously-bypass-approvals-and-sandbox`
+  would bypass the very denial that makes the role read-only.
+- **A review runs against a disposable checkout of the PR head, never the
+  operator's working tree.** Missions are dispatched after
+  `git_prep.prepare_project_branch`, which checks out the *base* branch and
+  hard-resets it to `<remote>/<base>` — so the reviewed code was historically
+  never on disk, while the prompts told the model to verify against "the
+  checked-out code". `/review` therefore creates a detached worktree pinned to
+  GitHub's live `headRefOid`, verifies the SHA twice (after fetch, and after
+  checkout), asserts the tree is clean, and removes it afterwards.
+- **A failed pin FAILS the review; it never falls back to `project_path`.**
+  Reviewing the wrong tree and reporting the findings as fact is the defect this
+  invariant exists to remove — a silent fallback reproduces it with a warning
+  nobody reads. A failed review is visible and retriable; a wrong review is
+  neither.
+- **Prompts and skills come from the running Kōan, never from the reviewed
+  tree.** `skill_dir` resolves from the installed module, so a pull request
+  cannot rewrite the prompt that judges it.
+- **The review shell is gated, and the gate fails to "no shell".** `Bash` is in
+  `READ_ONLY_TOOLS` but is *never* placed in `--allowedTools`; each command is
+  adjudicated by a `PreToolUse` hook supplied per-invocation via `--settings`.
+  If that hook does not load for any reason, `Bash` is un-pre-approved and
+  headless mode denies it. The failure mode is therefore losing the shell, not
+  gaining an unguarded one — measured on Claude CLI 2.1.235, where a hook
+  returning `allow` let a command run with no `Bash` entry in `--allowedTools`,
+  and one returning `deny` blocked it with the reason surfaced and no side
+  effect.
+- **The shell is read-only by policy, one command per call.** Shell operators —
+  redirection, chaining, command substitution — are rejected on the raw string
+  before parsing, because `shlex` is a word splitter and not a shell parser: it
+  happily returns `['git','log','>','x']`, which a token-level check would pass
+  and Bash would then execute as a redirect. The pipe operator is *quote-aware*:
+  an **unquoted** `|` is a genuine pipeline and is rejected (every stage would
+  need validating, and a `tee`/`sh`/`dd` in stage two defeats stage one), while
+  a `|` inside a quoted argument — a regex alternation such as
+  `git grep -n 'a\|b' src` — is a literal character Bash passes to the program
+  and can never start a second command, so it is allowed.
+  **Stderr-only redirection is the one redirection allowed**, in exactly the
+  spellings `2>/dev/null` and `2>&1` (optional single space after `2>`, and only
+  when the whole form stands as its own word). Neither can create or truncate a
+  file — `/dev/null` discards and `&1` merges into an existing stream — so
+  neither turns a reader into a writer, which is the property the redirection
+  ban exists to hold. They are recognised and elided from the raw string
+  *before* the structural scan, so every other `>`/`<` (including
+  `2>/tmp/anything`, `&>`, and a second `>` alongside an allowed form) is still
+  rejected. This is a deliberate narrowing of the previous absolute ban:
+  `2>/dev/null` is the idiom a reviewer reaches for constantly, denying it
+  taught the model nothing it could act on, and the denials cost real turns and
+  provider budget on every review.
+  `koan/app/review_bash_guard.py` is the enumeration; this spec governs the
+  policy.
+- **Operands are confined to the pinned worktree by resolution, not by
+  spelling.** Every file/dir operand is resolved (`realpath`, symlinks
+  included) against the session's `cwd` — itself resolved — and must land on
+  that directory or inside it. An **absolute path that resolves inside the
+  worktree is allowed**, because it names a tree this shell may already read and
+  because `Read`/`Glob`/`Grep` accept the same path: a `Bash` gate that
+  disagrees with the file tools about one path emits a denial the model cannot
+  believe (the review worktree is not "outside the review worktree") and it
+  retries instead of rephrasing. A `~` operand stays rejected outright — Bash,
+  not `shlex`, expands it, so the guard never sees the path it will become.
+  Denials name the resolved path, so the reason is checkable rather than
+  assertive.
+- **No allowlisted program may execute another, or read the process
+  environment.** The allowlist adjudicates the *invoked* program, so a flag that
+  makes an allowed program run a second one launders any binary past the
+  dangerous-command check — `git grep -O<prog>` / `--open-files-in-pager=<prog>`
+  executes `<prog>` with the matched files (taken from the PR head under review)
+  as its arguments, and is denied for that reason rather than as a write. Note
+  `-o` (writes a file) and `-O` (executes) are different flags and the match is
+  case-sensitive. Separately, operand containment keeps reads inside the review
+  worktree, but the **process environment** is not a path: the review CLI
+  inherits Kōan's own environ, so `jq`'s `env` builtin and `$ENV` variable are
+  denied — otherwise a hostile PR's injected prompt could read the operator's API
+  keys and tokens and post them in the review body. `$ENV` inside single quotes
+  is inert to Bash, so the expansion check does not see it; jq's own accessors
+  must be denied directly. A field merely *named* `env` (`jq .env config.json`)
+  is an ordinary read and stays allowed.
+- **An unenforceable review provider is REFUSED, not downgraded.** If the
+  resolved `review_mode` provider (or the `cli.fallback` it swapped to) can
+  enforce neither mechanism, `build_full_command` raises
+  `ReadOnlyUnenforceable` and the review fails with an actionable configuration
+  error naming the provider and `cli.review_mode`. `/review` never executes
+  against an unenforceable provider — a review that could write to the live
+  project clone is worse than no review, and the user-facing docs promise the
+  boundary unconditionally. Operators on `cline`/`haze`/`copilot`/`grok`/`gemini` must pin
+  `cli.review_mode` to `claude`, `codex`, or `ollama-launch`; the refused
+  providers stay available for every other role. This covers the `/review` skill, which runs
+  through `run_command_streaming`. It does **not** cover the separate
+  `autonomous_mode == "review"` mission path in
+  `mission_runner.build_mission_command` — see `specs/components/providers.md`.
+- **Finding IDs span the complete review.** Displayed IDs start at 1 and
+  increment through rendered severity order (Blocking, Important, Suggestions),
+  then continue through Silent Failure Analysis findings. IDs never restart at
+  a section boundary. Checklist references use these global IDs, letting a
+  requester identify any specific finding without also naming its section.
 - **Repo-level `always_check` pinning.** A target repo's optional
   `.koan/config.yaml` may set `review.always_check` to a list of file globs; any
   changed file whose path or basename matches is **pinned** so diff-size reduction
@@ -98,19 +220,24 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   `suggestion`; promote it before blocking. Schema validation rejects a supplied
   verdict that contradicts the finding severities, and post-reflection
   finalization derives the verdict from the reconciled finding list again.
-- **Reflection preserves review consistency.** The reflection pass carries the
-  retained original finding indices into a final reconciliation step. Findings
-  referenced by failed checklist items are restored; if reflection would remove
-  every blocker from a primary blocking review, the original blockers are
-  restored. Checklist references are then remapped to the final finding array,
-  and `lgtm` is derived again from those final severities. Schema validation
-  rejects a contradictory verdict (REQUEST_CHANGES with no 🔴 Blocking / 🟡
-  Important finding, or APPROVE despite one) before anything is posted. As a
-  defensive backstop, the verdict body builder (`_build_verdict_body`) — which
-  runs *after* the review comment is already posted — never raises on such an
-  inconsistency: it logs and submits the verdict with an empty body, so a
-  broken invariant can never abort the run post-side-effect (and never renders
-  a blocker-less "issues found" alert).
+- **Valid reflection filtering is authoritative.** The reflection pass carries
+  retained original finding indices into final reconciliation. When both the
+  reflected finding array and retained-index array are valid and internally
+  consistent, reconciliation retains exactly those findings. It remaps checklist
+  references to the retained array, removes a failed checklist entry when all of
+  its referenced evidence was filtered, and derives `lgtm` from the retained
+  severities. It does not restore a rejected finding merely because the primary
+  checklist referenced it or because filtering changes a primary blocking verdict
+  to merge-ready.
+
+  Reconciliation remains fail-open when reflection metadata is malformed or
+  inconsistent. Both metadata values must be lists; every retained index must be
+  a unique, non-boolean integer in range; the arrays must have equal lengths; and
+  each reflected finding must match the original finding at its retained index.
+  If any check fails, the primary review is returned unchanged. Schema validation
+  continues to reject a contradictory verdict before anything is posted. As a
+  defensive backstop, `_build_verdict_body` logs an inconsistency and submits an
+  empty verdict body rather than failing after the review comment was posted.
 - **Verdict presentation is severity-graded, not the summary paragraph.** The
   formal APPROVE / request-changes verdict body (`_build_verdict_body`) is wrapped
   in a native GitHub alert whose color grades the outcome: `> [!TIP]` (green) when
@@ -166,6 +293,42 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   hunter, so this overlap is exercised by
   `TestReviewPostsBeforeEnrichment::test_coverage_note_survives_hunter_append_overlap`
   in `koan/tests/test_review_runner.py`.
+- **Model-written review prose follows the configured reply language.** The
+  prose the model generates — finding titles and bodies, the summary, and thread
+  replies — is written in the language returned by
+  `language_preference.get_language()`, which is **English** unless the human set
+  another with `/language`. The instruction is injected once, centrally, in
+  `_run_claude_review` (the single provider funnel for every review call), not
+  restated per prompt, so no review prompt can drift out of it. Only an explicit
+  `/language reset` (the `{"language": ""}` sentinel, input-language mode) lifts
+  the override; a review prompt must never independently ask the model to guess
+  or mirror a language, because leaving the choice open lets a model answer an
+  English thread in an unrelated language.
+- **Machine-read tokens stay English, including in model output.** The language
+  override is scoped to prose and MUST carve out every token Python matches
+  literally, because a translated one fails silently. The carve-out list is the
+  contract: the `## PR Review` / `## Summary` headings a prompt asks the model to
+  emit verbatim (`_extract_review_body` regex-matches them to recover a review at
+  all — a miss posts the unparseable-output notice instead), the `classification`
+  value `actionable` consumed by `_run_bot_comment_triage`, the
+  `CRITICAL`/`HIGH`/`MEDIUM` severities the error hunter orders and colors by, the
+  `[Deferred]` / `[Pre-Existing Issue]` title prefixes `review_triage.enforce_deferred`
+  and `enforce_pre_existing` substring-match (a translated prefix silently blocks a PR
+  over a finding the human deferred), and the `comment_replies[].action` value
+  `needs_clarification`. The
+  review path therefore does **not** reuse the chat-side
+  `get_language_instruction()` string — that one is absolute ("all your responses")
+  — but a review-specific directive,
+  `koan/system-prompts/review-language-directive.md`. Any new prompt behind this
+  funnel that adds a literal output contract MUST extend that carve-out.
+- **Renderer-owned scaffolding stays English, deliberately.** The strings Python
+  itself emits around that prose are structure, not conversation, and are **not**
+  localized: the `## PR Review` heading it builds, the `_SEVERITY_HEADING` tier
+  names (`Blocking`/`Important`/`Suggestions`), and the verdict line. A stable
+  heading is what lets a human scan any PR the same way, so a non-English
+  preference yields English scaffolding around translated prose, by design.
+  Widening the language override to cover them is an architectural change, not a
+  bug fix.
 
 ### Consistency, triage & human dispositions (spec 010)
 
@@ -202,6 +365,16 @@ deterministic Python (`review_identity`, `review_reuse`, `review_reconcile`,
   is dropped. Set by the shared `review-severity-rubric` prompt partial ({@include}-d
   by `review.md` + `review-with-plan.md`; the markdown architecture prompt carries an
   equivalent Rules bullet). The bar is prompt-fixed at strict (not runtime config).
+- **Structural-quality lens (always on).** All three main review prompts
+  (`review.md`, `review-with-plan.md`, the markdown architecture prompt) carry the
+  `review-structural-quality` partial ({@include}-d): the reviewer judges whether the
+  change leaves surrounding code simpler or messier (spaghetti growth, wrong layer,
+  duplicated canonical helper, thin abstraction, file-size explosion) and names the
+  structural remedy. Findings default to `suggestion`/🟢 and never block on style
+  alone; promotion to `warning` requires naming concrete harm, per the same bar as
+  FR-008–010. The focused `--errors` / `--comments` passes deliberately omit it.
+  `reflect.md` scores a concrete structural finding in the 5-7 band (8-10 when the
+  diff shows the mess) and a vague one at 0-2.
 - **Exhaustive single-pass (FR-025).** The default prompt aims to surface every
   genuine issue in one pass (no finding cap), so later reviews have less to add;
   higher recall still flows through the same bar (no blocking-set inflation).
@@ -242,6 +415,10 @@ The review skill is the first skill covered by the deterministic eval harness
   `benign_style`) that must LGTM without false positives, and `suggestion_only`,
   which carries a legitimate low-severity nit that must be surfaced *and* still
   yield `lgtm: true` (guards the verdict-follows-severity invariant).
+- **Structural-quality case:** `structural_growth` — a feature-specific branch
+  bolted into a shared helper that the structural-quality lens must surface as a
+  `suggestion` while still yielding `lgtm: true` (guards the always-on structural
+  lens).
 - **Scored dimensions:** JSON/schema validity (via `validate_review`), recall of
   seeded findings (file + keyword-stem + severity-band match), LGTM correctness,
   and precision (no flags on `forbidden_files`).

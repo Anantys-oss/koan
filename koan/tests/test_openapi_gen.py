@@ -1,17 +1,21 @@
 """Behavior tests for the OpenAPI generator (app.api.openapi_gen).
 
-These assert that the generated document matches the live Flask route table
-(paths, methods, auth), that generation is deterministic, and that the drift
-check works — testing observable outputs, never source text.
+These assert that the generated document matches live Flask routes and attached
+request metadata, that generation is deterministic, and that the drift check
+works — testing observable outputs, never source text.
 """
 
+import inspect
 import re
+from contextlib import ExitStack
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 import yaml
-
-from app.api import create_app
-from app.api import openapi_gen
+from app.api import create_app, openapi_gen
+from app.api.openapi_metadata import openapi_operation, query_parameter
+from flask import request
 
 
 @pytest.fixture
@@ -38,6 +42,352 @@ def _spec_operations(spec):
         for path, item in spec["paths"].items()
         for method in item
     }
+
+
+class _TrackedDict(dict):
+    def __init__(self, values):
+        super().__init__(values)
+        self.accessed = set()
+
+    def get(self, key, default=None):
+        self.accessed.add(key)
+        return super().get(key, default)
+
+    def __getitem__(self, key):
+        self.accessed.add(key)
+        return super().__getitem__(key)
+
+
+def _body_fields_used(app, endpoint, payload, view_args=(), patches=()):
+    with app.test_request_context("/", method="POST"):
+        tracked = _TrackedDict(payload)
+        flask_request = request._get_current_object()
+        flask_request.get_json = lambda silent=True: tracked
+
+        with ExitStack() as stack:
+            for target, value in patches:
+                stack.enter_context(patch(target, return_value=value))
+            inspect.unwrap(app.view_functions[endpoint])(*view_args)
+
+        return tracked.accessed
+
+
+def _query_fields_used(app, endpoint, values, patches=()):
+    with app.test_request_context("/", method="GET"):
+        tracked = _TrackedDict(values)
+        flask_request = request._get_current_object()
+        flask_request.__dict__["args"] = tracked
+
+        with ExitStack() as stack:
+            for target, value in patches:
+                stack.enter_context(patch(target, return_value=value))
+            inspect.unwrap(app.view_functions[endpoint])()
+
+        return tracked.accessed
+
+
+def test_request_body_schemas_match_handler_accesses(app):
+    pending = {"status": "pending", "project": None, "text": "- Existing"}
+
+    cases = {
+        ("post", "/v1/missions"): (
+            "missions.create_mission",
+            {
+                "command": (
+                    "/review https://github.com/owner/repo/pull/42"
+                ),
+                "text": "",
+                "project": "",
+                "urgent": False,
+            },
+            (),
+            (
+                ("app.utils.insert_pending_mission", None),
+                ("app.api.routes_missions.record_mission", "mission-id"),
+            ),
+        ),
+        ("post", "/v1/missions/reorder"): (
+            "missions.reorder_mission_route",
+            {"mission_id": "", "target_position": None},
+            (),
+            (),
+        ),
+        ("patch", "/v1/missions/{mission_id}"): (
+            "missions.edit_mission",
+            {"text": ""},
+            ("mission-id",),
+            (
+                ("app.api.routes_missions.get_mission", pending),
+                ("app.api.routes_missions.reconcile", pending),
+            ),
+        ),
+        ("post", "/v1/projects"): (
+            "projects.add_project",
+            {"github_url": "https://github.com/org/repo", "name": "my-toolkit"},
+            (),
+            (("app.api.routes_projects._run_skill", (True, "added")),),
+        ),
+        ("patch", "/v1/projects/{name}"): (
+            "projects.patch_project",
+            {"patch": {}},
+            ("my-toolkit",),
+            (("app.projects_config.apply_project_patch", {}),),
+        ),
+        ("post", "/v1/pause"): (
+            "admin.pause",
+            {"duration": ""},
+            (),
+            (("app.pause_manager.create_pause", None),),
+        ),
+    }
+
+    spec = openapi_gen.build_spec(app)
+    documented = {
+        (method, path)
+        for path, path_item in spec["paths"].items()
+        for method, operation in path_item.items()
+        if "requestBody" in operation
+    }
+    assert documented == set(cases)
+
+    for (method, path), (endpoint, payload, args, patches) in cases.items():
+        schema = spec["paths"][path][method]["requestBody"]["content"][
+            "application/json"
+        ]["schema"]
+        accessed = _body_fields_used(app, endpoint, payload, args, patches)
+        assert set(schema["properties"]) == accessed
+
+
+def test_request_body_requiredness_matches_handlers(app):
+    spec = openapi_gen.build_spec(app)
+
+    create = spec["paths"]["/v1/missions"]["post"]["requestBody"]
+    assert create["required"] is True
+    assert {
+        tuple(branch["required"])
+        for branch in create["content"]["application/json"]["schema"]["anyOf"]
+    } == {("command",), ("text",)}
+
+    required = {
+        ("post", "/v1/missions/reorder"): {"mission_id", "target_position"},
+        ("patch", "/v1/missions/{mission_id}"): {"text"},
+        ("post", "/v1/projects"): {"github_url"},
+        ("patch", "/v1/projects/{name}"): {"patch"},
+    }
+    for (method, path), fields in required.items():
+        body = spec["paths"][path][method]["requestBody"]
+        schema = body["content"]["application/json"]["schema"]
+        assert body["required"] is True
+        assert set(schema["required"]) == fields
+
+    assert spec["paths"]["/v1/pause"]["post"]["requestBody"]["required"] is False
+
+
+def test_query_parameter_schemas_match_handler_accesses(app):
+    empty_store = SimpleNamespace(list_by_state=lambda *args, **kwargs: [])
+
+    cases = {
+        ("get", "/v1/missions"): (
+            "missions.list_missions_route",
+            {"status": None, "project": None, "limit": None},
+            (
+                ("app.api.routes_missions.list_missions", []),
+                ("app.mission_store.transition.ensure_store_synced", None),
+                ("app.mission_store.get_mission_store", empty_store),
+            ),
+        ),
+        ("get", "/v1/usage"): (
+            "observability.usage",
+            {
+                "days": "7",
+                "offset": "0",
+                "stacked": "false",
+                "project": "",
+                "granularity": "day",
+            },
+            (("app.usage_service.build_usage_payload", {}),),
+        ),
+        ("get", "/v1/metrics"): (
+            "observability.metrics",
+            {"days": "30", "project": ""},
+            (
+                ("app.mission_metrics.compute_global_metrics", {"by_project": {}}),
+                ("app.security_review.count_security_blocks", 0),
+            ),
+        ),
+        ("get", "/v1/logs"): (
+            "observability.logs",
+            {"source": "all", "limit": "200", "q": ""},
+            (("app.log_reader.read_logs", {"lines": [], "total": 0}),),
+        ),
+    }
+
+    spec = openapi_gen.build_spec(app)
+    documented = {
+        (method, path)
+        for path, path_item in spec["paths"].items()
+        for method, operation in path_item.items()
+        if any(
+            parameter["in"] == "query"
+            for parameter in operation.get("parameters", [])
+        )
+    }
+    assert documented == set(cases)
+
+    for (method, path), (endpoint, values, patches) in cases.items():
+        declared = {
+            parameter["name"]
+            for parameter in spec["paths"][path][method]["parameters"]
+            if parameter["in"] == "query"
+        }
+        assert declared == _query_fields_used(app, endpoint, values, patches)
+
+
+def test_view_metadata_emits_request_body_and_query_parameters():
+    from flask import Flask
+
+    test_app = Flask(__name__)
+
+    @test_app.post("/widgets/<widget_id>")
+    @openapi_operation(
+        request_schema={
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"type": "string"}},
+        },
+        request_required=False,
+        query_parameters=(
+            query_parameter(
+                "dry_run",
+                {"type": "boolean", "default": False},
+                "Validate without applying the change.",
+            ),
+        ),
+    )
+    def create_widget(widget_id):
+        return {"id": widget_id}
+
+    spec = openapi_gen.build_spec(test_app)
+    operation = spec["paths"]["/widgets/{widget_id}"]["post"]
+
+    assert operation["requestBody"] == {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["name"],
+                    "properties": {"name": {"type": "string"}},
+                }
+            }
+        },
+    }
+    assert {
+        (parameter["in"], parameter["name"])
+        for parameter in operation["parameters"]
+    } == {("path", "widget_id"), ("query", "dry_run")}
+
+    operation["parameters"][1]["schema"]["default"] = True
+    regenerated = openapi_gen.build_spec(test_app)
+    query = regenerated["paths"]["/widgets/{widget_id}"]["post"]["parameters"][1]
+    assert query["schema"]["default"] is False
+
+
+def test_docstring_body_and_mcp_metadata_are_emitted():
+    from flask import Flask
+
+    test_app = Flask(__name__)
+
+    @test_app.get("/widgets/<widget_id>")
+    @openapi_operation(
+        mcp=True,
+        mcp_description="Use this after listing widgets.",
+        path_parameter_descriptions={
+            "widget_id": "Identifier returned by the widget list.",
+        },
+    )
+    def get_widget(widget_id):
+        """Fetch one widget.
+
+        Returns the current widget record.
+        """
+        return {"id": widget_id}
+
+    operation = openapi_gen.build_spec(test_app)["paths"][
+        "/widgets/{widget_id}"
+    ]["get"]
+
+    assert operation["summary"] == "Fetch one widget."
+    assert operation["description"] == "Returns the current widget record."
+    assert operation["x-koan-mcp-description"] == (
+        "Use this after listing widgets."
+    )
+    assert operation["parameters"][0]["description"] == (
+        "Identifier returned by the widget list."
+    )
+
+
+def test_metadata_survives_either_decorator_order():
+    """`openapi_operation` is not order-dependent, in either direction.
+
+    Flask's route decorator registers the function and returns that same
+    object, so metadata attached *above* it still lands on the registered view.
+    Below `require_token`, `functools.wraps` copies `__dict__` onto the
+    wrapper. Pinned because the alternative failure — a marker that silently
+    vanishes from `openapi.yaml` — has no lint, test, or CI signal.
+    """
+    from app.api.auth import require_token
+    from flask import Blueprint, Flask
+
+    above = Blueprint("above", __name__)
+
+    @openapi_operation(mcp=True, mcp_description="Above the route.")
+    @above.get("/widgets")
+    @require_token
+    def list_widgets_above():
+        """List widgets."""
+        return {}
+
+    below = Blueprint("below", __name__)
+
+    @below.get("/widgets")
+    @require_token
+    @openapi_operation(mcp=True, mcp_description="Below require_token.")
+    def list_widgets_below():
+        """List widgets."""
+        return {}
+
+    for blueprint in (above, below):
+        test_app = Flask(__name__)
+        test_app.register_blueprint(blueprint)
+        operation = openapi_gen.build_spec(test_app)["paths"]["/widgets"]["get"]
+        assert operation["x-koan-mcp"] is True
+        assert operation["x-koan-mcp-description"]
+
+
+def test_curated_openapi_operations_are_self_describing(app):
+    spec = openapi_gen.build_spec(app)
+    marked = [
+        operation
+        for path_item in spec["paths"].values()
+        for operation in path_item.values()
+        if operation.get("x-koan-mcp") is True
+    ]
+
+    assert len(marked) == 16
+    for operation in marked:
+        assert operation.get("description", "").strip()
+        assert operation.get("x-koan-mcp-description", "").strip()
+
+        for parameter in operation.get("parameters", []):
+            assert parameter.get("description", "").strip()
+
+        body = operation.get("requestBody", {})
+        schema = body.get("content", {}).get("application/json", {}).get(
+            "schema", {}
+        )
+        for name, property_schema in schema.get("properties", {}).items():
+            assert property_schema.get("description", "").strip(), name
 
 
 def test_spec_matches_live_route_table(app):
@@ -84,6 +434,74 @@ def test_security_scheme_and_error_component(app):
     assert scheme == {"type": "http", "scheme": "bearer"}
     error = spec["components"]["schemas"]["Error"]
     assert error["properties"]["error"]["required"] == ["code", "message"]
+
+
+def test_mcp_markers_match_curated_routes(app):
+    spec = openapi_gen.build_spec(app)
+    marked = {
+        (method.upper(), path)
+        for path, path_item in spec["paths"].items()
+        for method, operation in path_item.items()
+        if operation.get("x-koan-mcp") is True
+    }
+    assert marked == {
+        ("GET", "/v1/health"),
+        ("GET", "/v1/status"),
+        ("GET", "/v1/skills"),
+        ("GET", "/v1/missions"),
+        ("POST", "/v1/missions"),
+        ("POST", "/v1/missions/reorder"),
+        ("GET", "/v1/missions/{mission_id}"),
+        ("DELETE", "/v1/missions/{mission_id}"),
+        ("GET", "/v1/missions/{mission_id}/result"),
+        ("GET", "/v1/projects"),
+        ("POST", "/v1/pause"),
+        ("POST", "/v1/resume"),
+        ("GET", "/v1/config"),
+        ("GET", "/v1/usage"),
+        ("GET", "/v1/metrics"),
+        ("GET", "/v1/logs"),
+    }
+
+
+def test_mission_command_schema_advertises_exposed_commands(app):
+    spec = openapi_gen.build_spec(app)
+    command_schema = spec["paths"]["/v1/missions"]["post"][
+        "requestBody"
+    ]["content"]["application/json"]["schema"]["properties"]["command"]
+
+    enum_branch, pattern_branch = command_schema["anyOf"]
+    assert enum_branch["enum"] == [
+        "/audit",
+        "/brief",
+        "/ci_check",
+        "/digest",
+        "/doc",
+        "/docs",
+        "/explain",
+        "/fix",
+        "/gh_request",
+        "/impl",
+        "/implement",
+        "/plan",
+        "/rb",
+        "/re_review",
+        "/rebase",
+        "/rereview",
+        "/review",
+        "/rv",
+        "/xp",
+    ]
+    # Canonical names and advertised aliases are both accepted and normalized.
+    assert re.fullmatch(
+        pattern_branch["pattern"],
+        "/review https://github.com/owner/repo/pull/42",
+    )
+    assert re.fullmatch(
+        pattern_branch["pattern"],
+        "/rv https://github.com/owner/repo/pull/42",
+    )
+    assert not re.fullmatch(pattern_branch["pattern"], "/shutdown")
 
 
 def test_known_non_default_success_codes(app):
@@ -199,3 +617,27 @@ def test_tags_cover_blueprints(app):
     for path in spec["paths"]:
         for name in re.findall(r"{([^{}]+)}", path):
             assert name.isidentifier()
+
+
+def test_destructive_routes_declare_the_marker(app):
+    """Destructiveness travels with the view, so clients need no path allow-list."""
+    spec = openapi_gen.build_spec(app)
+    marked = {
+        (method.upper(), path)
+        for path, item in spec["paths"].items()
+        for method, operation in item.items()
+        if operation.get("x-koan-destructive")
+    }
+    assert marked == {
+        ("POST", "/v1/restart"),
+        ("POST", "/v1/shutdown"),
+        ("POST", "/v1/update"),
+        ("POST", "/v1/update_release"),
+    }
+    assert "x-koan-destructive" not in spec["paths"]["/v1/status"]["get"]
+
+
+def test_request_required_without_a_schema_is_rejected():
+    """The flag is only stored alongside a schema; alone it would be a silent no-op."""
+    with pytest.raises(ValueError, match="request_required"):
+        openapi_operation(request_required=False)

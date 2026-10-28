@@ -61,7 +61,7 @@ class VerifyResult:
 CODE_MISSION_KEYWORDS = {
     "implement", "fix", "add", "create", "build", "refactor",
     "extract", "migrate", "update", "replace", "remove", "delete",
-    "port", "rewrite", "optimize", "improve",
+    "port", "rewrite", "optimize", "improve", "deliver",
 }
 
 # Missions that should produce tests
@@ -199,7 +199,24 @@ def check_test_coverage(project_path: str, mission_title: str) -> Check:
     )
 
 
-def check_pr_created(project_path: str, mission_title: str) -> Check:
+def _gh_says_no_pr(exc: Exception) -> bool:
+    """True only when `gh` positively answered "no pull request for this branch".
+
+    `run_gh` raises ``RuntimeError`` for every non-zero exit, so the message is
+    the only thing that separates a real answer from an auth failure, a
+    timeout, a missing binary or a non-GitHub remote. ``SSOAuthRequired`` is a
+    ``RuntimeError`` subclass and never qualifies.
+    """
+    from app.github import SSOAuthRequired
+
+    if isinstance(exc, SSOAuthRequired) or not isinstance(exc, RuntimeError):
+        return False
+    return "no pull requests found" in str(exc).lower()
+
+
+def check_pr_created(
+    project_path: str, mission_title: str, branch_prefix: str = "koan/"
+) -> Check:
     """Verify that a draft PR was created for code-changing missions.
 
     Uses `gh pr view` to check for an existing PR on the current branch.
@@ -239,12 +256,30 @@ def check_pr_created(project_path: str, mission_title: str) -> Check:
             f"PR #{pr_num} exists but state is {state}"
         )
     except Exception as e:
-        # No PR or gh not available
+        # No PR, or the check could not run at all.
         print(f"[verifier] PR check failed: {e}", file=sys.stderr)
-        return Check(
-            "pr_created", CheckStatus.WARN,
-            "No PR found for current branch"
+        if not _gh_says_no_pr(e):
+            # Expired auth, a timeout, a missing `gh`, a project with no GitHub
+            # remote: the check is inconclusive, not a verdict. Never re-queue
+            # on it — a PR may well exist.
+            return Check(
+                "pr_created", CheckStatus.WARN,
+                f"PR check inconclusive: {type(e).__name__}"
+            )
+        # A code mission on a Kōan-created branch that left no PR behind did
+        # not finish: the work exists but nobody is told about it. As a WARN it
+        # completed as a success and went out silently, with the commits
+        # stranded on the branch. FAIL routes it into the verify re-queue,
+        # which is capped and tags the reason. Anything else — a rebase, a
+        # chore, or a branch Kōan did not create (a base branch not named
+        # main/master, so the SKIP above missed it) — may legitimately end
+        # without a PR, and keeps the WARN. Same precondition as
+        # `check_diff_coherence`.
+        is_koan_code_branch = (
+            _is_code_mission(mission_title) and branch.startswith(branch_prefix)
         )
+        status = CheckStatus.FAIL if is_koan_code_branch else CheckStatus.WARN
+        return Check("pr_created", status, "No PR found for current branch")
 
 
 def check_commit_quality(project_path: str) -> Check:
@@ -403,7 +438,7 @@ def verify_mission(
     check_fns = [
         lambda: check_diff_coherence(project_path, branch_prefix),
         lambda: check_test_coverage(project_path, mission_title),
-        lambda: check_pr_created(project_path, mission_title),
+        lambda: check_pr_created(project_path, mission_title, branch_prefix),
         lambda: check_commit_quality(project_path),
         lambda: check_mission_alignment(project_path, mission_title),
     ]

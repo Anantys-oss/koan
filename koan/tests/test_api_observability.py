@@ -19,6 +19,16 @@ def _auth():
     return {"Authorization": "Bearer secret123"}
 
 
+def _query_default(spec, path, name):
+    return _query_schema(spec, path, name)["default"]
+
+
+def _query_schema(spec, path, name):
+    parameters = spec["paths"][path]["get"]["parameters"]
+    parameter = next(item for item in parameters if item["name"] == name)
+    return parameter["schema"]
+
+
 def test_usage_requires_token(client):
     assert client.get("/v1/usage").status_code == 401
 
@@ -88,3 +98,61 @@ def test_metrics_bad_days_returns_422(client):
 def test_logs_bad_limit_returns_422(client):
     r = client.get("/v1/logs?limit=xyz", headers=_auth())
     assert r.status_code == 422
+
+
+def test_numeric_query_defaults_match_openapi(client, monkeypatch):
+    from app import log_reader, mission_metrics, usage_service
+    from app.api import openapi_gen
+
+    captured = {}
+
+    def fake_usage(instance_dir, **kwargs):
+        captured["usage_days"] = kwargs["days"]
+        captured["usage_offset"] = kwargs["offset"]
+        return {}
+
+    def fake_metrics(instance_dir, days):
+        captured["metrics_days"] = days
+        return {"by_project": {}}
+
+    def fake_logs(koan_root, *, source, limit, q):
+        captured["logs_limit"] = limit
+        return {"lines": [], "total": 0}
+
+    monkeypatch.setattr(usage_service, "build_usage_payload", fake_usage)
+    monkeypatch.setattr(mission_metrics, "compute_global_metrics", fake_metrics)
+    monkeypatch.setattr(log_reader, "read_logs", fake_logs)
+    monkeypatch.setattr(
+        "app.security_review.count_security_blocks",
+        lambda instance, days: 0,
+    )
+
+    headers = _auth()
+    assert client.get("/v1/usage", headers=headers).status_code == 200
+    assert client.get("/v1/metrics", headers=headers).status_code == 200
+    assert client.get("/v1/logs", headers=headers).status_code == 200
+
+    spec = openapi_gen.build_spec(client.application)
+    assert captured["usage_days"] == _query_default(spec, "/v1/usage", "days")
+    assert captured["usage_offset"] == _query_default(spec, "/v1/usage", "offset")
+    assert captured["metrics_days"] == _query_default(spec, "/v1/metrics", "days")
+    assert captured["logs_limit"] == _query_default(spec, "/v1/logs", "limit")
+
+
+def test_usage_bounds_match_the_enforced_clamp(client):
+    """The published window bounds are the ones `usage_service` enforces.
+
+    The defaults test above pins `default`, not `minimum`/`maximum`, so raising
+    the clamp in `usage_service` while the spec still advertises the old range
+    would leave every other test green — and both `koan-cli` and MCP models
+    read those bounds as the contract.
+    """
+    from app.api import openapi_gen
+    from app.usage_service import build_usage_payload
+
+    instance_dir = client.application.config["INSTANCE_DIR"]
+    spec = openapi_gen.build_spec(client.application)
+    schema = _query_schema(spec, "/v1/usage", "days")
+
+    assert build_usage_payload(instance_dir, days=10_000)["days"] == schema["maximum"]
+    assert build_usage_payload(instance_dir, days=0)["days"] == schema["minimum"]

@@ -60,6 +60,18 @@ koan/htmlcov/
 
 # OS
 .DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor swap/backup cruft (vim, emacs, nano, etc.)
+*.swp
+*.swo
+*.swn
+*~
+*.bak
+*.tmp
+\#*\#
+.\#*
 
 # IDE
 .vscode/

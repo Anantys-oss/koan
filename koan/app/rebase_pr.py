@@ -16,13 +16,14 @@ Pipeline:
 
 import contextlib
 import json
+import os
 import re
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from app.claude_step import (
     CI_STATUS_BLOCKED_APPROVAL,
@@ -43,6 +44,7 @@ from app.claude_step import (
     run_claude_step,
     wait_for_ci,
 )
+from app import force_push_guard
 from app.github_alerts import build_alert
 from app.config import (
     get_rebase_include_bot_feedback,
@@ -56,7 +58,7 @@ from app.config import (
     get_skill_timeout,
 )
 from app.git_utils import ordered_remotes as _ordered_remotes
-from app.github import run_gh, sanitize_github_comment
+from app.github import escape_issue_refs, run_gh, sanitize_github_comment
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt  # noqa: F401 — safety import
 from app.retry import retry_with_backoff
 from app.utils import (
@@ -690,26 +692,23 @@ def run_rebase(
         fix=fix, feedback_context=feedback_context, outcome_meta=outcome_meta,
     )
 
-    from app.messaging_level import notify_outcome
+    from app.messaging_level import report_outcome
     pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
-    if success:
-        # A successful rebase that could NOT apply the reviewer's feedback is a
-        # partial success — surface it as a warning that always reaches chat
-        # (notify_outcome is not messaging.level-gated), so the dropped feedback
-        # is not mistaken for "done". The bare ✅ here is exactly why these were
-        # easy to miss.
-        feedback_unapplied = outcome_meta.get("feedback_unapplied")
-        if feedback_unapplied:
-            notify_outcome(
-                f"⚠️ Rebased {pr_url} — review feedback NOT applied "
-                f"({feedback_unapplied}); the reviewer comments still need "
-                "attention.",
-                notify_fn,
-            )
-        else:
-            notify_outcome(f"✅ Rebased {pr_url}", notify_fn)
-    else:
-        notify_outcome(f"❌ Rebase failed {pr_url}: {summary}", notify_fn)
+    # A successful rebase that could NOT apply the reviewer's feedback is a
+    # partial success: the warning rides under the outcome line, which always
+    # reaches chat, so the dropped feedback is not mistaken for "done".
+    feedback_unapplied = outcome_meta.get("feedback_unapplied") if success else ""
+    skipped = success and summary.startswith(f"PR #{pr_number} is already")
+    report_outcome(
+        "rebase", success, project_path=project_path, url=pr_url,
+        detail="\n".join(filter(None, [
+            summary if skipped else "",
+            f"⚠️ Review feedback NOT applied ({feedback_unapplied}); the "
+            "reviewer comments still need attention." if feedback_unapplied else "",
+        ])),
+        reason="" if success else summary,
+        send_fn=notify_fn,
+    )
     return success, summary
 
 
@@ -858,6 +857,19 @@ def _run_rebase_impl(
         )
     except Exception as e:
         return False, f"Failed to checkout branch `{branch}`: {e}"
+
+    # The PR head everything downstream is based on — the reference point for
+    # the post-push content-preservation check (force_push_guard).
+    pre_rebase_head = ""
+    try:
+        pre_rebase_head = _run_git(
+            ["git", "rev-parse", "HEAD"], cwd=project_path, timeout=30,
+        ).strip()
+    except Exception as e:
+        print(
+            f"[rebase_pr] could not capture pre-rebase head: {e}",
+            file=sys.stderr,
+        )
 
     # Use API-discovered head_remote, fall back to checkout's fetch_remote
     effective_head_remote = head_remote or fetch_remote
@@ -1051,6 +1063,16 @@ def _run_rebase_impl(
             "\n".join(f"- {a}" for a in actions_log)
         )
 
+    # Push observations for the content-preservation guard. The private gate
+    # may push again; its push_gate_fix updates this state with its own fresh
+    # pre-push observation and pushed SHA so no pipeline push is a blind spot.
+    push_state = {
+        "remote": push_result.get("remote", ""),
+        "pushed_head": push_result.get("pushed_head", ""),
+        "observations": [h for h in push_result.get("pre_push_remote_heads", []) if h],
+        "observation_failed": bool(push_result.get("observation_failed")),
+    }
+
     # ── Step 7: Private review gate ────────────────────────────────────
     gate_result = _run_rebase_private_review_gate(
         owner=owner,
@@ -1065,10 +1087,27 @@ def _run_rebase_impl(
         notify_fn=notify_fn,
         skill_dir=skill_dir,
         actions_log=actions_log,
+        push_state=push_state,
     )
     gate_action = _format_rebase_private_gate_action(gate_result)
     if gate_action:
         actions_log.append(gate_action)
+
+    # ── Step 7.5: Force-push content-preservation check ────────────────
+    # Runs after the pipeline's last push (gate fixes included) while the PR
+    # branch is still checked out. Detects dropped/modified original content,
+    # clobbered concurrent pushes, and a post-push remote race. Best-effort:
+    # never blocks or reverts — it warns loudly on the PR instead.
+    push_guard_section = _run_force_push_guard(
+        pre_rebase_head=pre_rebase_head,
+        target_ref=f"{rebase_remote}/{base}",
+        project_path=project_path,
+        push_state=push_state,
+        branch=branch,
+        pr_number=pr_number,
+        actions_log=actions_log,
+        notify_fn=notify_fn,
+    )
 
     # ── Step 8: Collect final diffstat ─────────────────────────────────
     diffstat = _get_diffstat(f"{rebase_remote}/{base}", project_path)
@@ -1093,6 +1132,7 @@ def _run_rebase_impl(
         feedback_failed=feedback_status in ("feedback_timeout", "feedback_failed"),
         feedback_reason=feedback_reason,
         show_transition_notice=show_transition_notice,
+        push_guard_section=push_guard_section,
     )
 
     try:
@@ -1129,6 +1169,7 @@ def _run_rebase_private_review_gate(
     notify_fn,
     skill_dir: Optional[Path],
     actions_log: List[str],
+    push_state: Optional[dict] = None,
 ):
     """Run the shared private review gate using /rebase push semantics."""
     if not Path(project_path).is_dir():
@@ -1159,6 +1200,27 @@ def _run_rebase_private_review_gate(
         actions_log.extend(push_result.get("actions", []))
         if not push_result.get("success"):
             raise RuntimeError(push_result.get("error", "unknown push failure"))
+        # Feed the guard: this push's fresh observation and pushed SHA, so a
+        # human push landing between the main push and this one is detected.
+        if push_state is not None:
+            gate_remote = push_result.get("remote", "")
+            # Observations only mean something for the remote they were taken
+            # on: if the gate landed somewhere else, the earlier ones describe
+            # a branch this pipeline never overwrote.
+            if gate_remote and gate_remote != push_state.get("remote"):
+                push_state["remote"] = gate_remote
+                push_state["observations"] = []
+                push_state["observation_failed"] = False
+            # Always overwrite, including with "": once the gate has pushed,
+            # the step-6 SHA is stale and comparing against it would fake a
+            # race. No confirmed SHA means the guard skips, which is correct.
+            push_state["pushed_head"] = push_result.get("pushed_head", "")
+            observations = push_state.setdefault("observations", [])
+            for observed in push_result.get("pre_push_remote_heads", []):
+                if observed and observed not in observations:
+                    observations.append(observed)
+            if push_result.get("observation_failed"):
+                push_state["observation_failed"] = True
 
     try:
         from app.private_review_gate import run_private_review_gate
@@ -1425,14 +1487,23 @@ _has_rebase_in_progress = has_rebase_in_progress
 _UNMERGED_STATUSES = frozenset({"DD", "AU", "UD", "UA", "DU", "AA", "UU"})
 
 
-def _get_conflicted_files(project_path: str) -> List[str]:
-    """Return list of files with unmerged conflicts.
+def _get_conflicted_files(
+    project_path: str, errors: Optional[List[str]] = None,
+) -> Optional[List[str]]:
+    """Return list of files with unmerged conflicts, or None if git could not tell.
 
     Uses ``git status --porcelain`` which explicitly reports the merge state
     of each index entry.  Previous implementation used
     ``git diff --name-only --diff-filter=U`` which can silently return
     incomplete results during complex rebase operations (e.g. ``--onto``
-    rebases or branches with merge commits being linearised).
+    rebases or branches with merge commits being linearised) — so nothing in
+    this module may fall back to that command, least of all a safety check.
+
+    A failed status (timeout, held ``index.lock``, non-zero exit) returns
+    **None**, never ``[]``: callers act on "nothing is conflicted", and an
+    unanswerable question must not masquerade as that answer.  git's own
+    error text is appended to *errors* when given, so a caller can report
+    the actual cause instead of a bare round count.
     """
     try:
         result = subprocess.run(
@@ -1441,6 +1512,15 @@ def _get_conflicted_files(project_path: str) -> List[str]:
             capture_output=True, text=True, cwd=project_path,
             timeout=30,
         )
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "").strip()[:200]
+            print(
+                f"[rebase_pr] git status failed (rc={result.returncode}): {err}",
+                file=sys.stderr,
+            )
+            if errors is not None:
+                errors.append(err or f"git status exited {result.returncode}")
+            return None
         files = [
             line[3:].strip()
             for line in result.stdout.splitlines()
@@ -1449,7 +1529,207 @@ def _get_conflicted_files(project_path: str) -> List[str]:
         return files
     except Exception as e:
         print(f"[rebase_pr] failed to list conflicted files: {e}", file=sys.stderr)
-        return []
+        if errors is not None:
+            errors.append(str(e))
+        return None
+
+
+# git helper failures worth swallowing: a non-zero exit (_run_git raises
+# RuntimeError), a hung git, or the binary being unavailable.
+_GIT_STEP_EXCEPTIONS = (RuntimeError, subprocess.SubprocessError, OSError)
+
+# Prefix marking "git itself could not be queried" — a transient condition
+# (held index.lock, timeout) the conflict loop retries instead of treating as
+# a rebase that cannot advance.
+_VERIFY_FAILED_PREFIX = "could not verify the tree is unmerged-free"
+
+# A status git never answers is worth re-asking, but only a bounded number of
+# times *per resolution*: an index.lock held for the life of the rebase would
+# otherwise eat the whole round budget and be reported as "too complex to
+# resolve".  The count is cumulative, not consecutive — a lock that only ever
+# blocks the pre-staging check would reset a consecutive counter every round
+# and never trip it.
+_MAX_UNREADABLE_STATUS_ROUNDS = 3
+_UNREADABLE_STATUS_DELAY = 2.0
+
+
+def _record_conflict_failure(
+    failure_detail: Optional[List[str]], detail: str,
+) -> None:
+    """Record why conflict resolution stopped, for the caller's error message.
+
+    Without this the caller falls back to the *initial* ``git rebase`` error,
+    which names the first conflicting commit even when that commit was
+    resolved fine and the rebase died later — a misleading report.
+    """
+    print(f"[rebase_pr] conflict resolution failed: {detail}", file=sys.stderr)
+    if failure_detail is not None:
+        failure_detail.append(detail)
+
+
+class _ContinueOutcome(NamedTuple):
+    """Result of one ``git rebase --continue`` attempt.
+
+    *completed* is True once no rebase is in progress and git said so with a
+    zero exit.  *detail* carries git's own error text for a failed attempt,
+    and is empty when the continue merely stopped on the next commit's
+    conflicts.  *retryable* marks the case where nothing was attempted
+    because git could not be queried — the round is worth spending again
+    rather than abandoning resolutions already paid for in LLM quota.
+    """
+
+    completed: bool
+    detail: str
+    retryable: bool = False
+
+
+def _verify_unmerged_free(project_path: str) -> Tuple[bool, str]:
+    """Prove the index holds no unmerged entry, with git's exit status checked.
+
+    ``git add -u`` marks an unmerged path resolved by taking the working-tree
+    content verbatim — conflict markers included.  Git refusing ``--continue``
+    on unmerged entries is the last backstop against committing them, so it
+    may only be bypassed on a *confident* "nothing is unmerged".  This is the
+    sole check on the path where the caller's own probe returned None, so it
+    asks git through :func:`_get_conflicted_files` — ``git status
+    --porcelain``, the listing this module documents as reliable — and treats
+    an unanswered status as a refusal to stage.
+
+    Returns ``(verified, why)``; *why* is prefixed with
+    ``_VERIFY_FAILED_PREFIX`` when git itself could not be read, which the
+    caller turns into a retry rather than a terminal failure.
+    """
+    errors: List[str] = []
+    unmerged = _get_conflicted_files(project_path, errors=errors)
+    if unmerged is None:
+        err = errors[-1] if errors else "git status could not be read"
+        return False, f"{_VERIFY_FAILED_PREFIX}: {err}"
+    if unmerged:
+        return False, (
+            f"{len(unmerged)} file(s) still unmerged: {', '.join(unmerged[:5])}"
+        )
+    return True, ""
+
+
+def _list_untracked_files(project_path: str) -> Optional[List[str]]:
+    """Return the files ``git add -u`` leaves out of the replayed commit.
+
+    A resolution that legitimately creates a file (an extracted helper, a
+    module the target branch split) leaves it untracked, and nothing else
+    would ever notice: untracked files neither block ``--continue`` nor show
+    up as unmerged.  The caller records them in the actions log so a dropped
+    file reaches the human reading the PR report, not just daemon stderr.
+
+    Returns **None** when git could not be asked, never ``[]``: this listing
+    is the only human-facing signal for a dropped file, so an unanswered
+    question must not read as "nothing was dropped" while the commit goes
+    ahead without it.  *None* carries git's own error text back to the
+    caller, which reports the blind spot in the actions log.
+    """
+    try:
+        out = _run_git(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            cwd=project_path, timeout=30,
+        )
+    except _GIT_STEP_EXCEPTIONS as e:
+        print(f"[rebase_pr] could not list untracked files: {e}", file=sys.stderr)
+        return None
+    return [line.strip() for line in (out or "").splitlines() if line.strip()]
+
+
+def _continue_rebase(
+    project_path: str, actions_log: Optional[List[str]] = None,
+) -> _ContinueOutcome:
+    """Stage the resolved tree and run ``git rebase --continue``.
+
+    Every *tracked* modification is staged first, not just the conflicted
+    paths: ``git rebase --continue`` refuses to run while any tracked file is
+    unstaged, and reports it as the misleading "You must edit all merge
+    conflicts and then mark them as resolved using git add" even when no
+    unmerged path is left.  A coherent conflict resolution routinely edits
+    neighbouring files (a helper the replayed commit moved, an import the
+    target branch renamed), and the rebase starts from a clean, autostashed
+    tree, so those edits are resolution output.  ``git add -u`` keeps
+    untracked scratch files out of the replayed commit — they never block
+    ``--continue`` anyway; new files the resolution needed are reported in
+    *actions_log* instead of committed.
+
+    Staging only ever happens once :func:`_verify_unmerged_free` confirms
+    nothing is unmerged, so this cannot turn an unresolved conflict into a
+    commit.  A non-zero exit is never folded into success: completion
+    requires both a gone rebase directory and git's own rc=0.
+
+    A rebase that is already gone on entry is a *completed* one: the caller
+    only reaches here after git stopped on conflicts, so the resolution
+    agent ran ``--continue`` itself.  Asking git again would earn "fatal: No
+    rebase in progress?" and report a finished rebase as a failure.
+    """
+    if not _has_rebase_in_progress(project_path):
+        return _ContinueOutcome(True, "")
+
+    verified, why = _verify_unmerged_free(project_path)
+    if not verified:
+        print(f"[rebase_pr] refusing to stage: {why}", file=sys.stderr)
+        return _ContinueOutcome(
+            False, why, retryable=why.startswith(_VERIFY_FAILED_PREFIX),
+        )
+
+    try:
+        _run_git(["git", "add", "-u"], cwd=project_path, timeout=60)
+    except _GIT_STEP_EXCEPTIONS as e:
+        # Reporting the `--continue` symptom instead would blame the agent for
+        # conflicts it resolved fine.
+        return _ContinueOutcome(False, f"staging the resolved tree failed: {e}")
+
+    untracked = _list_untracked_files(project_path)
+    if untracked is None:
+        note = (
+            "could not check for untracked resolution artifacts — a new file "
+            "the resolution created may be missing from the replayed commit"
+        )
+    elif untracked:
+        note = (
+            f"{len(untracked)} untracked file(s) left out of the replayed "
+            f"commit: {', '.join(untracked[:5])}"
+        )
+    else:
+        note = ""
+    if note:
+        print(f"[rebase_pr] {note}", file=sys.stderr)
+        if actions_log is not None:
+            actions_log.append(note)
+
+    try:
+        # GIT_EDITOR=true prevents an interactive editor for commit messages.
+        proc = subprocess.run(
+            ["git", "rebase", "--continue"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True, text=True,
+            cwd=project_path, timeout=60,
+            env={**os.environ, "GIT_EDITOR": "true"},
+        )
+    except _GIT_STEP_EXCEPTIONS as e:
+        # A killed or never-launched git is a failure even when
+        # `.git/rebase-merge` is gone: git may have unlinked it before
+        # replaying the remaining commits, and a missing directory is no
+        # evidence the rebase finished.
+        return _ContinueOutcome(False, f"git rebase --continue failed: {e}")
+
+    output = (proc.stderr or proc.stdout or "").strip()[:200]
+    if _has_rebase_in_progress(project_path):
+        if proc.returncode == 0:
+            # Stopped on the next commit's conflicts — not an error.
+            return _ContinueOutcome(False, "")
+        return _ContinueOutcome(False, f"git rebase --continue failed: {output}")
+    if proc.returncode != 0:
+        # A rejected commit hook or a refused commit tears the rebase
+        # directory down too; the replayed commit was never created.
+        return _ContinueOutcome(
+            False,
+            f"git rebase --continue exited {proc.returncode} with no rebase "
+            f"in progress: {output}",
+        )
+    return _ContinueOutcome(True, "")
 
 
 def _resolve_rebase_conflicts(
@@ -1474,17 +1754,62 @@ def _resolve_rebase_conflicts(
     from app.cli_provider import build_full_command
     from app.config import get_model_config
 
+    status_errors: List[str] = []
+    unreadable_rounds = 0
+
+    def _unreadable(detail: str) -> bool:
+        """Count one git-could-not-be-queried round; True once it is fatal.
+
+        Retryable outcomes carry git's own text ("fatal: Unable to create
+        index.lock"), and a lock held for the whole rebase would otherwise
+        silently eat the round budget and surface as "exceeded N rounds" —
+        telling the human the conflicts were too complex when none was ever
+        attempted.
+        """
+        nonlocal unreadable_rounds
+        unreadable_rounds += 1
+        if detail:
+            status_errors.append(detail)
+        if unreadable_rounds >= _MAX_UNREADABLE_STATUS_ROUNDS:
+            _record_conflict_failure(
+                failure_detail,
+                f"git status could not be read after {unreadable_rounds} "
+                f"attempts: "
+                f"{status_errors[-1] if status_errors else 'unknown error'}",
+            )
+            return True
+        time.sleep(_UNREADABLE_STATUS_DELAY)
+        return False
+
     for round_num in range(1, max_rounds + 1):
-        conflicted = _get_conflicted_files(project_path)
+        conflicted = _get_conflicted_files(project_path, errors=status_errors)
+        if conflicted is None:
+            # git could not be asked (held index.lock, timeout). Re-ask after a
+            # pause rather than read the non-answer as either state — but a
+            # git that never answers is its own failure, not "conflicts too
+            # complex to resolve" once the round budget runs out.
+            if _unreadable(""):
+                return False
+            continue
         if not conflicted:
             # No conflicts — try to continue (may already be done)
-            try:
-                _run_git(["git", "rebase", "--continue"], cwd=project_path)
-            except Exception as e:
-                print(f"[rebase_pr] rebase --continue failed: {e}", file=sys.stderr)
-            # Check if rebase is still in progress
-            if not _has_rebase_in_progress(project_path):
+            outcome = _continue_rebase(project_path, actions_log=actions_log)
+            if outcome.completed:
                 return True
+            if outcome.retryable:
+                # Nothing was staged or continued — git could not be queried.
+                # Spend the round again instead of abandoning the rebase.
+                if _unreadable(outcome.detail):
+                    return False
+                continue
+            if _get_conflicted_files(project_path) == []:
+                # Stuck: nothing to resolve, yet the rebase will not advance.
+                # Looping here just burns every remaining round.
+                _record_conflict_failure(
+                    failure_detail,
+                    outcome.detail or "git rebase --continue made no progress",
+                )
+                return False
             continue
 
         if notify_fn:
@@ -1528,46 +1853,43 @@ def _resolve_rebase_conflicts(
             )
             return False
 
-        # Stage all resolved files (Claude should have done git add, but ensure it)
+        # The agent must leave no unmerged path behind. A None (git could not
+        # tell) falls through to _continue_rebase, which re-asks
+        # `git status --porcelain` and refuses to stage unless it answers.
         remaining = _get_conflicted_files(project_path)
         if remaining:
-            print(
-                f"[rebase_pr] Still {len(remaining)} conflicted after Claude resolution: "
-                f"{remaining}",
-                file=sys.stderr,
+            _record_conflict_failure(
+                failure_detail,
+                f"{len(remaining)} file(s) still conflicted after resolution: "
+                f"{', '.join(remaining[:5])}",
             )
             return False
 
         # Continue the rebase
-        try:
-            # GIT_EDITOR=true prevents interactive editor for commit messages
-            subprocess.run(
-                ["git", "rebase", "--continue"],
-                stdin=subprocess.DEVNULL,
-                capture_output=True, text=True,
-                cwd=project_path, timeout=60,
-                env={**__import__("os").environ, "GIT_EDITOR": "true"},
-            ).check_returncode()
-        except subprocess.CalledProcessError:
-            # May have more conflicts from subsequent commits
-            if _has_rebase_in_progress(project_path):
-                continue
-            # Or the rebase finished despite non-zero exit
-            if not _has_rebase_in_progress(project_path):
-                actions_log.append(
-                    f"Resolved merge conflicts ({round_num} round(s))"
-                )
-                return True
-            return False
-
-        # Check if rebase completed
-        if not _has_rebase_in_progress(project_path):
+        outcome = _continue_rebase(project_path, actions_log=actions_log)
+        if outcome.completed:
             actions_log.append(
                 f"Resolved merge conflicts ({round_num} round(s))"
             )
             return True
+        if outcome.retryable:
+            # git could not be queried, so nothing was staged or continued —
+            # the resolution already paid for stays on disk for next round.
+            if _unreadable(outcome.detail):
+                return False
+            continue
+        if _get_conflicted_files(project_path) == []:
+            _record_conflict_failure(
+                failure_detail,
+                outcome.detail or "git rebase --continue made no progress",
+            )
+            return False
+        # More conflicts from a later commit — resolve them next round.
 
-    print(f"[rebase_pr] Exceeded max conflict resolution rounds ({max_rounds})", file=sys.stderr)
+    _record_conflict_failure(
+        failure_detail,
+        f"exceeded {max_rounds} conflict-resolution rounds",
+    )
     return False
 
 
@@ -2194,6 +2516,11 @@ def _apply_review_feedback(
             result_meta["status"] = status
             result_meta["error"] = error_text
         return result_meta.get("summary", "") if result_meta is not None else ""
+    if getattr(step, "self_committed", False):
+        # The agent ran git commit/--amend itself, so the worktree was already
+        # clean when the runner looked. Record it: the landed commit message is
+        # the agent's own, not the runner's `commit_msg`.
+        actions_log.append("Review feedback committed by the agent itself")
     if result_meta is not None:
         result_meta["status"] = "committed"
         result_meta["error"] = ""
@@ -2261,6 +2588,113 @@ def _build_rebase_recovery_guidance(project_path: str) -> str:
         f"- next: {next_step}"
     )
 
+
+
+def _run_force_push_guard(
+    *,
+    pre_rebase_head: str,
+    target_ref: str,
+    project_path: str,
+    push_state: dict,
+    branch: str,
+    pr_number: str,
+    actions_log: List[str],
+    notify_fn,
+) -> str:
+    """Post-push content-preservation check; returns the PR-comment alert.
+
+    *push_state* carries the accumulated push telemetry: the remote actually
+    pushed to, the last successfully pushed SHA, and every pre-push remote
+    observation of that remote (main push + gate re-pushes). Best-effort by
+    contract (specs/components/git-github.md): a guard that cannot run logs
+    the fact and returns "" — it never fails the rebase.
+
+    The branch is already force-pushed by the time this runs, so the whole
+    body is inside the best-effort boundary: an unexpected failure here must
+    not turn a completed rebase into a failed mission, nor skip the PR comment
+    and CI enqueue that follow.
+    """
+    if not pre_rebase_head:
+        actions_log.append(
+            "Force-push guard skipped: pre-rebase head was not captured"
+        )
+        return ""
+    try:
+        section = _build_push_guard_section(
+            pre_rebase_head=pre_rebase_head,
+            target_ref=target_ref,
+            project_path=project_path,
+            push_state=push_state,
+            branch=branch,
+            actions_log=actions_log,
+        )
+    except Exception as e:
+        print(f"[rebase_pr] force-push guard failed: {e}", file=sys.stderr)
+        actions_log.append(
+            f"Force-push guard skipped: unexpected guard failure ({e}) — "
+            f"the rebase itself is unaffected"
+        )
+        return ""
+    if not section:
+        return ""
+    actions_log.append(
+        "Force-push guard: original PR content was dropped, modified, or "
+        "raced — see the warning at the top of this comment"
+    )
+    # A safety finding is an outcome, not progress: notify_outcome() delivers it
+    # through the un-gated sink so it reaches the human in normal mode too, and a
+    # delivery failure is logged rather than swallowed (the PR comment still
+    # carries the full detail either way).
+    try:
+        from app.messaging_level import notify_outcome
+
+        notify_outcome(
+            f"⚠️ Force-push guard: PR #{pr_number} (`{branch}`) — the rewrite "
+            f"needs attention; details in the PR comment.",
+            notify_fn,
+        )
+    except Exception as e:
+        print(
+            f"[rebase_pr] force-push guard alert delivery failed: {e}",
+            file=sys.stderr,
+        )
+    return section
+
+
+def _build_push_guard_section(
+    *,
+    pre_rebase_head: str,
+    target_ref: str,
+    project_path: str,
+    push_state: dict,
+    branch: str,
+    actions_log: List[str],
+) -> str:
+    """Run the check and render it; "" when there is nothing to report."""
+    findings = force_push_guard.verify_content_preserved(
+        pre_rebase_head,
+        target_ref,
+        project_path,
+        pre_push_remote_heads=push_state.get("observations", []),
+        push_remote=push_state.get("remote", ""),
+        branch=branch,
+        pushed_head=push_state.get("pushed_head", ""),
+        observation_failed=bool(push_state.get("observation_failed")),
+    )
+    if findings is None:
+        actions_log.append(
+            "Force-push guard skipped: no confirmed pushed SHA, or the content "
+            "check could not run (non-fatal)"
+        )
+        return ""
+    section = force_push_guard.build_push_warning(
+        findings, branch, remote=push_state.get("remote") or "origin",
+    )
+    if not section:
+        actions_log.append(
+            "Force-push guard: all original PR content verified preserved"
+        )
+    return section
 
 
 def _checkout_pr_branch(
@@ -2341,6 +2775,66 @@ def _checkout_pr_branch(
     return fetch_remote
 
 
+def _push_to_remote(branch: str, project_path: str, remote: str) -> dict:
+    """Force-push *branch* to one remote, collecting the guard's telemetry.
+
+    Returns the observations belonging to **this** attempt only — a tip seen
+    on a remote whose push then fails was never overwritten, and reporting it
+    as clobbered would send the human chasing commits that are still there.
+    Raises whatever the push raises.
+    """
+    observations: List[str] = []
+    failures: List[str] = []
+
+    def observe() -> None:
+        """Snapshot the remote tip (and fetch its objects) before overwriting it.
+
+        Feeds the content-preservation guard so commits pushed by others
+        mid-rebase can be detected and named after this push erases them.
+
+        Never raises: this runs on the live push path (before the push, and
+        again from the lease-failure hook), and the guard detects and warns —
+        it must not gate the force-push. Anything unexpected is logged and
+        recorded as a failed observation, so the guard reports the clobber
+        check as unverified instead of the push not happening at all.
+        """
+        try:
+            sha = force_push_guard.observe_remote_head(
+                remote, branch, project_path,
+            )
+        except Exception as e:
+            print(
+                f"[rebase_pr] pre-push observation of {remote} failed: {e}",
+                file=sys.stderr,
+            )
+            sha = None
+        if sha is None:
+            failures.append(remote)  # could not look — not "nothing there"
+        elif sha and sha not in observations:
+            observations.append(sha)
+
+    observe()
+    # The SHA we are about to publish. Captured before the push and only
+    # reported on success, so a commit that never reached the remote can
+    # neither skew the guard's comparison nor fake a post-push race.
+    head_to_push = ""
+    try:
+        head_to_push = _run_git(
+            ["git", "rev-parse", "HEAD"], cwd=project_path, timeout=30,
+        ).strip()
+    except Exception as e:
+        print(f"[rebase_pr] pushed-head capture failed: {e}", file=sys.stderr)
+    # A rejected --force-with-lease means the remote moved since the
+    # observation above; re-observe before the plain --force clobbers it.
+    _force_push(remote, branch, project_path, on_lease_failure=observe)
+    return {
+        "remote": remote,
+        "pre_push_remote_heads": observations,
+        "observation_failed": bool(failures),
+        "pushed_head": head_to_push,
+    }
+
+
 def _push_with_fallback(
     branch: str,
     base: str,
@@ -2360,14 +2854,16 @@ def _push_with_fallback(
     actions: List[str] = []
     remotes = _ordered_remotes(head_remote, cwd=project_path)
     last_error = ""
+
     for remote in remotes:
         try:
-            _force_push(remote, branch, project_path)
-            actions.append(f"Force-pushed `{branch}` to {remote}")
-            return {"success": True, "actions": actions, "error": ""}
+            pushed = _push_to_remote(branch, project_path, remote)
         except Exception as e:
             print(f"[rebase_pr] push to {remote} failed: {e}", file=sys.stderr)
             last_error = str(e)
+            continue
+        actions.append(f"Force-pushed `{branch}` to {remote}")
+        return {"success": True, "actions": actions, "error": "", **pushed}
 
     return {
         "success": False,
@@ -2429,6 +2925,7 @@ def _build_rebase_comment(
     feedback_failed: bool = False,
     feedback_reason: str = "",
     show_transition_notice: bool = False,
+    push_guard_section: str = "",
 ) -> str:
     """Build a structured markdown comment summarizing the rebase.
 
@@ -2501,6 +2998,11 @@ def _build_rebase_comment(
     parts = [f"## {rebase_type}\n"]
     parts.append(f"{summary_line}\n")
 
+    # Force-push content-preservation warning first — when present it is the
+    # single most important thing on the comment (specs/skills/rebase.md).
+    if push_guard_section:
+        parts.append(push_guard_section + "\n")
+
     # Transient notice announcing the /rebase default change (bare rebase no
     # longer applies review feedback). Only on the bare-rebase path, and only
     # while the transition window is open.
@@ -2559,7 +3061,11 @@ def _build_rebase_comment(
 
     parts.append("---\n_Automated by Kōan_")
 
-    return "\n".join(parts)
+    # The feedback agent numbers reviewer points ("reviewer #5", "#7") after the
+    # review comment's own finding IDs. GitHub would auto-link those to unrelated
+    # issues/PRs in this repo, so neutralize every bare #N in the rendered body.
+    # Nothing this comment emits is ever a deliberate issue link.
+    return escape_issue_refs("\n".join(parts))
 
 
 def _extract_change_items(
@@ -2694,6 +3200,12 @@ def main(argv=None):
             skill_dir=skills_base / "recreate",
         )
         print(recreate_summary)
+        from app.messaging_level import hand_over_detail
+        hand_over_detail(
+            f"The rebase conflicted, so PR #{pr_number} was recreated as a new PR."
+            if recreate_ok else
+            "The rebase conflicted, and the /recreate fallback failed too."
+        )
         return 0 if recreate_ok else 1
 
     print(summary)

@@ -328,12 +328,12 @@ def _get_koan_md_section(project_path: str) -> str:
     """
     if not project_path:
         return ""
-    from app.project_koan import log_context_load, read_general_koan_md
+    from app.project_koan import read_general_koan_md, record_context_load
     content = read_general_koan_md(project_path)
     if not content:
         return ""
 
-    log_context_load("KOAN.md", content)
+    record_context_load("KOAN.md", content)
 
     from app.prompts import load_prompt
     return load_prompt("koan-md", KOAN_MD_CONTENT=content)
@@ -355,8 +355,8 @@ def _log_claude_md_detected(project_path: str) -> None:
         if not claude_md.is_file():
             return
         content = claude_md.read_text(errors="replace")
-        from app.project_koan import log_context_load
-        log_context_load("CLAUDE.md (auto-loaded by CLI)", content)
+        from app.project_koan import record_context_load
+        record_context_load("CLAUDE.md (auto-loaded by CLI)", content)
     except Exception as e:
         logger.debug("CLAUDE.md detection failed for %s: %s", project_path, e)
 
@@ -594,6 +594,38 @@ def _get_mission_type_section(mission_title: str) -> str:
     except Exception as e:
         print(f"[prompt_builder] Mission type hint failed: {e}", file=sys.stderr)
     return ""
+
+
+def _get_stagnation_retry_section(instance: str, mission_title: str) -> str:
+    """Return stagnation retry coaching when the mission has been re-queued.
+
+    Reads the retry tracker (``get_retry_info``) so a mission that stagnated
+    and got requeued tells the next session what pattern to avoid repeating.
+    Returns empty string when there is no mission title (first-run missions
+    and autonomous mode, which pass an empty title).
+    """
+    if not mission_title:
+        return ""
+
+    try:
+        from app.stagnation_monitor import get_retry_info
+
+        info = get_retry_info(instance, mission_title)
+    except Exception as e:
+        print(f"[prompt_builder] Stagnation retry lookup failed: {e}", file=sys.stderr)
+        return ""
+
+    if info.get("count", 0) < 1:
+        return ""
+
+    from app.prompts import load_prompt
+
+    return load_prompt(
+        "stagnation-retry-context",
+        RETRY_COUNT=str(info["count"]),
+        PATTERN_TYPE=info.get("pattern_type") or "unknown",
+        SAMPLE_LINES=info.get("sample_lines") or "(no output captured)",
+    )
 
 
 def _get_verification_gate_section(mission_title: str) -> str:
@@ -853,6 +885,9 @@ def build_agent_prompt(
     # Append mission type guidance (mission-driven runs only)
     prompt += _get_mission_type_section(mission_title)
 
+    # Append stagnation retry coaching (requeued missions only)
+    prompt += _get_stagnation_retry_section(instance, mission_title)
+
     # Append task-aware filtered learnings (issue #1306)
     prompt += _get_learnings_section(
         instance, project_name, mission_title, focus_area,
@@ -929,6 +964,10 @@ def build_agent_prompt(
     # Append language preference (overrides soul.md default)
     prompt += _get_language_section()
 
+    # One consolidated steering summary right before the CLI call.
+    from app.project_koan import flush_context_summary
+    flush_context_summary()
+
     return prompt
 
 
@@ -975,6 +1014,9 @@ def build_agent_prompt_parts(
     # Append mission type guidance (mission-driven runs only)
     user_prompt += _get_mission_type_section(mission_title)
 
+    # Append stagnation retry coaching (requeued missions only)
+    user_prompt += _get_stagnation_retry_section(instance, mission_title)
+
     # Append task-aware filtered learnings (issue #1306).
     # Lives in the user prompt because its content varies with each mission
     # — putting it in the system prompt would defeat prompt caching.
@@ -1020,6 +1062,11 @@ def build_agent_prompt_parts(
     # Tier 1: Always stable — identical for every mission on this project.
     sys_parts.append(_get_merge_policy(project_name))
     sys_parts.append(_get_submit_pr_section(project_path))
+
+    # Surface the project's CLAUDE.md for `make logs` (detection-only; the CLI
+    # auto-loads it via cwd — koan never injects it). Recorded before KOAN.md so
+    # the summary order matches build_agent_prompt's.
+    _log_claude_md_detected(host_project_path or project_path)
 
     # Project-local koan-only instructions (KOAN.md). Read from the HOST path
     # (host_project_path) because in devcontainer mode project_path is the
@@ -1072,6 +1119,10 @@ def build_agent_prompt_parts(
         sys_parts.append(security)
 
     system_prompt = "\n\n".join(part for part in sys_parts if part)
+
+    # One consolidated steering summary right before the CLI call.
+    from app.project_koan import flush_context_summary
+    flush_context_summary()
 
     return system_prompt, user_prompt
 

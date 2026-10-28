@@ -262,6 +262,26 @@ class TestUnrecognizedKeys:
         warnings = validate_config({"review_draft_skip": {"enabled": True}})
         assert not any("unrecognized key 'review_draft_skip'" in m for _, m in warnings)
 
+    def test_mission_limits_is_recognized_with_size_strings_and_null(self):
+        warnings = validate_config({"mission_limits": {
+            "enabled": True,
+            "memory_reserve": "2G",
+            "memory_min": "1G",
+            "memory_max": None,
+        }})
+        assert warnings == []
+
+    def test_mission_limits_accepts_a_bare_byte_count(self):
+        warnings = validate_config(
+            {"mission_limits": {"memory_max": 6442450944}}
+        )
+        assert warnings == []
+
+    def test_mission_limits_typo_is_suggested(self):
+        warnings = validate_config({"mission_limits": {"memory_resrve": "2G"}})
+        assert len(warnings) == 1
+        assert "did you mean 'mission_limits.memory_reserve'" in warnings[0][1]
+
 
 # ---------------------------------------------------------------------------
 # validate_config — type mismatches
@@ -530,6 +550,31 @@ class TestValidateOptimizationsNested:
     def test_effort_rejects_non_string_value(self):
         warnings = validate_config({"effort": {"review": 5}})
         assert any("effort.review" in path for path, msg in warnings)
+
+    def test_effort_accepts_xhigh(self):
+        assert validate_config({"effort": "xhigh"}) == []
+        assert validate_config({"effort": {"freetext": "xhigh"}}) == []
+
+    def test_effort_warning_lists_xhigh(self):
+        warnings = validate_config({"effort": "turbo"})
+        assert any("xhigh" in msg for _, msg in warnings)
+
+    def test_review_effort_recognized(self):
+        # The key the example config ships must not be reported as a typo.
+        assert validate_config({"review_effort": "xhigh"}) == []
+
+    def test_review_effort_empty_is_allowed(self):
+        assert validate_config({"review_effort": ""}) == []
+
+    def test_review_effort_invalid_level_warns(self):
+        warnings = validate_config({"review_effort": "turbo"})
+        assert any(path == "review_effort" and "invalid effort" in msg
+                   for path, msg in warnings)
+
+    def test_review_effort_non_string_warns(self):
+        warnings = validate_config({"review_effort": 5})
+        assert any(path == "review_effort" and "should be str" in msg
+                   for path, msg in warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -981,6 +1026,50 @@ class TestValidateConfigOrRaise:
         from app.config_validator import validate_config_or_raise
         self._write_config(tmp_path, "unknown_key: 42\n")
         validate_config_or_raise(str(tmp_path))
+
+    def test_legacy_mcp_list_accepted(self, tmp_path):
+        """A pre-MCP-server ``mcp: [paths]`` list must not hard-stop startup.
+
+        Runtime still honors it, and app.config_migration reshapes it — but an
+        unmigrated file (read-only mount, manual rollback) must still boot.
+        """
+        from app.config_validator import validate_config_or_raise
+        self._write_config(tmp_path, "mcp:\n- /a.json\n")
+        validate_config_or_raise(str(tmp_path))
+
+    def test_mcp_mapping_form_accepted(self, tmp_path):
+        from app.config_validator import validate_config_or_raise
+        self._write_config(
+            tmp_path, "mcp:\n  enabled: true\n  configs:\n    - /a.json\n"
+        )
+        validate_config_or_raise(str(tmp_path))
+
+    def test_mcp_scalar_still_rejected(self, tmp_path):
+        from app.config_validator import validate_config_or_raise
+        self._write_config(tmp_path, 'mcp: "/a.json"\n')
+        with pytest.raises(ValueError, match="'mcp' must be a mapping"):
+            validate_config_or_raise(str(tmp_path))
+
+    def test_shorthands_agree_with_the_advisory_validator(self, tmp_path):
+        """Every shape the strict check accepts must also be warning-free.
+
+        The two validators disagreeing is what turned a working ``mcp:`` list
+        into a hard startup stop; this pins them together.
+        """
+        import yaml
+
+        from app.config_validator import validate_config, validate_config_or_raise
+
+        for snippet in (
+            "mcp:\n- /a.json\n",
+            'effort: "high"\n',
+            "stagnation: false\n",
+            "ci_check: true\n",
+            "running_indicator: true\n",
+        ):
+            self._write_config(tmp_path, snippet)
+            validate_config_or_raise(str(tmp_path))
+            assert validate_config(yaml.safe_load(snippet)) == [], snippet
 
 
 class TestValidateModelsSection:

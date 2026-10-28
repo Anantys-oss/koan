@@ -1,7 +1,10 @@
 """Tests for pid_manager — exclusive PID file enforcement."""
 
+import contextlib
+import errno
 import fcntl
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -10,6 +13,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+from app.signals import ready_file
 from app.pid_manager import (
     _pidfile_path,
     _read_pid,
@@ -32,6 +36,7 @@ from app.pid_manager import (
     start_awake,
     start_ollama,
     start_all,
+    start_mcp,
     start_stack,
     start_dashboard,
     get_status_processes,
@@ -42,6 +47,21 @@ from app.pid_manager import (
 )
 
 pytestmark = pytest.mark.slow
+
+
+@contextlib.contextmanager
+def _malformed_config(root: Path):
+    """Point the config reader at an ``instance/config.yaml`` that will not parse.
+
+    Exercises the real degradation path: ``load_config`` catches the YAML error
+    and hands every ``get_mcp_*`` getter an empty dict, so only a genuinely
+    broken file proves the process manager notices.
+    """
+    config_path = root / "instance" / "config.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("mcp: [unclosed\n")
+    with patch("app.utils.KOAN_ROOT", root):
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -1278,6 +1298,83 @@ class TestGetStatusProcesses:
             result = get_status_processes(tmp_path)
         assert isinstance(result, tuple)
 
+    def test_status_includes_only_http_mcp(self, tmp_path):
+        with patch("app.pid_manager._detect_provider", return_value="claude"), patch(
+            "app.pid_manager._is_dashboard_enabled", return_value=False
+        ), patch(
+            "app.pid_manager._is_api_enabled", return_value=False
+        ), patch(
+            "app.pid_manager._is_mcp_http_enabled", return_value=True
+        ):
+            assert "mcp" in get_status_processes(tmp_path)
+
+        with patch("app.pid_manager._detect_provider", return_value="claude"), patch(
+            "app.pid_manager._is_dashboard_enabled", return_value=False
+        ), patch(
+            "app.pid_manager._is_api_enabled", return_value=False
+        ), patch(
+            "app.pid_manager._is_mcp_http_enabled", return_value=False
+        ):
+            assert "mcp" not in get_status_processes(tmp_path)
+
+    def test_status_keeps_mcp_when_config_unreadable(self, tmp_path):
+        """An unreadable config must not silently hide a running daemon."""
+        with _malformed_config(tmp_path), patch(
+            "app.pid_manager._detect_provider", return_value="claude"
+        ), patch(
+            "app.pid_manager._is_dashboard_enabled", return_value=False
+        ), patch(
+            "app.pid_manager._is_api_enabled", return_value=False
+        ):
+            assert "mcp" in get_status_processes(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# start_mcp readiness
+# ---------------------------------------------------------------------------
+
+
+class TestStartMcpReadiness:
+    """The pidfile proves the daemon exists; readiness proves it serves."""
+
+    def test_success_requires_the_readiness_marker(self, tmp_path):
+        ready = tmp_path / ready_file("mcp")
+        with patch(
+            "app.pid_manager._launch_python_process",
+            side_effect=lambda *a, **k: (ready.touch(), (True, "MCP HTTP started"))[1],
+        ):
+            ok, msg = start_mcp(tmp_path)
+        assert ok is True
+        assert "started" in msg
+
+    def test_reports_failure_when_the_daemon_exits_after_the_pidfile(self, tmp_path):
+        """An SDK error past acquire_pidfile must not read as a healthy boot."""
+        with patch(
+            "app.pid_manager._launch_python_process",
+            return_value=(True, "MCP HTTP started (PID 123)"),
+        ), patch("app.pid_manager.check_pidfile", return_value=None):
+            ok, msg = start_mcp(tmp_path)
+        assert ok is False
+        assert "exited during startup" in msg
+
+    def test_reports_failure_when_readiness_never_arrives(self, tmp_path):
+        with patch(
+            "app.pid_manager._launch_python_process",
+            return_value=(True, "MCP HTTP started (PID 123)"),
+        ), patch("app.pid_manager.check_pidfile", return_value=123):
+            ok, msg = start_mcp(tmp_path, ready_timeout=0.3)
+        assert ok is False
+        assert "did not report ready" in msg
+
+    def test_stale_marker_from_a_previous_run_is_cleared(self, tmp_path):
+        (tmp_path / ready_file("mcp")).touch()
+        with patch(
+            "app.pid_manager._launch_python_process",
+            return_value=(True, "MCP HTTP started (PID 123)"),
+        ), patch("app.pid_manager.check_pidfile", return_value=123):
+            ok, _ = start_mcp(tmp_path, ready_timeout=0.3)
+        assert ok is False
+
 
 # ---------------------------------------------------------------------------
 # start_all
@@ -1375,6 +1472,85 @@ class TestStartAll:
             ok, msg = results[name]
             assert ok is False
             assert "already running" in msg.lower()
+
+    def test_start_all_starts_api_before_http_mcp(self, tmp_path):
+        order = []
+        with patch("app.pid_manager._is_dashboard_enabled", return_value=False), patch(
+            "app.pid_manager._is_api_enabled", return_value=True
+        ), patch(
+            "app.pid_manager._is_mcp_http_enabled", return_value=True
+        ), patch(
+            "app.pid_manager.start_awake", return_value=(True, "ok")
+        ), patch(
+            "app.pid_manager.start_runner", return_value=(True, "ok")
+        ), patch(
+            "app.pid_manager.start_api",
+            side_effect=lambda root: (order.append("api"), (True, "ok"))[1],
+        ), patch(
+            "app.pid_manager.start_mcp",
+            side_effect=lambda root: (order.append("mcp"), (True, "ok"))[1],
+        ):
+            results = start_all(tmp_path, provider="claude")
+
+        assert order == ["api", "mcp"]
+        assert results["mcp"] == (True, "ok")
+
+    def test_start_all_fails_loudly_on_unknown_mcp_transport(self, tmp_path):
+        """A typo resolves to stdio; `make start` must not report success."""
+        with patch("app.pid_manager._is_dashboard_enabled", return_value=False), patch(
+            "app.pid_manager._is_api_enabled", return_value=False
+        ), patch("app.config.get_mcp_enabled", return_value=True), patch(
+            "app.config.get_mcp_transport_setting", return_value="streamable-http"
+        ), patch(
+            "app.pid_manager.start_awake", return_value=(True, "ok")
+        ), patch(
+            "app.pid_manager.start_runner", return_value=(True, "ok")
+        ), patch("app.pid_manager.start_mcp") as start_mcp:
+            results = start_all(tmp_path, provider="claude")
+
+        ok, msg = results["mcp"]
+        assert ok is False
+        assert "streamable-http" in msg
+        start_mcp.assert_not_called()
+
+    def test_start_all_reports_unreadable_mcp_config_as_failure(self, tmp_path):
+        """A config-read error is a reported failure, not "not configured".
+
+        The config is really malformed rather than mocked: ``load_config``
+        swallows the parse error and returns ``{}``, so a patched
+        ``get_mcp_enabled`` raising ``OSError`` would prove nothing about the
+        path the daemon actually takes.
+        """
+        with _malformed_config(tmp_path), patch(
+            "app.pid_manager._is_dashboard_enabled", return_value=False
+        ), patch(
+            "app.pid_manager._is_api_enabled", return_value=False
+        ), patch(
+            "app.pid_manager.start_awake", return_value=(True, "ok")
+        ), patch(
+            "app.pid_manager.start_runner", return_value=(True, "ok")
+        ), patch("app.pid_manager.start_mcp") as start_mcp:
+            results = start_all(tmp_path, provider="claude")
+
+        ok, msg = results["mcp"]
+        assert ok is False
+        assert "unreadable" in msg
+        start_mcp.assert_not_called()
+
+    def test_start_all_does_not_daemonize_stdio_mcp(self, tmp_path):
+        with patch("app.pid_manager._is_dashboard_enabled", return_value=False), patch(
+            "app.pid_manager._is_api_enabled", return_value=False
+        ), patch(
+            "app.pid_manager._is_mcp_http_enabled", return_value=False
+        ), patch(
+            "app.pid_manager.start_awake", return_value=(True, "ok")
+        ), patch(
+            "app.pid_manager.start_runner", return_value=(True, "ok")
+        ), patch("app.pid_manager.start_mcp") as start_mcp:
+            results = start_all(tmp_path, provider="claude")
+
+        assert "mcp" not in results
+        start_mcp.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -2072,6 +2248,10 @@ class TestDashboardConfig:
         """PROCESS_NAMES tuple includes dashboard."""
         assert "dashboard" in PROCESS_NAMES
 
+    def test_process_names_includes_mcp(self):
+        """PROCESS_NAMES tuple includes mcp."""
+        assert "mcp" in PROCESS_NAMES
+
     def test_is_dashboard_enabled_false_by_default(self):
         """Dashboard is disabled when config has no dashboard section."""
         with patch("app.config._load_config", return_value={}):
@@ -2172,3 +2352,293 @@ class TestDashboardConfig:
         }
         exit_code = _print_stack_results(results)
         assert exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# `make stop` must take the descendants with it
+# ---------------------------------------------------------------------------
+
+_GROUP_LEADER_WITH_CHILD = """
+import os, subprocess, sys, time
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+with open(sys.argv[1], "w") as fh:
+    fh.write(str(child.pid))
+    fh.flush()
+time.sleep(60)
+"""
+
+
+def _wait_gone(pid, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _is_process_alive(pid):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+class TestStopProcessesReachesDescendants:
+    """A single-PID SIGTERM left every child of the daemon running."""
+
+    def test_group_signal_takes_the_children_down(self, tmp_path):
+        child_pid_file = tmp_path / "child.pid"
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _GROUP_LEADER_WITH_CHILD, str(child_pid_file)],
+            start_new_session=True,
+        )
+        deadline = time.monotonic() + 10
+        child_pid = None
+        while time.monotonic() < deadline and child_pid is None:
+            text = child_pid_file.read_text().strip() if child_pid_file.exists() else ""
+            child_pid = int(text) if text else None
+            if child_pid is None:
+                time.sleep(0.05)
+        assert child_pid is not None, "helper never reported its child pid"
+
+        (tmp_path / ".koan-pid-run").write_text(str(proc.pid))
+        try:
+            results = stop_processes(tmp_path, timeout=3.0)
+            assert results["run"] in ("stopped", "force_killed")
+            assert _wait_gone(child_pid), (
+                "the daemon's child survived `make stop` — descendants leaked"
+            )
+        finally:
+            for pid in (child_pid, proc.pid):
+                if pid:
+                    with contextlib.suppress(OSError, ProcessLookupError):
+                        os.kill(pid, 9)
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=5)
+
+    @staticmethod
+    def _reachable_systemctl(calls):
+        def fake(manager_args, args, timeout=10.0):
+            calls.append(list(args))
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            return result
+        return fake
+
+    def test_stops_a_registered_mission_scope_first(self, tmp_path):
+        scopes = tmp_path / ".koan-mission-scopes"
+        scopes.mkdir()
+        (scopes / "koan-mission-abc.scope").write_text(
+            '{"unit": "koan-mission-abc.scope", "manager_args": [], '
+            '"mode": "scope", "pid": 4242}'
+        )
+        from app import mission_scope
+        calls = []
+        with patch.object(mission_scope, "_systemctl",
+                          side_effect=self._reachable_systemctl(calls)):
+            stop_processes(tmp_path, timeout=0.5)
+        assert ["stop", "koan-mission-abc.scope"] in calls
+        assert not (scopes / "koan-mission-abc.scope").exists()
+
+    def test_keeps_the_record_of_a_scope_it_could_not_stop(self, tmp_path):
+        """The record is the only durable handle on a live scope.
+
+        Its descendants have left the daemon's process group, so if `make stop`
+        discards the entry after a failed stop nothing can reach them and a
+        later `make stop` does not even know the scope exists.
+        """
+        scopes = tmp_path / ".koan-mission-scopes"
+        scopes.mkdir()
+        entry = scopes / "koan-mission-stuck.scope"
+        entry.write_text(
+            '{"unit": "koan-mission-stuck.scope", "manager_args": [], '
+            '"mode": "scope", "pid": 4242}'
+        )
+        from app import mission_scope
+        # An unreachable manager: nothing confirms the scope is gone.
+        with patch.object(mission_scope, "_systemctl", return_value=None):
+            stop_processes(tmp_path, timeout=0.5)
+        assert entry.exists()
+
+    def test_never_signals_the_callers_own_group(self):
+        """A pid that does not lead its own group degrades to a single-PID kill."""
+        from app.pid_manager import _signal_process
+        with patch("app.pid_manager.os.getpgid", return_value=os.getpgid(0) + 1), \
+             patch("app.pid_manager.os.killpg") as killpg, \
+             patch("app.pid_manager.os.kill") as single:
+            assert _signal_process(12345, 15) is True
+        killpg.assert_not_called()
+        single.assert_called_once_with(12345, 15)
+
+    def test_a_stale_pid_file_does_not_escalate_to_a_group_kill(self, tmp_path):
+        """A recycled PID must cost one wrong signal, not a stranger's session.
+
+        `check_pidfile` verifies identity only through the flock probe. A
+        non-Python daemon (`ollama`), or any daemon that died without its file
+        being cleaned, falls through to a bare liveness check — which a PID
+        reassigned across a reboot passes. Escalating to `killpg` there takes
+        down whatever session now leads that group.
+        """
+        from app.pid_manager import _signal_process
+        pidfile = tmp_path / ".koan-pid-ollama"
+        pidfile.write_text("4242")
+        stale = time.time() - 86400
+        os.utime(pidfile, (stale, stale))
+        with patch("app.pid_manager.os.getpgid", return_value=4242), \
+             patch("app.pid_manager.os.killpg") as killpg, \
+             patch("app.pid_manager.os.kill") as single, \
+             patch("app.mission_scope._process_start_time",
+                   return_value=time.time()):
+            assert _signal_process(4242, 15, pidfile) is True
+        killpg.assert_not_called()
+        single.assert_called_once_with(4242, 15)
+
+    def test_an_unverifiable_start_time_degrades_to_a_single_pid_kill(self, tmp_path):
+        """No proof is not proof: a host where the start time cannot be read
+        gets the pre-existing single-PID signal rather than a group kill."""
+        from app.pid_manager import _signal_process
+        pidfile = tmp_path / ".koan-pid-run"
+        pidfile.write_text("4242")
+        with patch("app.pid_manager.os.getpgid", return_value=4242), \
+             patch("app.pid_manager.os.killpg") as killpg, \
+             patch("app.pid_manager.os.kill") as single, \
+             patch("app.mission_scope._process_start_time", return_value=None):
+            assert _signal_process(4242, 15, pidfile) is True
+        killpg.assert_not_called()
+        single.assert_called_once_with(4242, 15)
+
+    def test_a_pid_file_that_vouches_for_its_process_reaches_the_group(self, tmp_path):
+        """The daemon writes its own pid file once it is already running, so a
+        start time at or before the file's mtime is the identity proof."""
+        from app.pid_manager import _signal_process
+        pidfile = tmp_path / ".koan-pid-run"
+        pidfile.write_text("4242")
+        with patch("app.pid_manager.os.getpgid", return_value=4242), \
+             patch("app.pid_manager.os.killpg") as killpg, \
+             patch("app.pid_manager.os.kill") as single, \
+             patch("app.mission_scope._process_start_time",
+                   return_value=pidfile.stat().st_mtime - 1):
+            assert _signal_process(4242, 15, pidfile) is True
+        killpg.assert_called_once_with(4242, 15)
+        single.assert_not_called()
+
+    def test_a_refused_group_signal_still_reaches_the_daemon_itself(self, tmp_path):
+        """EPERM on `killpg` means undeliverable, not "already gone".
+
+        Returning False there makes `stop_processes` record `not_running`, skip
+        its SIGKILL escalation and leave a live daemon behind — worse than the
+        single-PID kill this function replaced.
+        """
+        from app.pid_manager import _signal_process
+        pidfile = tmp_path / ".koan-pid-run"
+        pidfile.write_text("4242")
+        with patch("app.pid_manager.os.getpgid", return_value=4242), \
+             patch("app.pid_manager.os.killpg",
+                   side_effect=PermissionError(1, "Operation not permitted")), \
+             patch("app.pid_manager.os.kill") as single, \
+             patch("app.mission_scope._process_start_time",
+                   return_value=pidfile.stat().st_mtime - 1):
+            assert _signal_process(4242, 15, pidfile) is True
+        single.assert_called_once_with(4242, 15)
+
+    def test_a_group_whose_leader_is_gone_is_reported_gone(self, tmp_path):
+        from app.pid_manager import _signal_process
+        with patch("app.pid_manager.os.getpgid", side_effect=ProcessLookupError), \
+             patch("app.pid_manager.os.kill") as single:
+            assert _signal_process(4242, 15) is False
+        single.assert_not_called()
+
+    def test_a_self_referential_pid_file_degrades_to_a_single_pid_kill(self):
+        """A daemon stopping a set that includes itself must survive the sweep.
+
+        If the target leads its own group *and* that group is the caller's,
+        `killpg` takes the caller down mid-sweep: the remaining daemons keep
+        running and their `.koan-pid-*` files are never unlinked. Mirrors the
+        guard in subprocess_runner.kill_orphaned_process_group.
+        """
+        from app.pid_manager import _signal_process
+        own = os.getpgrp()
+        with patch("app.pid_manager.os.getpgid", return_value=own), \
+             patch("app.pid_manager.os.killpg") as killpg, \
+             patch("app.pid_manager.os.kill") as single:
+            assert _signal_process(own, 15) is True
+        killpg.assert_not_called()
+        single.assert_called_once_with(own, 15)
+
+
+class TestSignalProcessIdentityCheck:
+    """`signal_daemon` sends SIGUSR1/SIGUSR2 — fatal to a wrong target."""
+
+    def _no_proc(self):
+        """Force the ps fallback: pretend /proc/<pid>/cmdline is unavailable."""
+        return patch(
+            "app.pid_manager.Path.read_bytes", side_effect=FileNotFoundError
+        )
+
+    def test_a_long_argv_is_not_truncated_by_ps(self, tmp_path):
+        """Without `-ww` ps clips argv at the terminal width and the runner
+        looks like a stranger — the signal would be silently withheld."""
+        from app.pid_manager import _cmdline_matches
+        long_argv = ".venv/bin/python " + "x" * 400 + " app/run.py\n"
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=long_argv, stderr="",
+        )
+        with self._no_proc(), \
+             patch("app.pid_manager.subprocess.run",
+                   return_value=completed) as run:
+            assert _cmdline_matches(4242, "run.py") is True
+        assert "-ww" in run.call_args[0][0]
+
+    def test_a_dead_pid_is_a_definite_mismatch(self):
+        from app.pid_manager import _cmdline_matches
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="",
+        )
+        with self._no_proc(), \
+             patch("app.pid_manager.subprocess.run", return_value=completed):
+            assert _cmdline_matches(4242, "run.py") is False
+
+    def test_an_unverifiable_pid_is_neither_match_nor_mismatch(self):
+        from app.pid_manager import _cmdline_matches
+        with self._no_proc(), \
+             patch("app.pid_manager.subprocess.run",
+                   side_effect=FileNotFoundError("no ps")):
+            assert _cmdline_matches(4242, "run.py") is None
+
+    def test_an_unverifiable_pid_is_not_signalled(self, tmp_path, capsys):
+        """Fail closed, and name the cause — the caller only sees False."""
+        from app.pid_manager import signal_daemon
+        with patch("app.pid_manager.check_pidfile", return_value=4242), \
+             patch("app.pid_manager._cmdline_matches", return_value=None), \
+             patch("app.pid_manager.os.kill") as kill:
+            assert signal_daemon(tmp_path, "run", signal.SIGUSR2) is False
+        kill.assert_not_called()
+        assert "cannot verify PID 4242" in capsys.readouterr().err
+
+    def test_a_verified_pid_is_signalled(self, tmp_path):
+        from app.pid_manager import signal_daemon
+        with patch("app.pid_manager.check_pidfile", return_value=4242), \
+             patch("app.pid_manager._cmdline_matches", return_value=True), \
+             patch("app.pid_manager.os.kill") as kill:
+            assert signal_daemon(tmp_path, "run", signal.SIGUSR2) is True
+        kill.assert_called_once_with(4242, signal.SIGUSR2)
+
+    def test_a_refused_signal_names_the_errno(self, tmp_path, capsys):
+        """EPERM (daemon owned by another uid) is a permanent misconfiguration.
+
+        Returning a bare False makes it indistinguishable from "no runner", so
+        every /abort and /restart --force would report a benign marker-poll
+        fallback forever with nothing pointing at the real cause.
+        """
+        from app.pid_manager import signal_daemon
+        with patch("app.pid_manager.check_pidfile", return_value=4242), \
+             patch("app.pid_manager._cmdline_matches", return_value=True), \
+             patch("app.pid_manager.os.kill",
+                   side_effect=PermissionError(errno.EPERM, "not permitted")):
+            assert signal_daemon(tmp_path, "run", signal.SIGUSR2) is False
+        assert "cannot signal PID 4242" in capsys.readouterr().err
+
+    def test_a_pid_dying_before_the_kill_is_not_logged(self, tmp_path, capsys):
+        """A race with the daemon exiting — nothing an operator can act on."""
+        from app.pid_manager import signal_daemon
+        with patch("app.pid_manager.check_pidfile", return_value=4242), \
+             patch("app.pid_manager._cmdline_matches", return_value=True), \
+             patch("app.pid_manager.os.kill", side_effect=ProcessLookupError):
+            assert signal_daemon(tmp_path, "run", signal.SIGUSR2) is False
+        assert capsys.readouterr().err == ""

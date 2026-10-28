@@ -60,6 +60,7 @@ handler: handler.py
 | `cli_skill` | no | Provider slash command to invoke (e.g. `audit`). Requires `audience: agent`. See [CLI skill bridge](#cli-skill-bridge). |
 | `github_enabled` | no | Set to `true` to allow triggering via GitHub @mentions (default: `false`) |
 | `github_context_aware` | no | Set to `true` if the skill accepts additional context after the command (default: `false`) |
+| `api_exposed` | no | Set to `true` on a core skill to publish it through the authenticated REST/MCP skill catalog. Defaults to `false`. Private custom skills are never catalogued. |
 | `caveman` | no | Set to `true` to opt this skill into the [caveman](#caveman-output-optimization) output optimization. Defaults to `false` (caveman does not apply unless explicitly opted in). |
 | `forward_result` | no | Set to `true` to forward Claude's final result text to outbox.md when a mission for this skill completes. See [Result forwarding](#result-forwarding). Defaults to `false`. |
 | `title_markers` | no | Optional list of additional mission-title substrings to match against this skill (case-insensitive). Used when a handler emits a plain-text mission title without the slash command. Defaults to `[]`. |
@@ -105,6 +106,14 @@ description: Refactor and simplify code
 ```
 
 Skills default to `bridge` when `audience` is omitted (backward compatible).
+
+### REST/MCP catalog exposure
+
+`api_exposed: true` opts a core skill into `GET /v1/skills`, the
+`koan_skills_list` MCP tool, and the canonical command choices advertised by
+`koan_missions_create`. Exposure is independent of `github_enabled` and
+`audience`. Keep control-plane or destructive skills unexposed. Changes become
+visible after the API and MCP processes restart.
 
 ### GitHub @mention integration
 

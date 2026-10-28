@@ -48,6 +48,27 @@ from app.review_runner import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _no_pinned_worktree():
+    """Neutralize the PR-head worktree pin for tests that are not about it.
+
+    `run_review` pins a disposable checkout of the PR head by default, which
+    needs network and a real git remote. These tests exercise the review logic
+    around it, so the pin yields the path they already pass. The pin's own
+    behaviour -- SHA verification, cleanup, and the deliberate refusal to fall
+    back to project_path -- is covered in test_review_worktree.py and by
+    TestPinnedWorktreeInRunReview below.
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _passthrough(owner, repo, pr_number, project_path, **kwargs):
+        yield project_path, "deadbee" * 6
+
+    with patch("app.review_worktree.pinned_review_worktree", _passthrough):
+        yield
+
+
 @pytest.fixture
 def pr_context():
     """Minimal PR context dict matching fetch_pr_context output."""
@@ -400,6 +421,21 @@ class TestReviewVerdictContract:
         """
         prompt, _ = build_review_prompt(pr_context, skill_dir=real_review_skill_dir)
         assert "Never reject a PR" in prompt
+
+    def test_main_prompt_does_not_advertise_shell_access(
+        self, pr_context, real_review_skill_dir
+    ):
+        """Reviews are read-only, so the prompt must not offer a shell.
+
+        Guards against re-introducing prompt text that grants ``Bash`` while the
+        provider layer denies it: the model would burn turns on calls the CLI
+        rejects, and the prompt would be lying about its own capabilities. The
+        boundary belongs in tool arguments, not prose — see
+        ``app.provider.READ_ONLY_ROLES``.
+        """
+        prompt, _ = build_review_prompt(pr_context, skill_dir=real_review_skill_dir)
+        assert "You may use `Bash`" not in prompt
+        assert "inspection-only review" not in prompt
 
     def test_shared_lgtm_rule_marks_suggestions_non_blocking(
         self, pr_context, real_review_skill_dir
@@ -1297,6 +1333,44 @@ class TestFormatReviewAsMarkdown:
         assert "### 🟢 Suggestions" in md
         assert "b.py:10-15" in md  # multi-line range
 
+    def test_finding_ids_increment_across_severity_sections(self):
+        """Finding IDs stay unique across every core-review severity bucket."""
+        data = {
+            "file_comments": [
+                {"file": "a.py", "line_start": 1, "line_end": 1,
+                 "severity": "warning", "title": "Warning", "comment": "x",
+                 "code_snippet": ""},
+                {"file": "b.py", "line_start": 2, "line_end": 2,
+                 "severity": "suggestion", "title": "Suggestion", "comment": "x",
+                 "code_snippet": ""},
+                {"file": "c.py", "line_start": 3, "line_end": 3,
+                 "severity": "critical", "title": "Critical", "comment": "x",
+                 "code_snippet": ""},
+                {"file": "d.py", "line_start": 4, "line_end": 4,
+                 "severity": "warning", "title": "Another warning", "comment": "x",
+                 "code_snippet": ""},
+            ],
+            "review_summary": {
+                "lgtm": False,
+                "summary": "Issues found.",
+                "checklist": [
+                    {"item": "Critical check", "passed": False, "finding_refs": [2]},
+                    {"item": "Warning check", "passed": False, "finding_refs": [0, 3]},
+                    {"item": "Suggestion check", "passed": False, "finding_refs": [1]},
+                ],
+            },
+        }
+
+        md = _format_review_as_markdown(data)
+
+        assert "<b>1. Critical</b>" in md
+        assert "<b>2. Warning</b>" in md
+        assert "<b>3. Another warning</b>" in md
+        assert "<b>4. Suggestion</b>" in md
+        assert "Critical check — critical ＃1" in md
+        assert "Warning check — warning ＃2, warning ＃3" in md
+        assert "Suggestion check — suggestion ＃4" in md
+
     def test_checklist_rendering(self):
         data = {
             "file_comments": [
@@ -1970,7 +2044,7 @@ class TestReviewPostsBeforeEnrichment:
     ):
         """The hunter's section goes through the append path, not the first post."""
         mock_fetch.return_value = pr_context
-        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+        mock_claude.return_value = (json.dumps(VALID_REVIEW_JSON), "")
 
         success, _summary, _rd = run_review(
             "owner", "repo", "42", "/tmp/project",
@@ -1983,6 +2057,8 @@ class TestReviewPostsBeforeEnrichment:
         # The section is routed to the append helper, carrying the hunter output.
         mock_append.assert_called_once()
         assert "swallowed exception at x" in mock_append.call_args.kwargs["error_section"]
+        # Core finding #1 already exists, so hunter IDs begin at #2.
+        assert _mock_hunter.call_args.kwargs["start_id"] == 2
         # And it is NOT baked into the initial posted comment body.
         posted = " ".join(str(c) for c in mock_gh.call_args_list)
         assert "swallowed exception at x" not in posted
@@ -2645,6 +2721,44 @@ class TestRunClaudeReview:
         output, error = _run_claude_review("prompt", "/tmp/project")
         assert output == "review text"
         assert error == ""
+        kwargs = mock_run.call_args.kwargs
+        # Bash is absent on purpose. It is GRANTED by READ_ONLY_TOOLS at the
+        # provider layer and adjudicated per-command by the review_bash_guard
+        # hook; pre-approving it here would defeat that gate.
+        assert kwargs["allowed_tools"] == ["Read", "Glob", "Grep"]
+        assert kwargs["model_key"] == "review_mode"
+        # The reviewed tree is untrusted: its .claude/settings.json can define
+        # hooks, which is code execution on this host.
+        assert kwargs["project_context"] is False
+
+    @patch("app.cli_provider.run_command_streaming")
+    @patch("app.config.get_review_effort", return_value="xhigh")
+    @patch("app.config.get_model_config", return_value={"review_mode": "review-model", "mission": "mission-model"})
+    @patch("app.config.get_skill_max_turns", return_value=200)
+    def test_configured_effort_reaches_the_provider(
+        self, mock_max_turns, mock_models, mock_effort, mock_run,
+    ):
+        """review_effort pins the depth of the review pass."""
+        from app.review_runner import _run_claude_review
+
+        mock_run.return_value = "review text"
+        _run_claude_review("prompt", "/tmp/project", project_name="nocrm")
+        assert mock_run.call_args.kwargs["effort"] == "xhigh"
+        # Per-project overrides are honored, so the project must be passed on.
+        mock_effort.assert_called_once_with("nocrm")
+
+    @patch("app.cli_provider.run_command_streaming")
+    @patch("app.config.get_review_effort", return_value="")
+    @patch("app.config.get_model_config", return_value={"review_mode": "review-model", "mission": "mission-model"})
+    @patch("app.config.get_skill_max_turns", return_value=200)
+    def test_unset_effort_keeps_provider_default(
+        self, mock_max_turns, mock_models, mock_effort, mock_run,
+    ):
+        from app.review_runner import _run_claude_review
+
+        mock_run.return_value = "review text"
+        _run_claude_review("prompt", "/tmp/project")
+        assert mock_run.call_args.kwargs["effort"] == ""
 
     @patch("app.cli_provider.run_command_streaming")
     @patch("app.config.get_model_config", return_value={"review_mode": "review-model", "mission": "mission-model"})
@@ -2719,6 +2833,124 @@ class TestRunClaudeReview:
         assert kwargs.get("model") == "gpt-5.4-mini"
         mock_models.assert_not_called()
 
+    @patch("app.cli_provider.run_command_streaming")
+    @patch("app.config.get_model_config", return_value={"review_mode": "m", "mission": "m"})
+    @patch("app.config.get_skill_max_turns", return_value=200)
+    @patch("app.language_preference.get_language", return_value="french")
+    def test_language_directive_is_prepended(
+        self, mock_lang, mock_max_turns, mock_models, mock_run,
+    ):
+        """Every review prompt carries the configured reply language, up front.
+
+        Prepended, not appended: review prompts end with an untrusted-data
+        fence, and an instruction after it would read as data.
+        """
+        from app.review_runner import _run_claude_review
+
+        mock_run.return_value = "ok"
+        _run_claude_review("REVIEW BODY", "/tmp/project")
+        sent = mock_run.call_args.kwargs["prompt"]
+        assert "french" in sent.split("REVIEW BODY")[0].lower()
+        assert sent.endswith("REVIEW BODY")
+        assert not sent.startswith("REVIEW BODY")
+
+    @patch("app.cli_provider.run_command_streaming")
+    @patch("app.config.get_model_config", return_value={"review_mode": "m", "mission": "m"})
+    @patch("app.config.get_skill_max_turns", return_value=200)
+    @patch("app.language_preference.get_language", return_value="")
+    def test_language_reset_leaves_prompt_untouched(
+        self, mock_lang, mock_max_turns, mock_models, mock_run,
+    ):
+        """`/language reset` (input-language mode) injects nothing."""
+        from app.review_runner import _run_claude_review
+
+        mock_run.return_value = "ok"
+        _run_claude_review("REVIEW BODY", "/tmp/project")
+        assert mock_run.call_args.kwargs["prompt"] == "REVIEW BODY"
+
+    @patch("app.cli_provider.run_command_streaming")
+    @patch("app.config.get_model_config", return_value={"review_mode": "m", "mission": "m"})
+    @patch("app.config.get_skill_max_turns", return_value=200)
+    @patch("app.language_preference.get_language",
+           side_effect=OSError("unreadable"))
+    def test_language_lookup_failure_is_non_fatal(
+        self, mock_lang, mock_max_turns, mock_models, mock_run, capsys,
+    ):
+        """A review in the default language beats no review at all."""
+        from app.review_runner import _run_claude_review
+
+        mock_run.return_value = "ok"
+        output, error = _run_claude_review("REVIEW BODY", "/tmp/project")
+        assert (output, error) == ("ok", "")
+        assert mock_run.call_args.kwargs["prompt"] == "REVIEW BODY"
+        assert "language directive unavailable" in capsys.readouterr().err
+
+    def test_default_install_gets_english(self, tmp_path, monkeypatch):
+        """No language.json at all still pins the review to English.
+
+        Guards the regression this fixes: nothing in the review path pinned a
+        language, so the model was free to answer an English thread in another.
+        """
+        from app.review_runner import _with_language_directive
+
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        assert "english" in _with_language_directive("BODY").lower()
+
+    @patch("app.language_preference.get_language", return_value="french")
+    def test_directive_carves_out_machine_read_tokens(self, mock_lang):
+        """A non-English preference must not translate parsed tokens.
+
+        `_run_claude_review` funnels four prompts, three of which have a
+        literal output contract Python matches: `## PR Review` (recovered by
+        `_extract_review_body`), the `classification` value `actionable`, and
+        the `CRITICAL`/`HIGH`/`MEDIUM` severities. Titles carry two more:
+        `review_triage` substring-matches `[Deferred]` / `[Pre-Existing Issue]`
+        to force a finding non-blocking, and a title is prose the directive
+        otherwise pins to the configured language. An unscoped "write
+        everything in french" directive loses all of them silently.
+        """
+        from app.review_reconcile import PRE_EXISTING_PREFIX
+        from app.review_runner import _with_language_directive
+        from app.review_triage import DEFERRED_PREFIX
+
+        directive = _with_language_directive("BODY")[: -len("BODY")]
+        for token in (
+            "## PR Review",
+            "actionable",
+            "CRITICAL",
+            "severity",
+            "needs_clarification",
+            DEFERRED_PREFIX,
+            PRE_EXISTING_PREFIX,
+        ):
+            assert token in directive
+
+    @patch("app.language_preference.get_language", return_value="french")
+    def test_architecture_prompt_header_contract_survives_directive(self, mock_lang):
+        """The architecture path still asks for the English `## PR Review`.
+
+        `_extract_review_body` regex-matches that heading; if the directive
+        overrode it, `run_review` would post the unparseable-output notice
+        instead of the review.
+        """
+        import re
+        from pathlib import Path
+
+        import app.review_runner as rr
+        from app.prompts import load_skill_prompt
+        from app.review_runner import _extract_review_body, _with_language_directive
+
+        root = Path(rr.__file__).resolve().parent.parent
+        skill_dir = root / "skills" / "core" / "review"
+        base = load_skill_prompt(skill_dir, "review-architecture")
+        sent = _with_language_directive(base)
+        assert re.search(r"^## PR Review\b", sent, re.MULTILINE)
+        # And the recovery path the contract exists for still works on output
+        # that has translated prose under the preserved English heading.
+        assert _extract_review_body(
+            "blah\n## PR Review — T\n\nRésumé: rien à signaler.\n"
+        ).startswith("## PR Review")
+
 
 # ---------------------------------------------------------------------------
 # main() CLI entry point
@@ -2750,11 +2982,13 @@ class TestMainCli:
             bot_comments=False,
         )
 
+    @patch("app.notify.send_telegram")
     @patch("app.review_runner.run_review")
-    def test_failure_returns_1(self, mock_run):
-        """CLI returns exit code 1 on review failure."""
+    def test_failure_returns_1_and_reports_once(self, mock_run, mock_send, monkeypatch):
+        """CLI returns exit code 1 and sends one failure message with the reason."""
         from app.review_runner import main
 
+        monkeypatch.delenv("KOAN_SUPPRESS_RUNNER_OUTCOME", raising=False)
         mock_run.return_value = (False, "Claude failed.", None)
         exit_code = main([
             "https://github.com/owner/repo/pull/42",
@@ -2762,6 +2996,10 @@ class TestMainCli:
         ])
 
         assert exit_code == 1
+        assert [c.args[0] for c in mock_send.call_args_list] == [
+            "❌ [project] 🔍 Review failed: https://github.com/owner/repo/pull/42\n"
+            "Claude failed."
+        ]
 
     def test_invalid_url(self):
         """CLI returns exit code 1 for non-PR URLs."""
@@ -4631,6 +4869,38 @@ class TestIncrementalReview:
         # Claude should NOT have been called — review was skipped
         mock_claude.assert_not_called()
 
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc", "def"])
+
+    @patch("app.review_runner.find_bot_comment")
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_force_bypasses_no_new_commits_skip(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        mock_find_bot, _mock_shas, pr_context, review_skill_dir,
+    ):
+        """force=True re-reviews even when all SHAs were already reviewed."""
+        from app.review_markers import SUMMARY_TAG, COMMIT_IDS_START, COMMIT_IDS_END
+
+        mock_fetch.return_value = pr_context
+        sha_block = f"{COMMIT_IDS_START}\nabc\ndef\n{COMMIT_IDS_END}"
+        prior_comment = {"id": 42, "body": f"{SUMMARY_TAG}\n{sha_block}", "user": "koan-bot"}
+        updated_comment = {"id": 42, "body": f"{SUMMARY_TAG}\n## Review\n\nLGTM", "user": "koan-bot"}
+        mock_find_bot.side_effect = [prior_comment, updated_comment]
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        success, summary, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+            force=True,
+        )
+
+        assert success is True
+        assert "no new commits" not in summary.lower()
+        mock_claude.assert_called_once()
+
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc", "def", "ghi"])
 
     @patch("app.review_runner.find_bot_comment")
@@ -5542,37 +5812,55 @@ class TestReconcileReviewAfterReflection:
             "code_snippet": "",
         }
 
-    def test_restores_filtered_findings_referenced_by_failed_checks(self):
-        """A blocking verdict must never render with an empty blocker list."""
+    def test_rejected_compile_finding_is_not_restored_by_failed_check(self):
         data = {
             "file_comments": [
-                self._finding("warning", "Preserve provisioning metadata"),
-                self._finding("warning", "Add regression coverage"),
+                self._finding("warning", "Remove unused storage import"),
             ],
             "review_summary": {
                 "lgtm": False,
-                "summary": "Two issues must be fixed.",
+                "summary": "The package does not compile.",
                 "checklist": [
-                    {"item": "Metadata preserved", "passed": False,
-                     "finding_refs": [0]},
-                    {"item": "Covered by tests", "passed": False,
-                     "finding_refs": [1]},
+                    {
+                        "item": "Package compiles",
+                        "passed": False,
+                        "finding_refs": [0],
+                    },
                 ],
             },
         }
 
         result = _reconcile_review_after_reflection(data, [], [])
 
-        assert [f["title"] for f in result["file_comments"]] == [
-            "Preserve provisioning metadata", "Add regression coverage",
-        ]
-        assert result["review_summary"]["lgtm"] is False
-        md = _format_review_as_markdown(result)
-        assert "### 🟡 Important" in md
-        assert "Preserve provisioning metadata" in md
-        assert "Add regression coverage" in md
+        assert result["file_comments"] == []
+        assert result["review_summary"]["checklist"] == []
+        assert result["review_summary"]["lgtm"] is True
 
-    def test_remaps_checklist_references_after_partial_filtering(self):
+    def test_does_not_restore_original_blocker_when_reflection_removes_it(self):
+        data = {
+            "file_comments": [
+                self._finding("critical", "Rejected blocker"),
+                self._finding("suggestion", "Retained cleanup"),
+            ],
+            "review_summary": {
+                "lgtm": False,
+                "summary": "Blocked.",
+                "checklist": [],
+            },
+        }
+
+        result = _reconcile_review_after_reflection(
+            data,
+            [data["file_comments"][1]],
+            [1],
+        )
+
+        assert [finding["title"] for finding in result["file_comments"]] == [
+            "Retained cleanup",
+        ]
+        assert result["review_summary"]["lgtm"] is True
+
+    def test_remaps_refs_and_keeps_failed_check_with_retained_evidence(self):
         data = {
             "file_comments": [
                 self._finding("suggestion", "Filtered nit"),
@@ -5583,10 +5871,16 @@ class TestReconcileReviewAfterReflection:
                 "lgtm": False,
                 "summary": "One blocker.",
                 "checklist": [
-                    {"item": "Blocker fixed", "passed": False,
-                     "finding_refs": [1]},
-                    {"item": "Optional cleanup", "passed": True,
-                     "finding_refs": [0, 2]},
+                    {
+                        "item": "Blocker fixed",
+                        "passed": False,
+                        "finding_refs": [0, 1],
+                    },
+                    {
+                        "item": "Optional cleanup",
+                        "passed": True,
+                        "finding_refs": [0, 2],
+                    },
                 ],
             },
         }
@@ -5600,26 +5894,101 @@ class TestReconcileReviewAfterReflection:
         ]
         assert result["review_summary"]["checklist"][0]["finding_refs"] == [0]
         assert result["review_summary"]["checklist"][1]["finding_refs"] == [1]
+        assert result["review_summary"]["lgtm"] is False
 
-    def test_restores_original_blockers_when_reflection_removes_them_all(self):
+    @pytest.mark.parametrize(
+        "bad_reflected_findings",
+        [None, True, {}, "finding", ()],
+    )
+    def test_non_list_reflected_metadata_preserves_primary_review(
+        self, bad_reflected_findings,
+    ):
         data = {
-            "file_comments": [
-                self._finding("critical", "Original blocker"),
-                self._finding("suggestion", "Optional cleanup"),
-            ],
+            "file_comments": [self._finding("warning", "Primary blocker")],
             "review_summary": {
-                "lgtm": False, "summary": "Blocked.", "checklist": [],
+                "lgtm": False,
+                "summary": "Blocked.",
+                "checklist": [],
             },
         }
+        original = copy.deepcopy(data)
 
         result = _reconcile_review_after_reflection(
-            data, [data["file_comments"][1]], [1],
+            data, bad_reflected_findings, [0],
         )
 
-        assert [f["title"] for f in result["file_comments"]] == [
-            "Original blocker", "Optional cleanup",
-        ]
-        assert result["review_summary"]["lgtm"] is False
+        assert result == original
+        assert data == original
+
+    @pytest.mark.parametrize(
+        "bad_retained_indices",
+        [
+            None,
+            True,
+            (0,),
+            {"index": 0},
+            [True],
+            ["0"],
+            [0.0],
+            [-1],
+            [1],
+            [0, 0],
+        ],
+    )
+    def test_invalid_retained_metadata_preserves_primary_review(
+        self, bad_retained_indices,
+    ):
+        data = {
+            "file_comments": [self._finding("warning", "Primary blocker")],
+            "review_summary": {
+                "lgtm": False,
+                "summary": "Blocked.",
+                "checklist": [],
+            },
+        }
+        original = copy.deepcopy(data)
+
+        result = _reconcile_review_after_reflection(
+            data,
+            [data["file_comments"][0]],
+            bad_retained_indices,
+        )
+
+        assert result == original
+        assert data == original
+
+    def test_mismatched_reflection_metadata_lengths_preserve_primary_review(self):
+        data = {
+            "file_comments": [self._finding("warning", "Primary blocker")],
+            "review_summary": {
+                "lgtm": False,
+                "summary": "Blocked.",
+                "checklist": [],
+            },
+        }
+        original = copy.deepcopy(data)
+
+        result = _reconcile_review_after_reflection(data, [], [0])
+
+        assert result == original
+        assert data == original
+
+    def test_mismatched_reflection_finding_preserves_primary_review(self):
+        data = {
+            "file_comments": [self._finding("warning", "Primary blocker")],
+            "review_summary": {
+                "lgtm": False,
+                "summary": "Blocked.",
+                "checklist": [],
+            },
+        }
+        original = copy.deepcopy(data)
+        inconsistent = [self._finding("warning", "Different finding")]
+
+        result = _reconcile_review_after_reflection(data, inconsistent, [0])
+
+        assert result == original
+        assert data == original
 
 
 # ---------------------------------------------------------------------------
@@ -6379,6 +6748,21 @@ class TestFormatErrorHunterFindings:
         high_pos = result.index("high issue")
         med_pos = result.index("medium issue")
         assert crit_pos < high_pos < med_pos
+
+    def test_ids_continue_after_core_review_findings(self):
+        from app.review_runner import _format_error_hunter_findings
+
+        findings = [
+            {"severity": "MEDIUM", "pattern": "medium issue", "file": "a.py"},
+            {"severity": "CRITICAL", "pattern": "critical issue", "file": "b.py"},
+            {"severity": "HIGH", "pattern": "high issue", "file": "c.py"},
+        ]
+
+        result = _format_error_hunter_findings(findings, start_id=5)
+
+        assert "**5. CRITICAL** — critical issue" in result
+        assert "**6. HIGH** — high issue" in result
+        assert "**7. MEDIUM** — medium issue" in result
 
     def test_emoji_per_severity(self):
         from app.review_runner import _format_error_hunter_findings
@@ -8202,3 +8586,108 @@ class TestTriageAccounting:
         }
         body = _format_review_as_markdown(rd, title="X")
         assert "Triage summary" in body
+
+class TestPinnedWorktreeInRunReview:
+    """The pin is a correctness gate, not a convenience."""
+
+    def _patch_gates(self):
+        return patch(
+            "app.review_runner._fetch_pr_state_and_labels",
+            return_value=("OPEN", []),
+        )
+
+    def test_body_receives_the_worktree_not_the_project_path(self):
+        from contextlib import contextmanager
+
+        from app.review_runner import run_review
+
+        @contextmanager
+        def _pin(owner, repo, pr_number, project_path, **kwargs):
+            yield "/pinned/worktree", "abc123"
+
+        with self._patch_gates(), \
+                patch("app.review_worktree.pinned_review_worktree", _pin), \
+                patch("app.review_runner._run_review_body",
+                      return_value=(True, "ok", None)) as body:
+            run_review("o", "r", "7", "/operator/checkout")
+
+        assert body.call_args.args[3] == "/pinned/worktree"
+
+    def test_pin_failure_fails_the_review_and_never_runs_it(self):
+        """No fallback to project_path -- that is the defect being removed.
+
+        Reviewing the base branch and reporting the findings as fact is worse
+        than not reviewing: a failed review is visible and retriable.
+        """
+        from contextlib import contextmanager
+
+        from app.review_runner import run_review
+
+        @contextmanager
+        def _boom(*a, **kw):
+            raise RuntimeError("fetched PR HEAD does not match GitHub")
+            yield  # pragma: no cover
+
+        with self._patch_gates(), \
+                patch("app.review_worktree.pinned_review_worktree", _boom), \
+                patch("app.review_runner._run_review_body") as body:
+            ok, msg, data = run_review("o", "r", "7", "/operator/checkout")
+
+        assert ok is False
+        assert "clean checkout" in msg
+        assert data is None
+        body.assert_not_called()
+
+    def test_pin_succeeded_body_exception_is_NOT_misreported_as_checkout_failure(
+        self,
+    ):
+        """Only the pin is guarded; a body bug must propagate, not become #N.
+
+        A genuine bug in the review body (e.g. a new uncaught RuntimeError
+        during analysis) is indistinguishable from a git remote failure if it is
+        swallowed by the pin's except clause. The operator would see a misleading
+        "Could not prepare a clean checkout of PR #N" and retry instead of a
+        stack trace pointing at the real defect.
+        """
+        import pytest
+        from contextlib import contextmanager
+
+        from app.review_runner import run_review
+
+        @contextmanager
+        def _pin(*a, **kw):
+            yield "/pinned/worktree", "abc123"
+
+        def _body(*a, **kw):
+            raise RuntimeError("boom inside the review body")
+
+        with self._patch_gates(), \
+                patch("app.review_worktree.pinned_review_worktree", _pin), \
+                patch("app.review_runner._run_review_body", _body):
+            with pytest.raises(RuntimeError, match="boom inside the review body"):
+                run_review("o", "r", "7", "/operator/checkout")
+
+    def test_opt_out_uses_the_supplied_path(self):
+        """A caller that already pinned a checkout must not double-fetch."""
+        from app.review_runner import run_review
+
+        with self._patch_gates(), \
+                patch("app.review_worktree.pinned_review_worktree") as pin, \
+                patch("app.review_runner._run_review_body",
+                      return_value=(True, "ok", None)) as body:
+            run_review("o", "r", "7", "/already/pinned", pinned_worktree=False)
+
+        pin.assert_not_called()
+        assert body.call_args.args[3] == "/already/pinned"
+
+    def test_skipped_pr_never_pays_for_a_checkout(self):
+        from app.review_runner import run_review
+
+        with patch("app.review_runner._fetch_pr_state_and_labels",
+                   return_value=("MERGED", [])), \
+                patch("app.review_worktree.pinned_review_worktree") as pin:
+            ok, msg, _ = run_review("o", "r", "7", "/operator/checkout")
+
+        assert ok is True
+        assert "merged" in msg
+        pin.assert_not_called()

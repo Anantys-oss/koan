@@ -335,7 +335,13 @@ def build_mission_command(
     from app.provider import build_full_command_managed, get_provider_for_role
 
     # Get mission tools (comma-separated list)
-    # REVIEW mode: enforce read-only at tool level (no Bash/Write/Edit)
+    # REVIEW mode: narrow the tool allowlist. NOTE: this is NOT enforcement --
+    # ``--allowedTools`` only pre-approves; it does not withhold Bash/Write/Edit.
+    # This path builds via build_full_command_managed(), which takes no
+    # ``read_only`` argument, so the READ_ONLY_ROLES machinery does not reach it.
+    # Deliberate and documented -- see specs/components/providers.md ("the
+    # enforcement reaches read_only invocations, NOT every READ_ONLY_ROLES
+    # consumer"). Do not read this list as a security boundary.
     if autonomous_mode == "review":
         tools_list = ["Read", "Glob", "Grep"]
     else:
@@ -478,6 +484,76 @@ def check_json_success(stdout_file: str) -> bool:
         return False
 
 
+def _looks_like_ndjson(raw: str) -> bool:
+    """True when *raw* is a multi-line stream of JSON objects, not one object.
+
+    Used to keep the single-object failure detector quiet on the providers
+    whose mission stdout is stream-json by design.
+    """
+    lines = [line for line in raw.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return False
+    try:
+        return isinstance(json.loads(lines[0]), dict)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return False
+
+
+def json_output_reports_failure(stdout_file: str) -> str:
+    """Return a failure reason when a json-mode envelope reports an error.
+
+    Shape-keyed, not provider-keyed: a single JSON object carrying a non-empty
+    top-level ``error`` describes a session that did not complete, even when it
+    also carries prose. Gemini's ``--output-format json`` object —
+    ``{"response", "stats", "error"?, "warnings"?}`` — is emitted with exit 0
+    when a tool confirmation is refused, so without this the mission banks the
+    partial ``response`` as completed work with no branch and no commit.
+
+    An explicit ``is_error: false`` wins (Claude's proven success flag), so
+    envelopes that already report their own outcome are untouched.
+
+    Returns the error message (or ``"error"`` when the payload has none), or
+    ``""`` when the output reports no failure.
+
+    Both give-up paths log: a detector that can never fire (unreadable stdout,
+    truncated JSON) must be observable, not invisible. NDJSON stdout is the
+    expected, uninteresting non-object case — it is recognised and stays quiet
+    so the warning means something when it appears.
+    """
+    try:
+        raw = Path(stdout_file).read_text()
+    except OSError as exc:
+        _log_runner(
+            "warn",
+            f"JSON failure check skipped — could not read {stdout_file}: {exc}",
+        )
+        return ""
+    if not raw.strip():
+        return ""
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        # NDJSON (codex/grok/claude stream-json) lands here by design and is
+        # not worth a line every mission; a truncated single object lands here
+        # too, and that one hides a failure.
+        if not _looks_like_ndjson(raw):
+            _log_runner(
+                "warn",
+                f"JSON failure check skipped — {stdout_file} is not a single "
+                f"JSON object: {exc}",
+            )
+        return ""
+    if not isinstance(data, dict) or data.get("is_error") is False:
+        return ""
+    err = data.get("error")
+    if isinstance(err, str) and err.strip():
+        return err.strip()
+    if isinstance(err, dict) and err:
+        message = err.get("message")
+        return message.strip() if isinstance(message, str) and message.strip() else "error"
+    return ""
+
+
 def _extract_stream_json_text(raw: str) -> Optional[str]:
     """Extract assistant text from NDJSON stream-json / streaming-json stdout.
 
@@ -502,7 +578,11 @@ def _extract_stream_json_text(raw: str) -> Optional[str]:
 
     # Lazy import keeps mission_runner import-time light and matches other
     # provider helper call sites that already use these private extractors.
-    from app.provider import _extract_assistant_text_chunks, _extract_result_text
+    from app.provider import (
+        _extract_assistant_text_chunks,
+        _extract_result_text,
+        _is_text_delta_event,
+    )
 
     final_result: Optional[str] = None
     text_lines: List[str] = []
@@ -515,7 +595,7 @@ def _extract_stream_json_text(raw: str) -> Optional[str]:
 
     for event in events:
         chunks = _extract_assistant_text_chunks(event)
-        if event.get("type") == "text" and isinstance(event.get("data"), str):
+        if _is_text_delta_event(event):
             text_delta_parts.extend(chunks)
         else:
             _flush_deltas()
@@ -538,7 +618,8 @@ def parse_claude_output(raw_text: str) -> str:
     Handles multiple response shapes across providers:
     - NDJSON stream-json / streaming-json (Claude, Grok, Haze, …)
     - Single JSON envelopes: ``{"result": "..."}``, ``{"content": "..."}``,
-      ``{"text": "..."}`` (Claude json mode, Grok ``--output-format json``)
+      ``{"text": "..."}`` (Claude json mode, Grok ``--output-format json``),
+      ``{"response": "..."}`` (Gemini ``--output-format json``)
     - Plain text fallback when JSON parsing fails
 
     Args:
@@ -560,7 +641,7 @@ def parse_claude_output(raw_text: str) -> str:
         data = json.loads(stripped)
         if isinstance(data, dict):
             # Try common response keys in order
-            for key in ("result", "content", "text"):
+            for key in ("result", "content", "text", "response"):
                 if key in data and isinstance(data[key], str):
                     return data[key]
         # If none match, return the raw text
@@ -1091,11 +1172,12 @@ def _apply_verify_requeue_signal(result: dict, verify_result, mission_title: str
 
     Sets ``result["verify_requeue"]`` and ``result["verify_failure_summary"]``
     so ``_finalize_mission`` can move the mission back to Pending instead of
-    completing it. On a successful (exit 0) mission the only check that can
-    FAIL is ``check_diff_coherence`` (an empty branch), so a single failure is
-    already a strong, unambiguous signal — requiring two would make the
-    re-queue unreachable. This only *signals*; the lifecycle transition happens
-    in ``_finalize_mission``.
+    completing it. On a successful (exit 0) mission two checks can FAIL:
+    ``check_diff_coherence`` (an empty branch) and ``check_pr_created`` (commits
+    on a feature branch that never became a pull request). Both mean the mission
+    stopped short of its own outcome, so a single failure is already a strong,
+    unambiguous signal — requiring two would make the re-queue unreachable. This
+    only *signals*; the lifecycle transition happens in ``_finalize_mission``.
 
     Restricted to code missions: an empty branch is the *expected* outcome for
     an analysis / no-code mission, not a failure, so re-queueing one would
@@ -1497,6 +1579,18 @@ def _notify_mission_result(
         _log_runner("error", f"Mission result notification failed: {e}")
 
 
+def _memory_cap_result(memory_cap_detail: str) -> dict:
+    """The two cap keys for *memory_cap_detail* ("" when the mission fit).
+
+    Passed in by the caller that owns the mission, never read off a global:
+    ``app.run._last_mission_memory_cap`` belongs to the sequential mission the
+    agent loop is running, and a parallel session reaped in the next iteration
+    would otherwise inherit that flag while never reporting its own.
+    """
+    detail = str(memory_cap_detail or "")
+    return {"memory_cap_exceeded": bool(detail), "memory_cap_detail": detail}
+
+
 def _fire_post_mission_hook(
     instance_dir: str,
     project_name: str,
@@ -1506,6 +1600,7 @@ def _fire_post_mission_hook(
     duration_minutes: int,
     result: dict,
     stdout_file: Optional[str] = None,
+    is_skill_dispatch: bool = False,
 ) -> Dict[str, str]:
     """Fire post_mission hooks with full context.
 
@@ -1524,6 +1619,25 @@ def _fire_post_mission_hook(
             )
         except Exception as e:
             _log_runner("error", f"post_mission hook stdout read failed: {e}")
+
+    # Repo-config-driven post-mission shell hooks (agent-loop path only; default
+    # off). Skill-dispatched missions ALSO flow through this pipeline (via
+    # run.py::_run_skill_mission → run_post_mission), so firing here for them
+    # would double-run their hooks — those are fired once in
+    # mission_executor._handle_skill_dispatch's finally, which additionally
+    # covers skill exit paths that never reach this function. Gate accordingly.
+    if not is_skill_dispatch:
+        try:
+            from app.mission_hooks import run_post_hooks
+            from app.skill_dispatch import mission_command_name
+            run_post_hooks(
+                project_path,
+                project_name,
+                mission_command_name(mission_title or ""),
+                exit_code == 0,
+            )
+        except Exception as e:
+            _log_runner("error", f"[mission_hooks] post_hooks error (ignored): {e}")
 
     try:
         from app.hooks import fire_hook
@@ -1585,6 +1699,27 @@ def _extract_pr_url(content: str) -> str:
     return match.group(0) if match else ""
 
 
+def outcome_from_stdout(stdout: str) -> dict:
+    """The outcome a skill runner handed over on stdout, as
+    ``_notify_mission_end`` keyword arguments: ``pr_url``, ``reason``,
+    ``detail``, ``reported``.
+
+    See ``messaging_level.report_outcome``. Once the runner reported, its URL is
+    final — it can be an issue URL, the new PR of a /recreate, or none at all
+    (an inline /plan): a PR link quoted in the transcript must not stand in for
+    it. Only a runner that died before reporting falls back to the first PR URL
+    in the transcript.
+    """
+    from app.outcome_line import read_markers
+    found = read_markers(stdout)
+    return {
+        "pr_url": found["url"] if found["reported"] else _extract_pr_url(stdout),
+        "reason": found["reason"],
+        "detail": found["detail"],
+        "reported": found["reported"],
+    }
+
+
 def get_last_pr_url(instance_dir: str, project_name: str = "") -> str:
     """Best-effort PR URL for the just-finished mission (from pending.md).
 
@@ -1634,11 +1769,26 @@ def _maybe_queue_autoreview(
     - no PR URL can be extracted from pending_content or stdout
     - the PR was auto-merged (merge_result is not None)
     - the mission is itself a /review or /rebase (prevents infinite loops)
+    - the mission was queued by a project hook skill (prevents infinite loops)
     - security review blocked the PR
     """
     # Never trigger autoreview on review/rebase missions themselves
     tokens = re.findall(r'/\w+', (mission_title or "").lower())
     if any(t in ('/review', '/rebase', '/review_rebase') for t in tokens):
+        return
+
+    # Nor on a mission a project hook skill queued. Reviewing its PR fires
+    # post_review, which queues another hook-skill mission, which opens another
+    # PR — a cycle neither of the hook system's own guards can see, because
+    # post_review carries no mission_title for its marker guard and every round
+    # brings a PR URL its dedup has never seen. The operator can still review
+    # such a PR by hand or by @mention.
+    from app.hooks import is_hook_skill_mission
+    if is_hook_skill_mission(mission_title):
+        _log_runner(
+            "info",
+            f"Autoreview: skipped for {project_name} — PR from a hook-skill mission",
+        )
         return
 
     # Skip if auto-merged — PR is already done
@@ -1706,6 +1856,8 @@ def run_post_mission(
     mission_tier: Optional[str] = None,
     provider_name: str = "",
     is_skill_dispatch: bool = False,
+    memory_cap_detail: str = "",
+    cli_exit_code: Optional[int] = None,
 ) -> dict:
     """Run the complete post-mission processing pipeline.
 
@@ -1729,6 +1881,14 @@ def run_post_mission(
         is_skill_dispatch: When True, stdout_file contains skill runner text
             (not Claude CLI JSON). Skips token extraction warnings and
             quota detection (the caller handles quota independently).
+        memory_cap_detail: Human phrase for a cgroup memory-cap kill of *this*
+            mission ("" when it fit), from the caller's own ``ScopedProcess``.
+        cli_exit_code: The CLI *process* exit code, when it differs from
+            ``exit_code`` because the caller synthesized a failure (a JSON
+            envelope reporting an error, a core-file integrity failure). Quota
+            detection trusts stdout only after a real process failure, so a
+            synthetic failure must not promote assistant prose about rate
+            limits into a quota pause. Defaults to ``exit_code``.
 
     Returns:
         Dict with keys:
@@ -1740,6 +1900,10 @@ def run_post_mission(
             auto_merge_branch (str|None): Branch name if auto-merge attempted.
             quota_exhausted (bool): Whether quota exhaustion was detected.
             quota_info (tuple|None): (reset_display, resume_message) if exhausted.
+            memory_cap_exceeded (bool): Whether the mission's cgroup scope
+                OOM-killed it (``mission_limits``).
+            memory_cap_detail (str): Human phrase for that cap hit, e.g.
+                "exceeded memory cap (5.9G of 5.75G)"; "" otherwise.
     """
     result = {
         "success": exit_code == 0,
@@ -1752,7 +1916,15 @@ def run_post_mission(
         "quota_info": None,
         "cost_tracking_failed": False,
         "pr_url": "",
+        "memory_cap_exceeded": False,
+        "memory_cap_detail": "",
     }
+    # A mission the cgroup scope OOM-killed gets a distinct outcome rather than
+    # a generic non-zero exit, so the post_mission hook context can say
+    # "exceeded memory cap (5.9G of 5.75G)" instead of leaving an operator to
+    # guess. Deliberately never retried — re-running an oversubscribed build
+    # only repeats the meltdown (see mission_executor's retry guards).
+    result.update(_memory_cap_result(memory_cap_detail))
 
     tracker = _PipelineTracker()
 
@@ -1908,7 +2080,7 @@ def run_post_mission(
                 stdout_file=stdout_file,
                 stderr_file=stderr_file,
                 provider_name=provider_name,
-                exit_code=exit_code,
+                exit_code=exit_code if cli_exit_code is None else cli_exit_code,
             )
             if quota_result is QUOTA_CHECK_UNRELIABLE:
                 _log_runner("quota", f"⚠️  Quota check unreliable for {project_name} — "
@@ -1951,6 +2123,7 @@ def run_post_mission(
                     instance_dir, project_name, project_path,
                     exit_code, mission_title, duration_minutes, result,
                     stdout_file=stdout_file,
+                    is_skill_dispatch=is_skill_dispatch,
                 )
                 result["pipeline_steps"] = tracker.to_dict()
                 _write_pipeline_summary(
@@ -2185,6 +2358,7 @@ def run_post_mission(
                 instance_dir, project_name, project_path,
                 exit_code, mission_title, duration_minutes, result,
                 stdout_file=stdout_file,
+                is_skill_dispatch=is_skill_dispatch,
             )
             if hook_failures:
                 failed_names = ", ".join(sorted(hook_failures))

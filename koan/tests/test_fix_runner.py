@@ -385,7 +385,8 @@ class TestRunFix:
         assert success is False
         assert "projects.yaml" in summary
         assert "PROJ-42" in summary
-        notify.assert_called_once()
+        # main() reports the failure, with this summary as the reason.
+        notify.assert_not_called()
 
     @patch(f"{_FIX_MODULE}.fetch_issue")
     def test_empty_issue(self, mock_fetch):
@@ -489,10 +490,14 @@ class TestMain:
         result = main(["--project-path", "/path", "--issue-url", "https://github.com/o/r/issues/1"])
         assert result == 0
 
+    @patch("app.notify.send_telegram")
     @patch(f"{_FIX_MODULE}.run_fix", return_value=(False, "Failed"))
-    def test_failure_exit_code(self, mock_run):
+    def test_failure_exit_code(self, mock_run, mock_send, monkeypatch):
+        monkeypatch.delenv("KOAN_SUPPRESS_RUNNER_OUTCOME", raising=False)
         result = main(["--project-path", "/path", "--issue-url", "https://github.com/o/r/issues/1"])
         assert result == 1
+        mock_send.assert_called_once_with(
+            "❌ [path] 🐞 Fix failed: https://github.com/o/r/issues/1\nFailed")
 
     @patch(f"{_FIX_MODULE}.run_fix", return_value=(True, "Done"))
     def test_context_passed(self, mock_run):
@@ -809,3 +814,33 @@ class TestRunFixDiagnostic:
         ]
         assert len(warning_calls) == 1
         mock_execute.assert_called_once()
+
+
+class TestMainReportsFailure:
+    """A failed run reaches chat once, with its summary as the reason."""
+
+    def test_failure_summary_becomes_the_reason(self, monkeypatch):
+        from skills.core.fix import fix_runner
+
+        sent = []
+        monkeypatch.delenv("KOAN_SUPPRESS_RUNNER_OUTCOME", raising=False)
+        monkeypatch.setattr("app.notify.send_telegram", lambda m, **k: sent.append(m))
+        monkeypatch.setattr(fix_runner, "run_fix", lambda **k: (False, "Fix failed: boom"))
+        url = "https://github.com/o/r/issues/42"
+        code = fix_runner.main(["--project-path", "/tmp/proj", "--issue-url", url])
+        assert code == 1
+        assert sent == [f"❌ [proj] 🐞 Fix failed: {url}\nFix failed: boom"]
+
+    def test_loop_owned_failure_is_handed_over(self, monkeypatch, capsys):
+        from skills.core.fix import fix_runner
+
+        sent = []
+        monkeypatch.setenv("KOAN_SUPPRESS_RUNNER_OUTCOME", "1")
+        monkeypatch.setattr("app.notify.send_telegram", lambda m, **k: sent.append(m))
+        monkeypatch.setattr(fix_runner, "run_fix", lambda **k: (False, "boom"))
+        url = "https://github.com/o/r/issues/42"
+        fix_runner.main(["--project-path", "/tmp/proj", "--issue-url", url])
+        assert sent == []
+        out = capsys.readouterr().out
+        assert f"KOAN_OUTCOME_URL: {url}" in out
+        assert "KOAN_OUTCOME_REASON: boom" in out

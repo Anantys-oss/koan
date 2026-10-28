@@ -25,7 +25,11 @@ generated read-only export. Everything else below remains file-based.
 - `config.yaml` - instance behavior and integration configuration.
 - `memory/` - global and per-project memory files.
 - `journal/` - daily logs and reflections.
-- `events/` - scheduled mission JSON files.
+- `events/` - scheduled mission JSON files. Fired events move to
+  `events/archive/`; files that can never yield a valid event (undecodable
+  bytes, invalid JSON, non-object payload, missing/blank `mission`/`run_at`,
+  unparseable `run_at`) move to `events/quarantine/` so one bad file cannot
+  re-poison every iteration. Check there when a scheduled mission never fired.
 - `hooks/` - user-defined lifecycle hooks (see [Lifecycle Hooks & Automation Rules](hooks.md)).
 - hidden tracker files for pause, focus, passive mode, usage, CI dispatch,
   review dispatch, burn rate, and similar daemon state.

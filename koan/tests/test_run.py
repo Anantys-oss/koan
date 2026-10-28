@@ -651,6 +651,31 @@ class TestOnSigint:
                 _on_sigint(signal.SIGINT, None)
             mock_killpg.assert_called_once_with(12345, signal.SIGTERM)
 
+    def test_second_ctrl_c_records_the_abort(self, capsys):
+        """Our own SIGKILL must not read as the mission's memory cap firing.
+
+        `mission_scope.teardown` decides that from `koan_initiated_kill`, which
+        both mission paths derive from `_last_mission_aborted`. Without the
+        flag a hand-aborted mission's -9 exit was reported as
+        "exceeded memory cap (…)" and then refused both retry paths, because a
+        cap hit is deliberately never retried.
+        """
+        import app.run as run_mod
+        from app.run import _on_sigint, _sig, _init_colors
+        _init_colors()
+        run_mod._last_mission_aborted = False
+        _sig.task_running = True
+        _sig.first_ctrl_c = time.time()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.pid = 12345
+        _sig.claude_proc = mock_proc
+        with patch("app.run.os.getpgid", return_value=12345), \
+             patch("app.run.os.killpg"), \
+             pytest.raises(KeyboardInterrupt):
+            _on_sigint(signal.SIGINT, None)
+        assert run_mod._last_mission_aborted is True
+
     def test_expired_timeout_resets(self, capsys):
         from app.run import _on_sigint, _sig, _init_colors
         _init_colors()
@@ -1406,6 +1431,44 @@ class TestRunClaudeTask:
         # Reaped in the finally — including the file the child left behind.
         assert not Path(reported).exists()
 
+    @pytest.mark.parametrize("provider_name, bash_ms, expected", [
+        ("claude", 3_000_000, "1|3000000|3000000"),
+        # bash_foreground_timeout: 0 keeps the CLI's Bash default but still
+        # disables background tasks.
+        ("claude", 0, "1||"),
+        ("codex", 3_000_000, "||"),
+    ])
+    def test_claude_env_disables_background_tasks(
+        self, tmp_path, monkeypatch, provider_name, bash_ms, expected,
+    ):
+        """Claude missions run with background tasks off and a raised Bash
+        timeout, so a long command blocks instead of being auto-backgrounded
+        and orphaned (#2249). Other providers get neither."""
+        from app.run import run_claude_task, _sig
+        _sig.task_running = False
+        # The child inherits os.environ — scrub vars a parent Kōan mission
+        # would have exported, so the absence assertions hold there too.
+        for var in ("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS",
+                    "BASH_DEFAULT_TIMEOUT_MS", "BASH_MAX_TIMEOUT_MS"):
+            monkeypatch.delenv(var, raising=False)
+
+        stdout_f = str(tmp_path / "out.txt")
+        stderr_f = str(tmp_path / "err.txt")
+
+        with patch("app.config.get_cli_provider_name", return_value=provider_name), \
+             patch("app.config.get_bash_foreground_timeout_ms", return_value=bash_ms):
+            exit_code = run_claude_task(
+                cmd=["sh", "-c", 'printf "%s|%s|%s" '
+                     '"$CLAUDE_CODE_DISABLE_BACKGROUND_TASKS" '
+                     '"$BASH_DEFAULT_TIMEOUT_MS" "$BASH_MAX_TIMEOUT_MS"'],
+                stdout_file=stdout_f,
+                stderr_file=stderr_f,
+                cwd=str(tmp_path),
+            )
+
+        assert exit_code == 0
+        assert Path(stdout_f).read_text() == expected
+
     def test_resets_signal_state(self, tmp_path):
         from app.run import run_claude_task, _sig
 
@@ -1687,6 +1750,29 @@ class TestProcWaitPolling:
 # Test: post-mission pipeline deadline
 # ---------------------------------------------------------------------------
 
+def _capture_pipeline_deadline(monkeypatch):
+    """Expose the pipeline-deadline event the tracker receives per step.
+
+    ``_PipelineTracker.run_step`` is handed the very event ``run_post_mission``
+    created, so grabbing it here is identity-based — no coupling to the order
+    in which the pipeline allocates its Events.
+    """
+    from app.mission_runner import _PipelineTracker
+
+    captured = {"event": None}
+    real_run_step = _PipelineTracker.run_step
+
+    def recording_run_step(self, step, fn, *args, pipeline_expired=None, **kwargs):
+        if pipeline_expired is not None:
+            captured["event"] = pipeline_expired
+        return real_run_step(
+            self, step, fn, *args, pipeline_expired=pipeline_expired, **kwargs
+        )
+
+    monkeypatch.setattr(_PipelineTracker, "run_step", recording_run_step)
+    return captured
+
+
 class TestPostMissionDeadline:
     """Verify the overall timeout on run_post_mission."""
 
@@ -1702,14 +1788,21 @@ class TestPostMissionDeadline:
 
         steps_called = []
 
+        # Trip the deadline from inside the first step instead of racing a
+        # wall-clock timer: with a short timeout the pipeline's own setup work
+        # (imports, config load, quota check) can exhaust the budget before
+        # verification even starts, which skipped every step on slow CI hosts.
+        # The deadline event is captured by identity off the step call itself,
+        # not by guessing which Event the pipeline allocated first.
+        deadline = _capture_pipeline_deadline(monkeypatch)
+
         def slow_verification(*args, **kwargs):
             steps_called.append("verification")
-            import time
-            time.sleep(0.5)  # Will exceed our 0.2s deadline
+            deadline["event"].set()  # as if the deadline fired mid-step
             return None
 
         monkeypatch.setattr(
-            "app.mission_runner._resolve_post_mission_timeout", lambda: 0.2
+            "app.mission_runner._resolve_post_mission_timeout", lambda: 3600
         )
         monkeypatch.setattr(
             "app.mission_runner._run_mission_verification", slow_verification
@@ -4705,18 +4798,20 @@ class TestRunSkillMissionEnv:
         env = self._run_with_title(tmp_path, "/review https://x/pull/1", is_debug=True)
         assert "KOAN_SUPPRESS_RUNNER_OUTCOME" not in env
 
-    def test_suppress_outcome_not_set_for_plan(self, tmp_path):
-        """/plan is tracked but never opens a PR — its runner emits the issue/Jira
-        URL (or inline plan body) that the PR-only canonical line cannot carry, so
-        the flag must NOT be set or that content is lost in normal mode (#2153)."""
-        env = self._run_with_title(tmp_path, "/plan add dark mode", is_debug=False)
-        assert "KOAN_SUPPRESS_RUNNER_OUTCOME" not in env
+    @pytest.mark.parametrize("title", [
+        "/plan add dark mode", "/recreate https://x/pull/1", "/squash https://x/pull/1",
+        "[project:p] /dbg https://x/issues/1",
+    ])
+    def test_suppress_outcome_set_for_every_tracked_skill(self, tmp_path, title):
+        """Every tracked skill's runner hands its outcome (URL, detail, reason)
+        over as stdout markers, so the loop's one message carries it all (#2153).
+        Project prefixes and aliases resolve to the canonical skill."""
+        env = self._run_with_title(tmp_path, title, is_debug=False)
+        assert env.get("KOAN_SUPPRESS_RUNNER_OUTCOME") == "1"
 
     def test_suppress_outcome_not_set_for_untracked_skill(self, tmp_path):
-        """The canonical-completion dedup is scoped to PR-producing tracked skills.
-        Untracked skills (e.g. /recreate) are left untouched by design, so the
-        flag is not set and the runner's outcome line still reaches chat."""
-        env = self._run_with_title(tmp_path, "/recreate https://x/pull/1", is_debug=False)
+        """Skills outside outcome_line.SKILL_COMPLETION keep their own message."""
+        env = self._run_with_title(tmp_path, "/audit everything", is_debug=False)
         assert "KOAN_SUPPRESS_RUNNER_OUTCOME" not in env
 
     def test_appends_stream_usage_to_stdout_file_for_post_mission(self, tmp_path):
@@ -8775,3 +8870,179 @@ class TestFinalizeVerifyRequeue:
         requeue.assert_called_once()
         notify.assert_not_called()
         complete.assert_called_once()        # falls through to normal completion
+
+
+# ---------------------------------------------------------------------------
+# Mission containment: the scope must be torn down on EVERY path, success
+# included. Before mission_scope, run_claude_task's finally only closed fds,
+# reaped TMPDIR and dropped page cache — a leaked build daemon survived.
+# ---------------------------------------------------------------------------
+
+class TestMissionScopeTeardown:
+    def test_generic_mission_tears_the_scope_down_on_success(self, tmp_path):
+        from app import mission_scope
+        from app.run import run_claude_task, _sig
+        _sig.task_running = False
+        calls = []
+
+        def record(self, *, koan_initiated_kill=False):
+            calls.append(koan_initiated_kill)
+
+        with patch.object(mission_scope.ScopedProcess, "teardown", record):
+            exit_code = run_claude_task(
+                cmd=["echo", "contained"],
+                stdout_file=str(tmp_path / "out.txt"),
+                stderr_file=str(tmp_path / "err.txt"),
+                cwd=str(tmp_path),
+            )
+
+        assert exit_code == 0
+        assert calls == [False], "teardown must run on the success path exactly once"
+
+    def test_watchdog_kill_is_flagged_as_koan_initiated(self, tmp_path):
+        """Our own SIGKILL must never be reported as the memory cap firing."""
+        from app import mission_scope
+        from app.run import run_claude_task, _sig
+        _sig.task_running = False
+        calls = []
+
+        def record(self, *, koan_initiated_kill=False):
+            calls.append(koan_initiated_kill)
+
+        with patch("app.config.get_mission_timeout", return_value=1), \
+             patch.object(mission_scope.ScopedProcess, "teardown", record):
+            run_claude_task(
+                cmd=["sleep", "30"],
+                stdout_file=str(tmp_path / "out.txt"),
+                stderr_file=str(tmp_path / "err.txt"),
+                cwd=str(tmp_path),
+            )
+
+        assert calls == [True]
+
+    def test_cap_hit_is_recorded_and_blocks_a_retry(self, tmp_path):
+        import app.run as run_mod
+        from app import mission_scope
+        from app.run import run_claude_task, _sig
+        _sig.task_running = False
+
+        def fake_teardown(self, *, koan_initiated_kill=False):
+            self.cap_exceeded = True
+            self.memory_max = int(5.75 * 1024 ** 3)
+            self.peak_bytes = int(5.9 * 1024 ** 3)
+
+        with patch.object(mission_scope.ScopedProcess, "teardown", fake_teardown):
+            run_claude_task(
+                cmd=["echo", "oversubscribed"],
+                stdout_file=str(tmp_path / "out.txt"),
+                stderr_file=str(tmp_path / "err.txt"),
+                cwd=str(tmp_path),
+            )
+
+        assert run_mod._last_mission_memory_cap == (
+            "exceeded memory cap (5.9G of 5.75G)"
+        )
+        # mission_executor hands that phrase to run_post_mission, which turns
+        # it into the post_mission hook's cap keys.
+        from app.mission_runner import _memory_cap_result
+        assert _memory_cap_result(run_mod._last_mission_memory_cap) == {
+            "memory_cap_exceeded": True,
+            "memory_cap_detail": "exceeded memory cap (5.9G of 5.75G)",
+        }
+        run_mod._last_mission_memory_cap = ""
+
+    def test_teardown_failure_never_masks_the_mission_result(self, tmp_path):
+        from app import mission_scope
+        from app.run import run_claude_task, _sig
+        _sig.task_running = False
+
+        def boom(self, *, koan_initiated_kill=False):
+            raise RuntimeError("systemctl exploded")
+
+        with patch.object(mission_scope.ScopedProcess, "teardown", boom):
+            exit_code = run_claude_task(
+                cmd=["echo", "still fine"],
+                stdout_file=str(tmp_path / "out.txt"),
+                stderr_file=str(tmp_path / "err.txt"),
+                cwd=str(tmp_path),
+            )
+        assert exit_code == 0
+
+
+class TestSkillMissionScopeTeardown(TestRunSkillMissionEnv):
+    def test_skill_mission_tears_the_scope_down_on_success(self, tmp_path):
+        from app import mission_scope
+        from app.run import _run_skill_mission
+
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+        mock_proc = self._make_mock_popen(returncode=0, stdout_lines=["ok\n"])
+        calls = []
+
+        def record(self, *, koan_initiated_kill=False):
+            calls.append(koan_initiated_kill)
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.mission_runner.run_post_mission"), \
+             patch.object(mission_scope.ScopedProcess, "teardown", record):
+            _run_skill_mission(
+                skill_cmd=["python3", "--help"],
+                koan_root=str(tmp_path),
+                instance=str(tmp_path / "instance"),
+                project_name="test",
+                project_path=str(tmp_path),
+                run_num=1,
+                mission_title="/review https://github.com/o/r/pull/1",
+                autonomous_mode="implement",
+            )
+
+        assert calls == [False], "teardown must run on the skill success path"
+
+    def test_a_previous_missions_abort_does_not_suppress_this_cap_verdict(
+        self, tmp_path,
+    ):
+        """`_last_mission_aborted` is per-mission state, so this path resets it.
+
+        Left set from an earlier abort it would mark every later skill mission's
+        teardown as a Kōan-initiated kill, so a real cap hit would never be
+        reported — and the mission would be retried straight back into the same
+        meltdown.
+        """
+        import app.run as run_mod
+        from app import mission_scope
+        from app.run import _run_skill_mission
+
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+        mock_proc = self._make_mock_popen(returncode=0, stdout_lines=["ok\n"])
+        calls = []
+
+        def record(self, *, koan_initiated_kill=False):
+            calls.append(koan_initiated_kill)
+
+        run_mod._last_mission_aborted = True
+        try:
+            with patch("app.run.subprocess.Popen",
+                       side_effect=mock_proc._side_effect), \
+                 patch("app.run._get_koan_branch", return_value="main"), \
+                 patch("app.run._restore_koan_branch"), \
+                 patch("app.run._reset_terminal"), \
+                 patch("app.mission_runner.run_post_mission"), \
+                 patch.object(mission_scope.ScopedProcess, "teardown", record):
+                _run_skill_mission(
+                    skill_cmd=["python3", "--help"],
+                    koan_root=str(tmp_path),
+                    instance=str(tmp_path / "instance"),
+                    project_name="test",
+                    project_path=str(tmp_path),
+                    run_num=1,
+                    mission_title="/review https://github.com/o/r/pull/1",
+                    autonomous_mode="implement",
+                )
+        finally:
+            run_mod._last_mission_aborted = False
+
+        assert calls == [False]

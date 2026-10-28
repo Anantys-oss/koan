@@ -76,18 +76,25 @@ def run_ritual(ritual_type: str, instance_dir: Path) -> bool:
         return False
 
     try:
+        # Rituals are short, cheap and read-only — route them through the
+        # `lightweight` role so a `cli:` binary override applies here too,
+        # instead of silently taking the global provider's binary.
+        from app.provider import get_provider_for_role
+        provider = get_provider_for_role("lightweight")
         # Rituals run at KOAN_ROOT — suppress contributor project tooling (#2379).
         cmd = build_full_command(
             prompt=prompt,
             allowed_tools=["Read", "Write", "Glob"],
             max_turns=7,
             project_context=False,
+            provider=provider,
         )
         result = run_cli(
             cmd,
             cwd=koan_root,
             capture_output=True, text=True, timeout=90,
-            check=False
+            check=False,
+            provider=provider,
         )
         if result.returncode == 0:
             print(f"[rituals] {ritual_type} ritual completed")
