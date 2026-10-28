@@ -99,6 +99,16 @@
     flex-direction: column;
     gap: var(--space-2);
 }
+.sidebar-promo {
+    display: block;
+    padding: var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: inherit;
+    text-decoration: none;
+    line-height: 1.4;
+}
+.sidebar-promo:hover { border-color: currentColor; }
 .sidebar-footer-row {
     display: flex;
     align-items: center;

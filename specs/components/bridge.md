@@ -4,7 +4,7 @@ title: "Component Spec — Telegram Bridge"
 description: "Design contract for the Telegram bridge process that classifies human messages into chat vs. mission, dispatches commands/skills, and flushes the agent's outbox crash-safely."
 tags: [bridge]
 created: 2026-06-27
-updated: 2026-09-02
+updated: 2026-10-28
 ---
 
 # Component Spec — Telegram Bridge
@@ -49,6 +49,12 @@ awake.py (loop, ~3s poll)
 
 ## Invariants
 
+- **Skuggi promotion is bounded and switchable.** `skuggi_promo` is the only module
+  that writes Skuggi copy to chat, the CLI banner or the dashboard. It is on by default
+  and `skuggi.promo: false` silences every surface. The launch notice is sent once per
+  instance; each contextual nudge (`quota`, `pr`, `failure`, `fleet`) fires at most once
+  per 7 days. Promo text never alters a fixed-template outcome line: a nudge is a
+  separate message after it. A promo failure never fails the caller.
 - **Two-process isolation.** The bridge and the agent loop share *only* files in
   `instance/` (atomic writes). The bridge must never call agent-loop internals directly.
 - **Inbound responsiveness.** Repository maintenance, including foreign-worktree

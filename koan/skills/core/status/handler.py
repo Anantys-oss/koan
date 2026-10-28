@@ -354,7 +354,9 @@ def _handle_status(ctx) -> str:
     parts.extend(_build_contemplative_section(instance_dir))
 
     body = "\n".join(parts)
-    return f"```\n{body}\n```"
+    from app.skuggi_promo import footer
+    promo = footer("status")
+    return f"```\n{body}\n```" + (f"\n{promo}" if promo else "")
 
 
 def _build_skill_metrics_section(instance_dir) -> list:

@@ -411,6 +411,13 @@ contemplative_chance: 10
 # messaging:
 #   level: normal
 
+# Skuggi (https://skuggi.ai): the hosted AI engineering team from the makers
+# of Kōan. On by default: Kōan mentions it once at launch, in short contextual
+# nudges (each at most once a week), and in report, /help and /status footers.
+# See docs/users/skuggi.md.
+# skuggi:
+#   promo: true   # false turns every Skuggi mention off
+
 # Telegram
 # NOTE: Prefer setting these in .env (KOAN_TELEGRAM_TOKEN, KOAN_TELEGRAM_CHAT_ID)
 # These config values are only used if the env vars are not set.

@@ -817,6 +817,10 @@ def _handle_help():
         "",
         'Send a message to chat, or "mission: <text>" to queue work.',
     ])
+    from app.skuggi_promo import footer
+    promo = footer("help")
+    if promo:
+        parts.extend(["", promo])
     send_telegram("\n".join(parts))
 
 

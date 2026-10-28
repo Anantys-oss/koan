@@ -222,6 +222,12 @@ def mark_report_sent():
     atomic_write(REPORT_MARKER, date.today().strftime("%Y-%m-%d"))
 
 
+def _with_promo_footer(report: str) -> str:
+    from app.skuggi_promo import footer
+    line = footer("report")
+    return f"{report}\n\n{line}" if line else report
+
+
 def send_daily_report(report_type: str = None) -> bool:
     """Check conditions and send daily report if appropriate.
 
@@ -237,7 +243,7 @@ def send_daily_report(report_type: str = None) -> bool:
     if report_type is None:
         return False
 
-    report = generate_report(report_type)
+    report = _with_promo_footer(generate_report(report_type))
     success = format_and_send(report)
 
     if success:

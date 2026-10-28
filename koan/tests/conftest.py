@@ -370,3 +370,15 @@ def patched_run_iteration(prep_result, extra_patches=None):
         for target, mock_obj in patches.items():
             stack.enter_context(patch(target, mock_obj))
         yield mock_prep
+
+
+@pytest.fixture(autouse=True)
+def _skuggi_promo_off(request, monkeypatch):
+    """Keep Skuggi messages out of tests that assert exact chat output.
+
+    The promo is on by default in production; only its own tests exercise it.
+    """
+    if request.module.__name__.endswith("test_skuggi_promo"):
+        return
+    import app.skuggi_promo as promo
+    monkeypatch.setattr(promo, "promo_enabled", lambda: False)

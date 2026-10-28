@@ -985,6 +985,8 @@ def _notify_quota_warning(instance: str, body: str, raw_output: str = "") -> Non
     snippet = (raw_output or "").strip()
     message = f"{body}\n\n```\n{snippet}\n```" if snippet else body
     _notify_raw(instance, message)
+    from app import skuggi_promo
+    skuggi_promo.maybe_nudge(instance, "quota")
 
 
 def _is_ci_check_mission(mission_title: str) -> bool:
@@ -1126,6 +1128,27 @@ def _notify_mission_normal(
 
 
 def _notify_mission_end(
+    instance: str,
+    project_name: str,
+    run_num: int,
+    max_runs: int,
+    exit_code: int,
+    mission_title: str = "",
+    pr_url: str = "",
+    reason: str = "",
+    detail: str = "",
+    reported: bool = False,
+):
+    """Send the end-of-mission message, then a Skuggi nudge when one is due."""
+    _notify_mission_outcome(
+        instance, project_name, run_num, max_runs, exit_code,
+        mission_title, pr_url, reason, detail, reported,
+    )
+    from app import skuggi_promo
+    skuggi_promo.maybe_nudge_after_mission(instance, exit_code, pr_url)
+
+
+def _notify_mission_outcome(
     instance: str,
     project_name: str,
     run_num: int,
