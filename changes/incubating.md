@@ -54,6 +54,60 @@ Do not hand-edit released entries — they are the source for `CHANGES.md`.
   permalink pointing at already-fixed code. (#2465)
 - You are now notified when a review request is skipped because the pull request
   has no new commits, instead of the request appearing to vanish. (#2457)
+- Kōan can now run as an MCP server, so MCP clients (editors, other agents) can
+  drive missions and query state — over stdio, or over authenticated Streamable
+  HTTP. Off by default; enable and tune it under the `mcp:` block of
+  `instance/config.yaml` (`enabled`, `transport`, `host`, `port`,
+  `tools_allow_destructive`). Destructive tools stay hidden unless you opt in.
+  See `docs/operations/mcp-server.md`. (#2513, #2521)
+- Gemini CLI is now a supported provider: set `cli_provider: gemini`. Per-role
+  models are configured under `models.gemini` (defaults: `pro` for missions and
+  reviews, `flash` for chat, `flash-lite` for lightweight calls). See
+  `docs/providers/gemini.md`. (#2501)
+- Every mission now runs inside its own systemd scope, so nothing it starts — a
+  Gradle daemon, a test container — outlives it and slowly eats the host's memory.
+  A memory cap keeps one mission from starving the machine. On by default, no
+  action needed; tune or disable it with `mission_limits` (`enabled`,
+  `memory_reserve`, `memory_min`, `memory_max`) in `instance/config.yaml`. Hosts
+  without systemd fall back to a process-group cleanup. (#2500)
+- A repository's `.koan/config.yaml` can now run shell commands before and after a
+  mission (`pre_hooks` / `post_hooks`, per mission type) — e.g. start a database
+  before a fix. Because this runs repo-controlled shell on your host it is off
+  until you set `mission_hooks.enabled: true` in `instance/config.yaml` (or
+  `mission_hooks: true` per project). See `docs/security/mission-hooks.md` and
+  `docs/reference/koan-config.sample.yaml`. (#2478)
+- A repository can also name its own Claude Code skills to run when a lifecycle
+  event fires (e.g. refresh docs after every review), via `hooks:` in its
+  `.koan/config.yaml`. Off until you set `hook_skills.enabled: true` in
+  `instance/config.yaml` (or per project); rate-limited and read only from the
+  default branch. See `docs/architecture/hooks.md`. (#2497)
+- Before a force-push, `/rebase` now checks that no content was lost from the pull
+  request, and stops instead of pushing if it was.
+- Review depth is now configurable with `review_effort` (`low` to `max`) in
+  `instance/config.yaml` or per project; leave it unset to keep the provider's
+  default. (#2523)
+- Mentioning the bot explicitly on a pull request now always triggers a fresh
+  review, even when nothing changed since the last one.
+- Reviews now also flag structural problems — places where a restructuring would
+  make whole branches, flags or layers unnecessary. (#2506)
+- `/pr` now ends with a readability-only simplify pass after its quality review.
+  (#938)
+- `/restart --force` restarts the daemons in an emergency, even when they are not
+  responding. (#2502)
+- A new command-line REST client lets you drive Kōan's API from a terminal. See
+  `docs/users/koan-cli.md`. (#2509)
+- Jira plans that are too long for one comment are now split across several, and
+  each delivery is verified so a plan never silently goes missing. (#2507)
+- `!command` shortcuts now work on every messaging provider, not just Slack.
+- When the Codex provider is active, the Codex CLI is updated automatically at
+  startup and once a day. On by default; set `codex_update.enabled: false` to
+  manage it yourself, or `codex_update.notify: false` to skip the update notice.
+  See `docs/providers/codex.md`. (#2482)
+- Kōan now mentions Skuggi, the hosted AI engineering team from Kōan's makers:
+  once at launch, in occasional contextual nudges (each at most once a week), and
+  in report, `/help` and `/status` footers. On by default; set
+  `skuggi.promo: false` in `instance/config.yaml` to turn every mention off. See
+  `docs/users/skuggi.md`. (#2530)
 
 **Changed**
 
@@ -64,11 +118,46 @@ Do not hand-edit released entries — they are the source for `CHANGES.md`.
   configurable via `rebase_conflict_timeout` (default 600 seconds) in
   `instance/config.yaml` — raise it for large repositories where a round runs
   long.
+- Each mission now ends with one consistent notification built from a fixed
+  template, instead of several rephrased variants that could drop the link.
+  (#2527)
+- Reviews are now strictly read-only: they run on a pinned checkout of the pull
+  request head with a shell limited to read commands, enforced by the CLI rather
+  than by the prompt.
+- Review prose now follows your configured reply language. (#2517)
+- `cli_provider` now accepts a binary path (`flavor:path`), which every role
+  inherits unless it overrides it — see `instance.example/config.yaml`. Chat,
+  rituals and message formatting now use the provider and model of their own role.
+- Long foreground commands in a mission are no longer cut at the Claude CLI's
+  two-minute default: they get up to the mission budget, adjustable with
+  `bash_foreground_timeout` in `instance/config.yaml` (default: mission timeout
+  minus 120 seconds; no action needed). See `docs/architecture/daemon.md`. (#2522)
+- Steering instructions loaded before each Claude call are reported once, as a
+  single deduplicated summary. (#2480)
+- A mission re-queued after stalling now carries guidance from its failed attempt.
 
 **Fixed**
 
 - Rebase progress messages now report the CLI provider and model actually in use
   instead of always saying "Claude". (#2467)
+- A code mission that ends without a pull request is now reported as failed
+  instead of done. (#2518)
+- The Telegram bridge no longer stalls for tens of seconds every hour while it
+  cleans up old worktrees. (#2503)
+- A provider that stops sending output no longer hangs the mission forever.
+  (#2515)
+- Rebases no longer fail on `--continue` after a conflict is resolved, no longer
+  link unrelated issues, and correctly credit commits made by the feedback agent.
+  (#2512, #2514, #2511)
+- `GET /v1/missions` now returns the actual mission queue. (#2516)
+- Quota no longer pauses the agent on false positives.
+- A corrupted event file no longer crashes the agent loop. (#2498)
+- Slack links and bang-prefixed commands are handled correctly.
+- Repositories with dots in their name are recognized on GitHub. (#2486)
+- Leftover review worktrees are reclaimed, freeing disk space. (#2484)
+- Review findings get unique ids, and findings rejected on reflection no longer
+  come back.
+- Skills no longer misread multi-line command footers as arguments. (#2504)
 
 ## v0.8.1 — 2026-07-22
 
