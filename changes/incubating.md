@@ -15,6 +15,8 @@ Do not hand-edit released entries — they are the source for `CHANGES.md`.
 
 ## ${NEXT}
 
+## v0.9.0 — 2026-10-28
+
 **Added**
 
 - Repositories can now steer how Kōan reviews them with an optional
