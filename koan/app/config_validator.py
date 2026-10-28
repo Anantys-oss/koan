@@ -98,6 +98,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "usage": _NESTED,
     "email": _NESTED,
     "messaging": _NESTED,
+    "skuggi": _NESTED,
     "auto_update": _NESTED,
     "codex_update": _NESTED,
     "dashboard": _NESTED,
@@ -227,6 +228,9 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
     },
     "messaging": {
         "provider": "str",
+    },
+    "skuggi": {
+        "promo": "bool",
     },
     "auto_update": {
         "enabled": "bool",

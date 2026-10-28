@@ -39,6 +39,25 @@
 
 ---
 
+## Skuggi — from the makers of Kōan
+
+<p align="center">
+  <a href="https://skuggi.ai/?utm_source=koan&utm_medium=github&utm_campaign=koan-promo"><strong>skuggi.ai — An AI engineering team in your shadow →</strong></a>
+</p>
+
+Kōan inspired [**Skuggi**](https://skuggi.ai/?utm_source=koan&utm_medium=github&utm_campaign=koan-promo), a hosted service from the team that builds Kōan. Run Kōan when you want one self-hosted agent on your own quota. Use Skuggi when you want a whole team of agents with nothing to host:
+
+- **A real GitHub App.** Install it on your repos, then type `@skuggi plan`, `@skuggi implement`, `@skuggi review` or `@skuggi fix` on any issue or PR.
+- **The full loop.** Research, issue, plan, implementation, pull request, review and fix, up to merge-ready.
+- **PR reviews in under 2 minutes**, with findings ranked by severity and a map of what each change adds, calls and can break.
+- **A pipeline board** that shows your whole agent fleet, from planned to reviewed to fixed.
+- **No config file, no model to pick.** It chooses a model for each task and learns how your repo works.
+- **Same philosophy.** The agent proposes; you merge. Skuggi never does.
+
+Kōan stays free, open source and self-hosted. Kōan mentions Skuggi in chat now and then; set `skuggi.promo: false` to turn that off ([details](docs/users/skuggi.md)). [Join the Skuggi waiting list](https://skuggi.ai/?utm_source=koan&utm_medium=github&utm_campaign=koan-promo).
+
+---
+
 ## What Is This?
 
 You pay for AI coding quota. You use it 8 hours a day. The other 16? Wasted quota.

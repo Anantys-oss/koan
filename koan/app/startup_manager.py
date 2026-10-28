@@ -869,6 +869,10 @@ def run_startup(koan_root: str, instance: str, projects: list):
     # One-time advisory that the bridge now defaults to quiet (normal) mode.
     _safe_run("Messaging-level notice", maybe_send_messaging_level_notice, instance)
 
+    from app import skuggi_promo
+    _safe_run("Skuggi launch notice", skuggi_promo.maybe_send_launch_notice, instance)
+    skuggi_promo.maybe_nudge_fleet(instance, len(projects))
+
     # Load .env before git identity so KOAN_EMAIL is available.
     # run.py does not source .env itself; without this, GIT_AUTHOR_EMAIL is
     # never set and git falls back to the global ~/.gitconfig identity.

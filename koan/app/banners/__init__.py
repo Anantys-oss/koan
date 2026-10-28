@@ -152,6 +152,15 @@ def print_hero_banner(system_info: dict = None) -> None:
         print(f"   {line}")
     if system_info:
         print()
+    _print_promo_line()
+
+
+def _print_promo_line() -> None:
+    from app.skuggi_promo import footer
+    line = footer("banner")
+    if line:
+        print(f"   {line}")
+        print()
 
 
 def _format_info_lines(system_info: dict) -> list:

@@ -137,6 +137,11 @@ def register_helpers(app) -> None:
         from app.config import get_dashboard_nickname
         return {"instance_nickname": get_dashboard_nickname()}
 
+    @app.context_processor
+    def _inject_skuggi_promo():
+        from app.skuggi_promo import promo_enabled, tracked_url
+        return {"skuggi_url": tracked_url("dashboard") if promo_enabled() else ""}
+
     app.add_template_filter(strip_project_tag_filter, name='strip_project_tag')
     app.add_template_filter(project_badge_filter, name='project_badge')
     app.add_template_filter(linkify_filter, name='linkify')

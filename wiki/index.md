@@ -100,6 +100,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 - [`users/onboarding.md`](docs/users/onboarding.md) — Documents the interactive 12-step onboarding wizard that sets up a new Koan instance, its resumability, personality presets, and non-interactive/CI mode.
 - [`users/quickstart.md`](docs/users/quickstart.md) — A 5-minute guide to the commands for driving Koan from GitHub PRs/issues, Jira, and messaging apps (Telegram/Slack), with minimal and context-augmented examples for each.
 - [`users/skills.md`](docs/users/skills.md) — Complete reference for Koan slash commands across messaging, GitHub mentions, and the curated REST/MCP skill catalog.
+- [`users/skuggi.md`](docs/users/skuggi.md) — Where and how often Kōan mentions Skuggi, the hosted AI engineering team from the makers of Kōan, and how to turn the mentions off with skuggi.promo.
 - [`users/user-manual.md`](docs/users/user-manual.md) — A tiered walkthrough of Kōan, from first missions through REST/MCP skill discovery, parallel sessions, exploration, and configuration.
 
 ### Overview

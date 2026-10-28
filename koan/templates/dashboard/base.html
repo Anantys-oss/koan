@@ -57,6 +57,9 @@
                 <a href="/rules" class="k-nav__item {% if request.path == '/rules' %}active{% endif %}"><i data-lucide="sliders-horizontal"></i><span>Rules</span></a>
             </nav>
             <div class="sidebar-footer">
+                {% if skuggi_url %}
+                <a href="{{ skuggi_url }}" class="sidebar-promo k-caption" target="_blank" rel="noopener">Run a fleet of agents with <strong>Skuggi</strong>, from the makers of Kōan →</a>
+                {% endif %}
                 <select id="project-filter" class="k-select" aria-label="Filter by project">
                     <option value="">All projects</option>
                 </select>
