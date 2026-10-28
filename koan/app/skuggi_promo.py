@@ -69,10 +69,15 @@ def promo_enabled() -> bool:
         from app.utils import load_config
         section = load_config().get("skuggi", {})
     except Exception as e:
-        log("warn", f"Skuggi promo config unreadable, keeping default: {e}")
-        return True
+        # Fail closed: an operator who opted out must not get promos back
+        # just because config.yaml failed to load.
+        log("warn", f"Skuggi promo config unreadable, promo off: {e}")
+        return False
     if isinstance(section, dict) and "promo" in section:
-        return section["promo"] is not False
+        value = section["promo"]
+        if not isinstance(value, bool):
+            log("warn", f"skuggi.promo should be true or false, got {value!r}; promo off")
+        return value is True
     return True
 
 
@@ -90,17 +95,24 @@ def footer(medium: str) -> str:
 
 
 def maybe_send_launch_notice(instance: str) -> None:
-    """Send the launch announcement once per instance."""
+    """Send the launch announcement once per instance. Never raises."""
+    try:
+        _launch_notice(instance)
+    except Exception as e:
+        log("warn", f"Skuggi launch notice failed: {e}")
+
+
+def _launch_notice(instance: str) -> None:
     if not promo_enabled():
         return
     state = _read_state(instance)
     if _LAUNCH_KEY in state:
         return
-    if not _send(LAUNCH_NOTICE.format(url=tracked_url("telegram", "launch"))):
+    result = _send(LAUNCH_NOTICE.format(url=tracked_url("telegram", "launch")))
+    if not result:
         log("warn", "Skuggi launch notice not delivered; will retry next boot")
         return
-    state[_LAUNCH_KEY] = time.time()  # only after a successful send
-    _write_state(instance, state)
+    _arm(instance, state, _LAUNCH_KEY, "launch notice")
 
 
 def maybe_nudge(instance: str, trigger: str, **fields) -> bool:
@@ -138,12 +150,26 @@ def _nudge(instance: str, trigger: str, fields: dict) -> bool:
     key = f"nudge:{trigger}"
     if time.time() - state.get(key, 0) < NUDGE_COOLDOWN_SECONDS:
         return False
-    if not _send(NUDGES[trigger].format(url=tracked_url("telegram", trigger), **fields)):
+    result = _send(NUDGES[trigger].format(url=tracked_url("telegram", trigger), **fields))
+    if not result:
         log("warn", f"Skuggi nudge '{trigger}' not delivered; cooldown not armed")
         return False
+    _arm(instance, state, key, f"nudge '{trigger}'")
+    return not _is_suppressed(result)
+
+
+def _arm(instance: str, state: dict, key: str, label: str) -> None:
+    """Record *key* as handled after a send that was delivered or suppressed.
+
+    A suppressed send (min_priority filter, dedup) is the operator's own
+    filtering, not a transient failure: retrying it would re-trigger on every
+    event forever, so it arms the once-only / cooldown state too.
+    """
     state[key] = time.time()
-    _write_state(instance, state)
-    return True
+    try:
+        _write_state(instance, state)
+    except Exception as e:
+        log("warn", f"Skuggi {label} sent but state not saved: {e}")
 
 
 def send_verbatim(message: str) -> bool:
@@ -157,8 +183,15 @@ def send_verbatim(message: str) -> bool:
     return bool(result) and result != NOTIFICATION_SUPPRESSED
 
 
-def _send(message: str) -> bool:
-    return send_verbatim(message)
+def _send(message: str):
+    """Raw verbatim send: True, NOTIFICATION_SUPPRESSED, or False on failure."""
+    from app.notify import send_telegram
+    return send_telegram(message)
+
+
+def _is_suppressed(result) -> bool:
+    from app.notify import NOTIFICATION_SUPPRESSED
+    return result == NOTIFICATION_SUPPRESSED
 
 
 def _state_path(instance: str) -> Path:
@@ -166,11 +199,18 @@ def _state_path(instance: str) -> Path:
 
 
 def _read_state(instance: str) -> dict:
+    path = _state_path(instance)
     try:
-        data = json.loads(_state_path(instance).read_text())
-    except (OSError, ValueError):
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
         return {}
-    return data if isinstance(data, dict) else {}
+    except (OSError, ValueError) as e:
+        log("warn", f"Skuggi promo state {path} unreadable, resetting it: {e}")
+        return {}
+    if not isinstance(data, dict):
+        log("warn", f"Skuggi promo state {path} is not a mapping, resetting it")
+        return {}
+    return data
 
 
 def _write_state(instance: str, state: dict) -> None:

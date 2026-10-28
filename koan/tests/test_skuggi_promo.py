@@ -40,9 +40,14 @@ class TestPromoEnabled:
         with _config({"skuggi": {"promo": False}}):
             assert skuggi_promo.promo_enabled() is False
 
-    def test_on_when_config_unreadable(self):
+    def test_off_when_config_unreadable(self):
         with patch("app.utils.load_config", side_effect=OSError("boom")):
-            assert skuggi_promo.promo_enabled() is True
+            assert skuggi_promo.promo_enabled() is False
+
+    @pytest.mark.parametrize("value", ["false", 0, "off", None])
+    def test_off_when_value_not_true(self, value):
+        with _config({"skuggi": {"promo": value}}):
+            assert skuggi_promo.promo_enabled() is False
 
 
 class TestLaunchNotice:
@@ -55,9 +60,22 @@ class TestLaunchNotice:
 
     def test_failed_send_retries_next_boot(self, tmp_path, monkeypatch):
         monkeypatch.setattr(skuggi_promo, "_send", lambda m: (_ for _ in ()).throw(RuntimeError()))
-        with _config({}), pytest.raises(RuntimeError):
+        with _config({}):
             skuggi_promo.maybe_send_launch_notice(str(tmp_path))
         assert skuggi_promo._read_state(str(tmp_path)) == {}
+
+    def test_suppressed_send_recorded(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(skuggi_promo, "_send", lambda m: "suppressed")
+        with _config({}):
+            skuggi_promo.maybe_send_launch_notice(str(tmp_path))
+        assert "launch" in skuggi_promo._read_state(str(tmp_path))
+
+    def test_state_write_failure_does_not_raise(self, tmp_path, sent, monkeypatch):
+        monkeypatch.setattr(
+            skuggi_promo, "_write_state", lambda *a: (_ for _ in ()).throw(OSError("ro")))
+        with _config({}):
+            skuggi_promo.maybe_send_launch_notice(str(tmp_path))
+        assert len(sent) == 1
 
     def test_silent_when_opted_out(self, tmp_path, sent):
         with _config({"skuggi": {"promo": False}}):
@@ -106,6 +124,29 @@ class TestNudges:
         monkeypatch.setattr(skuggi_promo, "_send", lambda m: False)
         with _config({}):
             assert skuggi_promo.maybe_nudge(str(tmp_path), "quota") is False
+        assert skuggi_promo._read_state(str(tmp_path)) == {}
+
+    def test_suppressed_nudge_arms_cooldown(self, tmp_path, monkeypatch):
+        calls = []
+
+        def _suppressed(message):
+            calls.append(message)
+            return "suppressed"
+
+        monkeypatch.setattr(skuggi_promo, "_send", _suppressed)
+        with _config({}):
+            assert skuggi_promo.maybe_nudge(str(tmp_path), "quota") is False
+            assert skuggi_promo.maybe_nudge(str(tmp_path), "quota") is False
+        assert len(calls) == 1
+
+    def test_sent_nudge_survives_state_write_failure(self, tmp_path, sent, monkeypatch):
+        monkeypatch.setattr(
+            skuggi_promo, "_write_state", lambda *a: (_ for _ in ()).throw(OSError("ro")))
+        with _config({}):
+            assert skuggi_promo.maybe_nudge(str(tmp_path), "quota") is True
+
+    def test_corrupt_state_treated_as_empty(self, tmp_path):
+        (tmp_path / ".skuggi-promo.json").write_text("{not json")
         assert skuggi_promo._read_state(str(tmp_path)) == {}
 
     def test_unknown_trigger_ignored(self, tmp_path, sent):

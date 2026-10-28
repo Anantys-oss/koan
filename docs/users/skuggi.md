@@ -29,6 +29,7 @@ Kōan mentions Skuggi in a few bounded places, implemented in `koan/app/skuggi_p
 
 A nudge is a separate message sent after the end-of-mission line, which keeps its fixed
 template. Send history lives in `instance/.skuggi-promo.json`; delete the file to reset it.
+A message your `min_priority` filter drops still counts as sent, so it is not retried.
 
 ## Turning it off
 
@@ -38,3 +39,5 @@ Mentions are on by default. Set this in `instance/config.yaml` to silence all of
 skuggi:
   promo: false
 ```
+
+Any value other than `true` turns them off, and so does a `config.yaml` that fails to load.
