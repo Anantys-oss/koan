@@ -1,0 +1,257 @@
+# projects.yaml — Project configuration for Kōan
+#
+# Place this file at your KOAN_ROOT (next to .env).
+# Not versioned — copy from projects.example.yaml and customize.
+#
+# THREE WAYS TO CONFIGURE PROJECTS:
+#
+# 1. Workspace only (zero config):
+#    Place a project or symlink in workspace/ — auto-discovered by directory name.
+#    Uses global defaults. No yaml entry needed.
+#
+# 2. Yaml only (explicit path):
+#    Define the project here with a 'path' field.
+#
+# 3. Workspace + yaml override (best of both):
+#    Place the project in workspace/ AND add a yaml entry here WITHOUT 'path'.
+#    The workspace provides the path, yaml provides custom settings.
+#
+# Precedence: If the same project name exists in both yaml (with path) and
+# workspace, the yaml path wins. A warning is shown at startup.
+#
+# Max 50 projects total (workspace + yaml combined).
+#
+# This file replaces KOAN_PROJECTS / KOAN_PROJECT_PATH env vars.
+# If projects.yaml exists, env vars are ignored (but still work as fallback
+# if you delete this file).
+
+defaults:
+  # These apply to every project unless overridden
+  git_auto_merge:
+    enabled: false
+    base_branch: "main"
+    strategy: "squash"
+
+  # Security review — scan mission diffs for dangerous patterns before auto-merge.
+  # Detects eval/exec, shell injection, hardcoded secrets, unsafe deserialization,
+  # XSS, wildcard CORS, overly permissive permissions, and more.
+  # Results are logged to the project journal.
+  #
+  # - enabled: Run the review on every mission (default: false)
+  # - blocking: Block auto-merge when risk meets threshold (default: false)
+  # - severity_threshold: Minimum risk level to trigger block
+  #   ("low", "medium", "high", "critical"). Default: "high"
+  #
+  # security_review:
+  #   enabled: true
+  #   blocking: false
+  #   severity_threshold: high
+
+  # CLI provider — which AI CLI to use ("claude", "codex", "copilot", "local")
+  # Per-project overrides allow different providers for different repos.
+  # Can also be set globally in config.yaml or via KOAN_CLI_PROVIDER env var.
+  # cli_provider: "claude"
+
+  # Model overrides — control which models are used per project.
+  # Keys match config.yaml models section: mission, chat, lightweight,
+  # fallback, review_mode. Empty string = use default model.
+  # models:
+  #   mission: ""
+  #   chat: ""
+
+  # Tool restrictions — control which tools are available per project.
+  # Keys: mission (for autonomous work), chat (for Telegram conversations).
+  # Useful for restricting write access on certain repos.
+  # tools:
+  #   mission: ["Read", "Glob", "Grep", "Edit", "Write", "Bash"]
+  #   chat: ["Read", "Glob", "Grep"]
+
+  # MCP server configuration — paths to MCP config JSON files.
+  # Replaces the global mcp list from config.yaml when set.
+  # mcp:
+  #   - "/path/to/project-specific-mcp.json"
+
+  # Focus mode — disable autonomous work for this project.
+  #
+  # When enabled, the agent ONLY works on explicitly queued missions for
+  # this project — no contemplative sessions, no DEEP mode, no autonomous
+  # exploration. This is the per-project equivalent of the global
+  # config.yaml `focus: true` setting.
+  #
+  # Set at defaults level to control the global policy, then override
+  # per-project. Common patterns:
+  #   - defaults: true + myapp: false → all focused except myapp
+  #   - defaults: false + vendor: true → only vendor is focused
+  #
+  # Default: false
+  # focus: false
+
+  # Exploration — controls autonomous work on this project.
+  #
+  # When enabled, the agent may autonomously:
+  #   - Pick this project for free-form exploration (code audits, improvements)
+  #   - Run contemplative/reflective sessions on the project
+  #   - Create branches and PRs proactively (within max_open_prs limit)
+  #
+  # When disabled (false), the agent ONLY works on this project when an
+  # explicit mission is queued (via /mission, /fix, /rebase, etc.).
+  # Explicit missions always execute regardless of this flag.
+  #
+  # Set at defaults level to control the global policy, then override
+  # per-project. Common patterns:
+  #   - defaults: true + vendor-lib: false → explore everything except vendor
+  #   - defaults: false + myapp: true → only explore opted-in projects
+  #
+  # Also affected by:
+  #   - max_open_prs: exploration pauses when the PR limit is reached
+  #   - schedule.work_hours (in config.yaml): suppresses all exploration
+  #     during work hours, similar to /focus mode
+  #
+  # Default: true
+  # exploration: true
+
+  # Max open PRs — limit how many open PRs the agent can have per repo
+  # before autonomous exploration is paused for this project.
+  # Explicit missions are never affected by this limit.
+  # Uses GITHUB_USER or `gh` login to identify the agent's PRs.
+  # Set to 0 or omit for unlimited.
+  # Default: 0 (unlimited)
+  max_open_prs: 10
+
+  # Max pending branches — limit total unreviewed work the agent will
+  # create via autonomous exploration. Counts the union of local unmerged
+  # <branch_prefix>/* branches and open PRs (deduplicated by branch
+  # name). When the limit is reached, autonomous exploration is paused
+  # for this project until existing branches are reviewed/merged.
+  # Explicit missions (queued in missions.md or via Jira/GitHub
+  # notifications) are never affected by this limit — it is a
+  # self-throttle for the agent, not a gate on human instructions.
+  # More comprehensive than max_open_prs because it also counts local
+  # unmerged branches, not just GitHub PRs.
+  # Set to 0 for unlimited.
+  # Default: 10
+  max_pending_branches: 10
+
+  # Security audit — PVRS (Private Vulnerability Reporting) settings.
+  #
+  # When /security_audit runs, findings at or above the threshold severity
+  # are submitted as private security advisories (PVRS) instead of public
+  # issues, keeping exploit details private until a fix is applied.
+  #
+  # pvrs: auto | true | false
+  #   auto  — detect PVRS at runtime via GitHub API (default)
+  #   true  — always submit high-severity findings via PVRS
+  #   false — always create public issues (opt out of PVRS)
+  #
+  # pvrs_threshold: critical | high | medium | low
+  #   Findings at or above this severity go to PVRS (default: high).
+  #   E.g., "high" routes critical + high to PVRS; medium + low stay public.
+  #
+  # security:
+  #   pvrs: auto
+  #   pvrs_threshold: high
+
+projects:
+
+  # Example: a project whose issues live in Jira but whose PRs go to GitHub
+  # jira-backed-app:
+  #   path: "/Users/yourname/workspace/jira-backed-app"
+  #   github_url: "yourname/jira-backed-app"
+  #   issue_tracker:
+  #     provider: jira
+  #     jira_project: PROJ
+  #     jira_issue_type: Task        # Default if omitted
+  #     default_branch: "main"       # Used by Jira-triggered /fix and /implement
+
+  # Example: workspace project with yaml overrides (no path needed!)
+  # The project lives in workspace/my-lib (symlink or directory).
+  # This yaml entry only provides custom settings.
+  # my-lib:
+  #   models:
+  #     mission: "opus"          # Use Opus for complex work
+  #   git_auto_merge:
+  #     enabled: true
+
+  # Example: a backend project with custom model and base branch
+  # backend:
+  #   path: "/Users/yourname/workspace/backend"
+  #   git_auto_merge:
+  #     base_branch: "staging"
+  #   models:
+  #     mission: "opus"          # Use Opus for complex backend work
+  #     review_mode: "sonnet"    # Use Sonnet for cheaper reviews
+
+  # Example: a small Perl module with restricted tools and cheaper model
+  # perl-lib:
+  #   path: "/Users/yourname/workspace/perl-lib"
+  #   models:
+  #     mission: "sonnet"        # Sonnet is sufficient for small modules
+  #   tools:
+  #     mission: ["Read", "Glob", "Grep", "Edit", "Write"]  # No Bash
+
+  # Example: a read-only repo (audit/review only, no autonomous exploration)
+  # vendor-lib:
+  #   path: "/Users/yourname/workspace/vendor-lib"
+  #   exploration: false                   # Only work on explicit missions
+  #   tools:
+  #     mission: ["Read", "Glob", "Grep"]  # Read-only — no modifications
+
+  # Example: opt-in exploration (when defaults.exploration is false)
+  # Use this pattern when you want tight control: disable globally,
+  # then explicitly enable exploration on trusted projects.
+  # my-main-app:
+  #   path: "/Users/yourname/workspace/my-main-app"
+  #   exploration: true                    # Override global false default
+
+  # Example: focus mode — missions only, no autonomous work
+  # Use when you want Kōan to be a quiet executor for a project.
+  # quiet-repo:
+  #   path: "/Users/yourname/workspace/quiet-repo"
+  #   focus: true                           # Only run queued missions
+
+  # Example: a project with a lower PR limit (overrides default of 10)
+  # oss-lib:
+  #   path: "/Users/yourname/workspace/oss-lib"
+  #   max_open_prs: 3                        # Keep max 3 open PRs for this repo
+  #   max_pending_branches: 5                # Cap total unreviewed branches
+
+  # Example: a production API with strict security review (blocks auto-merge)
+  # production-api:
+  #   path: "/Users/yourname/workspace/production-api"
+  #   security_review:
+  #     enabled: true
+  #     blocking: true           # Block auto-merge for risky changes
+  #     severity_threshold: medium
+
+  # Example: a project using GitHub Copilot instead of Claude
+  # copilot-project:
+  #   path: "/Users/yourname/workspace/copilot-project"
+  #   cli_provider: "copilot"
+
+  # Example: a project with restricted GitHub @mention access
+  # restricted-repo:
+  #   path: "/Users/yourname/workspace/restricted-repo"
+  #   github:
+  #     authorized_users: ["alice", "bob"]  # Override global list for this project
+
+  # Example: a fork where PRs should be submitted to the parent repo
+  # Fork-aware routing: auto-detected via `gh repo view --json parent`,
+  # but you can override with this explicit config.
+  # my-fork:
+  #   path: "/Users/yourname/workspace/my-fork"
+  #   submit_to_repository:
+  #     repo: "upstream-owner/upstream-repo"  # Target repo for PR creation
+  #     remote: "upstream"                    # Git remote name (optional)
+  koan:
+    path: /home/koanex/koan/workspace/koan
+    exploration: false
+    github_url: anantys-oss/koan
+    github_urls:
+    - koanex/koan
+    - anantys-oss/koan
+  skuggi-core:
+    path: /home/koanex/koan/workspace/skuggi-core
+    exploration: true
+    github_url: anantys/skuggi-core
+    github_urls:
+    - anantys/skuggi-core
