@@ -83,6 +83,41 @@ Recognized filenames: `session_start.py`, `session_end.py`, `pre_mission.py`,
 useful for parsing JIRA keys, PR URLs, or `RESULT:` lines without re-reading
 the stdout capture file.
 
+## slim_review_post.py — automatic lightweight code review
+
+Copy `slim_review_post.py` **and** `slim_review_prompt.md` to `instance/hooks/`
+(no `.example` suffix to drop — the module is inert until enabled in config).
+Runs a haiku-powered review on the diff of any PR created during a mission;
+findings land in the project's daily journal.
+
+**Setup:**
+
+1. Copy `slim_review_post.py` and `slim_review_prompt.md` to `instance/hooks/`
+2. Add to `instance/config.yaml`:
+   ```yaml
+   slim_review_hook:
+     enabled: true          # master switch (default: false)
+   ```
+3. Restart Koan
+
+**Behavior:**
+
+- Only triggers on successful missions (`exit_code == 0`) that created a PR
+- Skips `/review`, `/rebase`, `/slim_review`, and `/review_rebase` missions
+  (prevents review-of-a-review loops)
+- Deduplicates by diff content hash — the same diff is never reviewed twice,
+  but new commits pushed to the same PR re-trigger analysis
+- Runs the Claude call in a daemon thread (5-10s; does not block the loop)
+- Findings appear in `instance/journal/YYYY-MM-DD/{project}.md`
+
+**Files:**
+
+| File | Purpose |
+|------|---------|
+| `slim_review_post.py` | Hook module |
+| `slim_review_prompt.md` | Review prompt (customizable) |
+| `instance/.slim-review-tracker.json` | Dedup tracker (auto-created) |
+
 ## extract_review_lessons.py.example — post_review capture
 
 Copy to `instance/hooks/extract_review_lessons.py` (drop `.example`) and
