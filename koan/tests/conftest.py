@@ -215,6 +215,9 @@ def isolate_env(monkeypatch):
     # Prevent host CLI provider env vars from leaking into tests
     monkeypatch.delenv("CLI_PROVIDER", raising=False)
     monkeypatch.delenv("KOAN_CLI_PROVIDER", raising=False)
+    # Host-pinned CLI binary (e.g. a gateway shim) breaks tests that assert
+    # the default binary; tests needing it set it explicitly.
+    monkeypatch.delenv("KOAN_CLAUDE_CLI_PATH", raising=False)
     # Reset projects_merged module-level cache so parallel workers don't
     # see stale project lists from a prior test's KOAN_ROOT.
     try:
