@@ -30,6 +30,26 @@ _NO_PR_ERROR = (
 )
 
 
+def _git_ahead(branch: str, count: str):
+    """Git call sequence: on ``branch``, base ref found, ``count`` commits ahead."""
+    return [
+        (0, branch, ""),   # rev-parse --abbrev-ref HEAD
+        (0, "", ""),       # rev-parse --verify upstream/main
+        (0, count, ""),    # rev-list --count upstream/main..HEAD
+    ]
+
+
+def _git_no_base_ref(branch: str):
+    """Git call sequence: on ``branch``, none of the four base refs exist."""
+    return [
+        (0, branch, ""),   # rev-parse --abbrev-ref HEAD
+        (1, "", ""),       # rev-parse --verify upstream/main
+        (1, "", ""),       # rev-parse --verify origin/main
+        (1, "", ""),       # rev-parse --verify upstream/master
+        (1, "", ""),       # rev-parse --verify origin/master
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Mission type classification
 # ---------------------------------------------------------------------------
@@ -226,18 +246,56 @@ class TestCheckPrCreated:
     @patch("app.github.run_gh")
     def test_fail_no_pr_on_code_mission(self, mock_gh, mock_git):
         """Commits on a branch and no PR means the mission stopped short."""
-        mock_git.return_value = (0, "koan/my-branch", "")
+        mock_git.side_effect = _git_ahead("koan/my-branch", "3")
         mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
         result = check_pr_created("/project", "implement login")
         assert result.status == CheckStatus.FAIL
 
     @patch("app.mission_verifier.run_git")
     @patch("app.github.run_gh")
-    def test_warn_no_pr_on_other_mission(self, mock_gh, mock_git):
-        """A non-code mission may legitimately end without a PR."""
-        mock_git.return_value = (0, "koan/my-branch", "")
+    def test_fail_no_pr_on_branch_with_commits_regardless_of_title(self, mock_gh, mock_git):
+        """The gate is behaviour, not the title. A verb-less mission that
+        leaves commits on a Kōan branch and no PR behind stopped short too —
+        the title-verb list let "Ship X" complete as a silent success, the
+        bug class #2518 patched by adding "deliver" and re-opened by every
+        verb it missed.
+        """
+        mock_git.side_effect = _git_ahead("koan/my-branch", "2")
+        mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
+        result = check_pr_created("/project", "Ship the new landing page")
+        assert result.status == CheckStatus.FAIL
+
+    @patch("app.mission_verifier.run_git")
+    @patch("app.github.run_gh")
+    def test_fail_no_pr_on_rebase_title_with_commits(self, mock_gh, mock_git):
+        """A rebase-titled mission ending on a Kōan branch with commits ahead
+        and no PR is the same unfinished state — the title no longer excuses it.
+        """
+        mock_git.side_effect = _git_ahead("koan/my-branch", "1")
         mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
         result = check_pr_created("/project", "rebase onto the base branch")
+        assert result.status == CheckStatus.FAIL
+
+    @patch("app.mission_verifier.run_git")
+    @patch("app.github.run_gh")
+    def test_warn_no_pr_on_branch_without_commits(self, mock_gh, mock_git):
+        """An empty Kōan branch carries no stranded work — diff_coherence owns
+        that verdict, and unverifiable "has work" degrades to the WARN.
+        """
+        mock_git.side_effect = _git_ahead("koan/my-branch", "0")
+        mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
+        result = check_pr_created("/project", "Ship the new landing page")
+        assert result.status == CheckStatus.WARN
+
+    @patch("app.mission_verifier.run_git")
+    @patch("app.github.run_gh")
+    def test_warn_no_pr_when_base_ref_unknown(self, mock_gh, mock_git):
+        """Without a base ref the ahead-count cannot be observed — stay WARN,
+        never FAIL on the unobservable.
+        """
+        mock_git.side_effect = _git_no_base_ref("koan/my-branch")
+        mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
+        result = check_pr_created("/project", "Ship the new landing page")
         assert result.status == CheckStatus.WARN
 
     @patch("app.mission_verifier.run_git")
@@ -252,15 +310,17 @@ class TestCheckPrCreated:
     @patch("app.mission_verifier.run_git")
     @patch("app.github.run_gh")
     def test_fail_respects_configured_branch_prefix(self, mock_gh, mock_git):
-        """A custom prefix branch still FAILs; an unrelated one only WARNs."""
+        """A custom prefix branch still FAILs; an unrelated one only WARNs.
+        Title carries no code verb — the prefix + commits carry the verdict.
+        """
         mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
-        mock_git.return_value = (0, "bot/my-branch", "")
+        mock_git.side_effect = _git_ahead("bot/my-branch", "1")
         assert check_pr_created(
-            "/project", "implement login", "bot/"
+            "/project", "Ship the feature", "bot/"
         ).status == CheckStatus.FAIL
-        mock_git.return_value = (0, "feature/hand-made", "")
+        mock_git.side_effect = _git_ahead("feature/hand-made", "1")
         assert check_pr_created(
-            "/project", "implement login", "bot/"
+            "/project", "Ship the feature", "bot/"
         ).status == CheckStatus.WARN
 
     @patch("app.mission_verifier.run_git")
