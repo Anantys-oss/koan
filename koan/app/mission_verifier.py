@@ -109,6 +109,37 @@ def _get_base_ref(project_path: str) -> Optional[str]:
     return None
 
 
+def _branch_ahead_of_base(
+    project_path: str, branch: str, branch_prefix: str
+) -> bool:
+    """True when a Kōan-created branch carries commits past the base ref.
+
+    The behaviour gate for the missing-PR FAIL. It replaces the title-verb
+    gate, which knew ~15 verbs and let any other phrasing ("Ship X")
+    complete as a silent success with commits stranded on the branch —
+    the bug class #2518 patched by adding "deliver", re-opened by every
+    verb it missed. Any uncertainty (no base ref, failed git call,
+    unparseable count) degrades to False so the caller keeps the WARN:
+    FAIL is reserved for positively observed behaviour — a
+    ``branch_prefix*`` branch, commits ahead of the base, and gh's
+    positive "no PR" answer (already required by the caller).
+    """
+    if not branch.startswith(branch_prefix):
+        return False
+    base_ref = _get_base_ref(project_path)
+    if not base_ref:
+        return False
+    rc, count, _ = run_git(
+        "rev-list", "--count", f"{base_ref}..HEAD", cwd=project_path
+    )
+    if rc != 0:
+        return False
+    try:
+        return int(count.strip() or 0) > 0
+    except ValueError:
+        return False
+
+
 def check_diff_coherence(project_path: str, branch_prefix: str) -> Check:
     """Verify the branch has meaningful changes (not empty or trivially small).
 
@@ -266,19 +297,23 @@ def check_pr_created(
                 "pr_created", CheckStatus.WARN,
                 f"PR check inconclusive: {type(e).__name__}"
             )
-        # A code mission on a Kōan-created branch that left no PR behind did
-        # not finish: the work exists but nobody is told about it. As a WARN it
+        # A Kōan-created branch that left commits behind and no PR did not
+        # finish: the work exists but nobody is told about it. As a WARN it
         # completed as a success and went out silently, with the commits
         # stranded on the branch. FAIL routes it into the verify re-queue,
-        # which is capped and tags the reason. Anything else — a rebase, a
-        # chore, or a branch Kōan did not create (a base branch not named
-        # main/master, so the SKIP above missed it) — may legitimately end
-        # without a PR, and keeps the WARN. Same precondition as
-        # `check_diff_coherence`.
-        is_koan_code_branch = (
-            _is_code_mission(mission_title) and branch.startswith(branch_prefix)
+        # which is capped and tags the reason. The gate is the observed
+        # behaviour — `branch_prefix*` branch, commits ahead of the base ref —
+        # not the mission title: a title list only knew ~15 verbs and let any
+        # other phrasing ("Ship X") complete silently (#2518, re-opened by
+        # every verb it missed). Anything the gate cannot positively observe
+        # — an empty branch (diff_coherence's verdict), an unknown base ref,
+        # or a branch Kōan did not create — may legitimately end without a PR
+        # and keeps the WARN.
+        status = (
+            CheckStatus.FAIL
+            if _branch_ahead_of_base(project_path, branch, branch_prefix)
+            else CheckStatus.WARN
         )
-        status = CheckStatus.FAIL if is_koan_code_branch else CheckStatus.WARN
         return Check("pr_created", status, "No PR found for current branch")
 
 

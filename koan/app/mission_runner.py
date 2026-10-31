@@ -1173,26 +1173,31 @@ def _apply_verify_requeue_signal(result: dict, verify_result, mission_title: str
     Sets ``result["verify_requeue"]`` and ``result["verify_failure_summary"]``
     so ``_finalize_mission`` can move the mission back to Pending instead of
     completing it. On a successful (exit 0) mission two checks can FAIL:
-    ``check_diff_coherence`` (an empty branch) and ``check_pr_created`` (commits
-    on a feature branch that never became a pull request). Both mean the mission
-    stopped short of its own outcome, so a single failure is already a strong,
-    unambiguous signal — requiring two would make the re-queue unreachable. This
-    only *signals*; the lifecycle transition happens in ``_finalize_mission``.
+    ``check_pr_created`` (a Kōan branch with commits ahead of the base that
+    never became a pull request) and ``check_diff_coherence`` (an empty
+    branch). Both mean the mission stopped short of its own outcome, so a
+    single failure is already a strong, unambiguous signal — requiring two
+    would make the re-queue unreachable. This only *signals*; the lifecycle
+    transition happens in ``_finalize_mission``.
 
-    Restricted to code missions: an empty branch is the *expected* outcome for
-    an analysis / no-code mission, not a failure, so re-queueing one would
-    re-run it needlessly and emit false failure notices. Non-code missions are
-    left to complete normally regardless of ``check_diff_coherence``.
+    A ``pr_created`` FAIL is already behaviour-gated upstream — it cannot
+    fire without a Kōan branch, commits ahead of the base, and gh's positive
+    "no PR" answer — so it re-queues regardless of the mission title: the
+    title is exactly what the missing work is stranded behind. An empty
+    branch from ``check_diff_coherence`` is still only a failure for code
+    missions: for an analysis / no-code mission it is the *expected*
+    outcome, and re-queueing one would re-run it needlessly and emit false
+    failure notices.
     """
     from app.mission_verifier import _is_code_mission
 
-    if not _is_code_mission(mission_title):
-        return
     failures = verify_result.failures
     if not verify_result.passed and failures:
-        summary = "; ".join(c.message for c in failures)[:300] or verify_result.summary
-        result["verify_requeue"] = True
-        result["verify_failure_summary"] = summary
+        failed = {c.name for c in failures}
+        if "pr_created" in failed or _is_code_mission(mission_title):
+            summary = "; ".join(c.message for c in failures)[:300] or verify_result.summary
+            result["verify_requeue"] = True
+            result["verify_failure_summary"] = summary
 
 
 def _run_mission_verification(
