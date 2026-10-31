@@ -4272,6 +4272,50 @@ class TestApplyVerifyRequeueSignal:
         _apply_verify_requeue_signal(result, vr, "")
         assert result.get("verify_requeue") is not True
 
+    def test_non_code_title_pr_created_failure_requeues(self):
+        """A behaviour-gated pr_created FAIL re-queues regardless of title.
+        The title list is exactly what let verb-less missions ("Ship X") stop
+        on a branch with commits and no PR and complete as a silent success —
+        #2518, patched verb by verb.
+        """
+        from app.mission_verifier import Check, CheckStatus, VerifyResult
+        from app.mission_runner import _apply_verify_requeue_signal
+
+        vr = VerifyResult(
+            passed=False,
+            checks=[Check(
+                name="pr_created",
+                status=CheckStatus.FAIL,
+                message="No PR found for current branch",
+            )],
+            summary="1 failure(s)",
+        )
+        result = {}
+        _apply_verify_requeue_signal(result, vr, "Ship the new landing page")
+        assert result["verify_requeue"] is True
+        assert "No PR found" in result["verify_failure_summary"]
+
+    def test_non_code_title_diff_only_failure_does_not_requeue(self):
+        """An empty branch on a verb-less mission is still not re-queued:
+        check_diff_coherence keeps the title gate, where "no changes" may be
+        the expected outcome.
+        """
+        from app.mission_verifier import Check, CheckStatus, VerifyResult
+        from app.mission_runner import _apply_verify_requeue_signal
+
+        vr = VerifyResult(
+            passed=False,
+            checks=[Check(
+                name="diff_coherence",
+                status=CheckStatus.FAIL,
+                message="Branch has no changes compared to base",
+            )],
+            summary="1 failure(s)",
+        )
+        result = {}
+        _apply_verify_requeue_signal(result, vr, "Ship the new landing page")
+        assert result.get("verify_requeue") is not True
+
 
 class TestFirePostMissionHookMissionHooks:
     """Agent-loop post-mission repo-config shell hooks wiring (011, US1)."""
