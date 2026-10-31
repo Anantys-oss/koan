@@ -2401,8 +2401,56 @@ def run_post_mission(
         _deadline_timer.cancel()
 
 
+def _load_instance_guard(instance_dir: str) -> Optional[Any]:
+    """Load ``scripts/instance_guard.py`` by file path.
+
+    Returns the module, or None when this tree has no guard script — the
+    deployment layout where the instance dir is not the public repo, where
+    the post-push CI guard (instance-guard.yml) is the only gate.
+
+    A guard script that is present but broken raises; callers treat that as
+    a blocked commit (fail closed once the gate is in play).
+    """
+    import importlib.util
+
+    guard_path = Path(instance_dir) / "scripts" / "instance_guard.py"
+    if not guard_path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("instance_guard_prepush", guard_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _block_leaking_paths(instance_dir: str, staged: List[str]) -> List[str]:
+    """Unstage staged paths that the instance guard classifies as leaks.
+
+    Returns the paths that may still be committed. Raises RuntimeError when
+    unstaging fails, so commit_instance blocks the whole commit rather than
+    risk pushing a leak.
+    """
+    guard = _load_instance_guard(instance_dir)
+    if guard is None:
+        return list(staged)
+    violations = guard.find_violations(staged)
+    if not violations:
+        return list(staged)
+    from app.git_utils import run_git as run_git_rc
+
+    leaking = [p for p, _ in violations]
+    rc, _out, err = run_git_rc("reset", "--", *leaking, cwd=instance_dir, timeout=10)
+    if rc != 0:
+        raise RuntimeError(f"could not unstage leaking paths {leaking}: {err}")
+    blocked = set(leaking)
+    return [p for p in staged if p not in blocked]
+
+
 def commit_instance(instance_dir: str, message: str = "") -> bool:
     """Commit and push instance directory changes.
+
+    Staged paths that the instance guard classifies as leaks (see
+    scripts/instance_guard.py) are unstaged before the commit, so they are
+    neither committed nor pushed; the post-push CI guard stays the backstop.
 
     Args:
         instance_dir: Path to instance directory.
@@ -2420,6 +2468,19 @@ def commit_instance(instance_dir: str, message: str = "") -> bool:
         status = run_git(instance_dir, "diff", "--cached", "--name-only")
         if not status:
             return False  # No changes
+
+        # Pre-push leak gate: refuse to commit+push private paths.
+        staged = status.splitlines()
+        remaining = _block_leaking_paths(instance_dir, staged)
+        blocked = [p for p in staged if p not in set(remaining)]
+        if blocked:
+            print(
+                "[commit_instance] Blocked leaking path(s) from commit+push: "
+                + ", ".join(blocked),
+                file=sys.stderr,
+            )
+        if not remaining:
+            return False  # everything staged was a leak — nothing committed
 
         if not message:
             message = f"koan: {datetime.now().strftime('%Y-%m-%d-%H:%M')}"

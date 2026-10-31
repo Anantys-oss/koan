@@ -16,6 +16,14 @@ Two directories are easy to pollute by accident, and both break the repo when th
 The guard scans the set of git-tracked paths and fails if any match. Pure ``classify``
 + ``find_violations`` do the deciding; the impure ``tracked_files`` shells out to git.
 
+Two layers share the pure core:
+
+  • **pre-push** — ``app.mission_runner.commit_instance`` loads this file by path and
+    runs ``find_violations`` over the staged paths before committing, unstaging any hit
+    so it is never committed or pushed.
+  • **post-push** — the CI workflow (``.github/workflows/instance-guard.yml``) runs this
+    script over all tracked files as the backstop.
+
 Usage:
     python3 scripts/instance_guard.py                 # scan all tracked files
     python3 scripts/instance_guard.py --path a --path b   # scan explicit paths (tests)
