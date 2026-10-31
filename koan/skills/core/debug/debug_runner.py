@@ -13,7 +13,7 @@ CLI:
 import logging
 import os
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 from app.issue_tracker import (
     UnresolvedJiraProjectError,
@@ -27,6 +27,7 @@ from app.pr_submit import (
     submit_draft_pr,
 )
 from app.prompts import load_prompt_or_skill
+from skills.core.shared import build_issue_body
 
 logger = logging.getLogger(__name__)
 
@@ -67,22 +68,6 @@ def _gather_failure_context(instance_dir: str, project_name: str) -> str:
     except OSError as exc:
         logger.warning("Failed to read journal %s: %s", journal_file, exc)
         return "Could not read journal file."
-
-
-def _build_issue_body(body: str, comments: List[dict]) -> str:
-    """Build full issue content including relevant comments."""
-    parts = [body.strip()] if body else []
-
-    for comment in comments:
-        comment_body = comment.get("body", "").strip()
-        author = comment.get("author", "")
-
-        if "[bot]" in author or len(comment_body) < 20:
-            continue
-
-        parts.append(f"\n---\n**Comment by {author}**:\n{comment_body}")
-
-    return "\n".join(parts)
 
 
 def run_debug(
@@ -133,7 +118,7 @@ def run_debug(
     if not body and not comments:
         return False, f"Issue {label} has no content."
 
-    full_body = _build_issue_body(body, comments)
+    full_body = build_issue_body(body, comments)
 
     from app.projects_config import resolve_base_branch
     effective_base_branch = base_branch or resolve_base_branch(
