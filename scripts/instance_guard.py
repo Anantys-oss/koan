@@ -12,6 +12,12 @@ Two directories are easy to pollute by accident, and both break the repo when th
     private ``instance/skills/`` (custom) — never in the shared template. A skill dropped
     into the example tree gets copied into every new instance and is easy to mistake for
     a core skill.
+  • ``projects.yaml`` and its backups (``projects.yaml.*`` — e.g. the
+    timestamped ``projects.yaml.bak-YYYYMMDD-HHMMSS`` files some setup tooling
+    writes next to it) hold operator paths and private repo config. They are
+    gitignored by design; only the tracked template ``projects.example.yaml``
+    may live in the repo. A ``git add -A`` (as in ``commit_instance``) sweeps
+    any of these in otherwise.
 
 The guard scans the set of git-tracked paths and fails if any match. Pure ``classify``
 + ``find_violations`` do the deciding; the impure ``tracked_files`` shells out to git.
@@ -36,6 +42,10 @@ import sys
 # tree) without swallowing its sibling.
 _INSTANCE = "instance"
 _EXAMPLE_SKILLS = "instance.example/skills"
+# Live project config + any backup derived from it (projects.yaml.bak-*, .old, …).
+# The tracked template projects.example.yaml does NOT start with "projects.yaml."
+# and therefore stays allowed.
+_PROJECTS = "projects.yaml"
 
 # violation reason -> human-readable explanation for the failure report.
 REASONS = {
@@ -47,6 +57,11 @@ REASONS = {
         "skill placed in instance.example/ — the template must stay skill-free; "
         "put core skills in koan/skills/ or custom ones in your private instance/skills/"
     ),
+    "projects-config": (
+        "live projects.yaml (or a projects.yaml.* backup) tracked in the repo — "
+        "it holds operator paths and private repo config; it must stay gitignored, "
+        "only the template projects.example.yaml may be committed"
+    ),
 }
 
 
@@ -55,12 +70,17 @@ def classify(path: str) -> str | None:
 
     ``instance.example/`` (the tracked template) is deliberately *not* an ``instance``
     violation — only ``instance`` itself or paths under ``instance/`` are.
+    Likewise ``projects.example.yaml`` (the tracked template config) is *not* a
+    ``projects-config`` violation: only ``projects.yaml`` itself or names derived
+    from it (``projects.yaml.*``) are.
     """
     norm = path.replace("\\", "/").strip()
     if norm == _EXAMPLE_SKILLS or norm.startswith(_EXAMPLE_SKILLS + "/"):
         return "instance-example-skills"
     if norm == _INSTANCE or norm.startswith(_INSTANCE + "/"):
         return "instance"
+    if norm == _PROJECTS or norm.startswith(_PROJECTS + "."):
+        return "projects-config"
     return None
 
 
@@ -91,7 +111,7 @@ def render_success(stream) -> None:
     print("  📁  Instance Guard", file=stream)
     print(_RULE, file=stream)
     print("", file=stream)
-    print("  ✅ PASSED — no private instance/ or instance.example/skills/ leak.", file=stream)
+    print("  ✅ PASSED — no private instance/, instance.example/skills/ or projects.yaml leak.", file=stream)
     print("", file=stream)
     print(_RULE, file=stream)
 

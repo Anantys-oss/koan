@@ -79,6 +79,7 @@ Desktop.ini
 wiki/.obsidian/
 .last-review-sha
 projects.yaml
+projects.yaml.bak*
 projects.docker.yaml
 
 # custom skills
