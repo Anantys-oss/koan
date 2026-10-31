@@ -15,7 +15,7 @@ CLI:
 import logging
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 from app.issue_tracker import (
     UnresolvedJiraProjectError,
@@ -31,6 +31,7 @@ from app.pr_submit import (
 from app.prompts import load_prompt_or_skill
 from app.github_url_parser import parse_pr_url
 from app.private_review_gate import format_gate_note, run_gate_for_skill
+from skills.core.shared import build_footer, build_issue_body
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +49,6 @@ def _extract_skip_diagnose(context):
     if _SKIP_DIAGNOSE_RE.search(context):
         return True, _SKIP_DIAGNOSE_RE.sub(" ", context).strip()
     return False, context
-
-
-def _build_footer() -> str:
-    from app.pr_footer import build_koan_footer
-    return build_koan_footer()
 
 
 def _get_existing_koan_branch(issue_url: str) -> Optional[str]:
@@ -158,7 +154,7 @@ def run_fix(
         return False, f"Issue {label} has no content."
 
     # Build full issue body (include relevant comments)
-    full_body = _build_issue_body(body, comments)
+    full_body = build_issue_body(body, comments)
 
     # Run diagnostic step (lightweight, read-only)
     diagnostic_context = ""
@@ -327,28 +323,6 @@ def _report_fix(project_name, project_path, notify_fn, url="", detail=""):
         "fix", True, project=project_name, project_path=project_path,
         url=url, detail=detail, send_fn=notify_fn,
     )
-
-
-def _build_issue_body(body: str, comments: List[dict]) -> str:
-    """Build full issue content including relevant comments.
-
-    Includes the issue body and any comments that add context
-    (e.g. reproduction steps, additional details). Skips bot comments
-    and very short comments.
-    """
-    parts = [body.strip()] if body else []
-
-    for comment in comments:
-        comment_body = comment.get("body", "").strip()
-        author = comment.get("author", "")
-
-        # Skip bot comments and very short comments
-        if "[bot]" in author or len(comment_body) < 20:
-            continue
-
-        parts.append(f"\n---\n**Comment by {author}**:\n{comment_body}")
-
-    return "\n".join(parts)
 
 
 def _execute_fix(
@@ -527,7 +501,7 @@ def _submit_fix_pr(
         f"## Summary\n\n"
         f"Fixes {issue_url}\n\n"
         f"## Changes\n\n{commits_text}\n\n"
-        f"---\n{_build_footer()}"
+        f"---\n{build_footer()}"
     )
 
     try:
@@ -537,7 +511,7 @@ def _submit_fix_pr(
             pr_body = (
                 f"{format_description(desc)}\n\n"
                 f"Fixes {issue_url}\n\n"
-                f"---\n{_build_footer()}"
+                f"---\n{build_footer()}"
             )
     except Exception as e:
         logger.warning("describe_pr failed, using fallback body: %s", e)

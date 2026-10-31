@@ -6,7 +6,6 @@ from unittest.mock import patch, MagicMock
 
 from skills.core.fix.fix_runner import (
     run_fix,
-    _build_issue_body,
     _build_branch_section,
     _execute_fix,
     _build_prompt,
@@ -17,6 +16,7 @@ from skills.core.fix.fix_runner import (
 )
 from app.issue_tracker.types import IssueContent, IssueRef
 from app.issue_tracker import UnresolvedJiraProjectError
+from skills.core.shared import build_footer, build_issue_body
 
 # Shared helpers imported via app.pr_submit
 from app.pr_submit import (
@@ -62,7 +62,7 @@ def _github_issue(
 
 class TestBuildIssueBody:
     def test_body_only(self):
-        result = _build_issue_body("Bug description", [])
+        result = build_issue_body("Bug description", [])
         assert result == "Bug description"
 
     def test_body_with_comments(self):
@@ -70,7 +70,7 @@ class TestBuildIssueBody:
             {"body": "I can reproduce this on v2.1", "author": "user1"},
             {"body": "Same issue here with screenshots", "author": "user2"},
         ]
-        result = _build_issue_body("Bug description", comments)
+        result = build_issue_body("Bug description", comments)
         assert "Bug description" in result
         assert "user1" in result
         assert "I can reproduce this" in result
@@ -79,7 +79,7 @@ class TestBuildIssueBody:
         comments = [
             {"body": "This is an automated message from CI", "author": "github-actions[bot]"},
         ]
-        result = _build_issue_body("Bug", comments)
+        result = build_issue_body("Bug", comments)
         assert "[bot]" not in result
 
     def test_skips_short_comments(self):
@@ -87,18 +87,24 @@ class TestBuildIssueBody:
             {"body": "+1", "author": "user1"},
             {"body": "me too", "author": "user2"},
         ]
-        result = _build_issue_body("Bug", comments)
+        result = build_issue_body("Bug", comments)
         # Short comments (< 20 chars) are filtered
         assert "user1" not in result
         assert "user2" not in result
 
     def test_empty_body(self):
-        result = _build_issue_body("", [])
+        result = build_issue_body("", [])
         assert result == ""
 
     def test_none_body_equivalent(self):
-        result = _build_issue_body("", [{"body": "This is a useful comment with detail", "author": "user1"}])
+        result = build_issue_body("", [{"body": "This is a useful comment with detail", "author": "user1"}])
         assert "user1" in result
+
+
+class TestBuildFooter:
+    def test_delegates_to_pr_footer(self):
+        from app.pr_footer import build_koan_footer
+        assert build_footer() == build_koan_footer()
 
 
 # ---------------------------------------------------------------------------
