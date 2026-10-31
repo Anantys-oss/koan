@@ -6,6 +6,10 @@ name: 📁 Instance Guard
 # Fast and dependency-free: checkout + stdlib Python only, no venv, no pip. See
 # scripts/instance_guard.py.
 #
+# This is the backstop. The first line of defense is pre-push:
+# app.mission_runner.commit_instance runs the same pure find_violations() over
+# staged paths and unstages any hit before committing/pushing.
+#
 # Read-only: no `contents: write`, no push, no secrets beyond the default token.
 
 on:
