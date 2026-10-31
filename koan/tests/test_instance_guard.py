@@ -57,6 +57,26 @@ def test_classify_example_skills_violation(path):
 @pytest.mark.parametrize(
     "path",
     [
+        "projects.yaml",
+        "projects.yaml.bak-20261030-222007",  # the file that actually leaked
+        "projects.yaml.bak",
+        "projects.yaml.old",
+    ],
+)
+def test_classify_projects_config_violation(path):
+    """Live projects.yaml and its backups hold operator paths + private repos.
+
+    A timestamped ``projects.yaml.bak-*`` was committed to the public repo by
+    ``commit_instance``'s ``git add -A``; the guard must reject it, not pass.
+    ``projects.example.yaml`` (the template) must stay allowed — see
+    ``test_classify_allowed``.
+    """
+    assert guard.classify(path) == "projects-config"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
         "instance.example/config.yaml",
         "instance.example/soul.md",
         "instance.example/memory/summary.md",
@@ -64,6 +84,8 @@ def test_classify_example_skills_violation(path):
         "instances/foo.txt",  # unrelated dir that merely shares a prefix
         "instance_helper.py",
         "README.md",
+        "projects.example.yaml",  # the tracked template config stays committable
+        "projects.docker.yaml",
     ],
 )
 def test_classify_allowed(path):
@@ -82,6 +104,7 @@ def test_find_violations_returns_sorted_pairs():
         "instance/z.md",
         "instance.example/skills/a/SKILL.md",
         "instance/a.md",
+        "projects.yaml.bak-20261030-222007",
         "koan/app/main.py",
     ]
     result = guard.find_violations(paths)
@@ -89,6 +112,7 @@ def test_find_violations_returns_sorted_pairs():
         ("instance.example/skills/a/SKILL.md", "instance-example-skills"),
         ("instance/a.md", "instance"),
         ("instance/z.md", "instance"),
+        ("projects.yaml.bak-20261030-222007", "projects-config"),
     ]
 
 
@@ -129,3 +153,17 @@ def test_main_reports_both_reasons(capsys):
     err = capsys.readouterr().err
     assert "instance/missions.md" in err
     assert "instance.example/skills/x/SKILL.md" in err
+
+
+def test_main_fails_on_projects_yaml_leak(capsys):
+    code = guard.main(["--path", "projects.yaml.bak-20261030-222007"])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "FAILED" in err
+    assert "projects.yaml.bak-20261030-222007" in err
+
+
+def test_main_allows_projects_example_yaml(capsys):
+    code = guard.main(["--path", "projects.example.yaml"])
+    assert code == 0
+    assert "PASSED" in capsys.readouterr().out
