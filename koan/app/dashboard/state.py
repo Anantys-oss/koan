@@ -59,7 +59,12 @@ _GITHUB_ISSUE_PR_RE = re.compile(
 _JIRA_BROWSE_RE = re.compile(
     r'^https?://[^/]+/browse/([A-Z][A-Z0-9_]+-\d+)(?:[?#].*)?$'
 )
+# Matches a YAML key ending in a sensitive stem (bare or compound),
+# with an optional _hash / _salt suffix (password_hash, password_salt).
+# Keys like session_token_limit, budget_tokens, max_tokens do NOT match
+# because the stem must appear at the *end* of the key (before :), not in
+# the middle or as a plural (tokens).
 _SENSITIVE_KEY_RE = re.compile(
-    r'(?m)^(\s*(?:token|password|api_key|secret|private_key)\s*:\s*)\S+',
+    r'(?m)^(\s*[A-Za-z0-9_.\-]*(?:token|password|passwd|api_key|secret|private_key|access_key|signing_key|encryption_key|credential|passphrase)(?:_hash|_salt)?\s*:\s*)\S+',
     re.IGNORECASE,
 )
