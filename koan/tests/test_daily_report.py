@@ -12,6 +12,7 @@ from app.daily_report import (
     _read_journal,
     _extract_mission_title,
     _parse_completed_missions,
+    _parse_failed_missions,
     _count_pending_missions,
     generate_report,
     send_daily_report,
@@ -266,6 +267,80 @@ class TestParseCompletedMissions:
 
 
 # ---------------------------------------------------------------------------
+# _parse_failed_missions
+# ---------------------------------------------------------------------------
+
+class TestParseFailedMissions:
+    def test_real_format_with_timestamps(self, tmp_path):
+        missions_file = tmp_path / "missions.md"
+        missions_file.write_text(
+            "# Missions\n\n"
+            "## Failed\n\n"
+            "- [project:koan] broken build ⏳(2026-02-17T16:00) ▶(2026-02-17T16:12) ❌ (2026-02-17 21:16)\n"
+            "- [project:my-toolkit] flaky deploy ❌ (2026-02-17 16:12)\n"
+        )
+        with patch("app.daily_report.MISSIONS_FILE", missions_file):
+            result = _parse_failed_missions()
+        assert len(result) == 2
+        assert "broken build" in result[0]
+        assert "flaky deploy" in result[1]
+
+    def test_done_missions_not_returned(self, tmp_path):
+        """Only the Failed section is read; ✅ done lines never leak in."""
+        missions_file = tmp_path / "missions.md"
+        missions_file.write_text(
+            "# Missions\n\n"
+            "## Done\n\n"
+            "- [project:koan] fine thing ✅ (2026-02-18 10:00)\n"
+            "## Failed\n\n"
+            "- [project:koan] broken thing ❌ (2026-02-18 10:00)\n"
+        )
+        with patch("app.daily_report.MISSIONS_FILE", missions_file):
+            result = _parse_failed_missions()
+        assert result == ["broken thing"]
+
+    def test_empty_failed_section(self, tmp_path):
+        missions_file = tmp_path / "missions.md"
+        missions_file.write_text("# Missions\n\n## Failed\n\n")
+        with patch("app.daily_report.MISSIONS_FILE", missions_file):
+            assert _parse_failed_missions() == []
+
+    def test_date_filter_matches(self, tmp_path):
+        missions_file = tmp_path / "missions.md"
+        missions_file.write_text(
+            "# Missions\n\n## Failed\n\n"
+            "- [project:koan] yesterdays failure ❌ (2026-02-17 21:16)\n"
+            "- [project:koan] todays failure ❌ (2026-02-18 10:30)\n"
+        )
+        with patch("app.daily_report.MISSIONS_FILE", missions_file):
+            result = _parse_failed_missions(target_date=date(2026, 2, 18))
+        assert len(result) == 1
+        assert "todays failure" in result[0]
+
+    def test_date_filter_no_match(self, tmp_path):
+        missions_file = tmp_path / "missions.md"
+        missions_file.write_text(
+            "# Missions\n\n## Failed\n\n"
+            "- [project:koan] old failure ❌ (2026-02-15 10:00)\n"
+        )
+        with patch("app.daily_report.MISSIONS_FILE", missions_file):
+            assert _parse_failed_missions(target_date=date(2026, 2, 18)) == []
+
+    def test_date_filter_skips_missions_without_timestamp(self, tmp_path):
+        """Missions without ❌ timestamp are skipped when date filter is active."""
+        missions_file = tmp_path / "missions.md"
+        missions_file.write_text(
+            "# Missions\n\n## Failed\n\n"
+            "- [project:koan] has timestamp ❌ (2026-02-18 10:00)\n"
+            "- plain entry no timestamp\n"
+        )
+        with patch("app.daily_report.MISSIONS_FILE", missions_file):
+            result = _parse_failed_missions(target_date=date(2026, 2, 18))
+        assert len(result) == 1
+        assert "has timestamp" in result[0]
+
+
+# ---------------------------------------------------------------------------
 # _count_pending_missions
 # ---------------------------------------------------------------------------
 
@@ -410,6 +485,60 @@ class TestGenerateReport:
         assert "In Progress:" in report
         assert "refactoring utils" in report
         assert "fixing SSL cert reuse" in report
+
+    def test_failed_missions_block_shown_for_target_date(self, tmp_path):
+        """Failed missions on the report date appear in a 'Failed missions:' block."""
+        yesterday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+        missions_file = tmp_path / "missions.md"
+        missions_file.write_text(
+            "# Missions\n\n"
+            "## Failed\n\n"
+            f"- [project:koan] exploded build ❌ ({yesterday} 21:16)\n"
+        )
+        with patch("app.daily_report.MISSIONS_FILE", missions_file), \
+             patch("app.daily_report.INSTANCE_DIR", tmp_path):
+            report = generate_report("morning")
+        assert "Failed missions:" in report
+        assert "exploded build" in report
+
+    def test_failed_missions_other_date_excluded(self, tmp_path):
+        """A failure from a different date must not appear in the recap."""
+        yesterday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+        missions_file = tmp_path / "missions.md"
+        missions_file.write_text(
+            "# Missions\n\n"
+            "## Failed\n\n"
+            f"- [project:koan] old crash ❌ (2025-01-01 10:00)\n"
+            f"- [project:koan] fresh crash ❌ ({yesterday} 21:16)\n"
+        )
+        with patch("app.daily_report.MISSIONS_FILE", missions_file), \
+             patch("app.daily_report.INSTANCE_DIR", tmp_path):
+            report = generate_report("morning")
+        assert "fresh crash" in report
+        assert "old crash" not in report
+
+    def test_failed_missions_capped_at_last_five(self, tmp_path):
+        """Only the last 5 failed missions are shown, newest first in the store."""
+        yesterday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+        lines = [f"- [project:koan] failure {i} ❌ ({yesterday} 10:0{i})\n" for i in range(6)]
+        missions_file = tmp_path / "missions.md"
+        missions_file.write_text("# Missions\n\n## Failed\n\n" + "".join(lines))
+        with patch("app.daily_report.MISSIONS_FILE", missions_file), \
+             patch("app.daily_report.INSTANCE_DIR", tmp_path):
+            report = generate_report("morning")
+        # 6 failures, last 5 shown: the first (oldest) is dropped
+        assert "failure 0" not in report
+        for i in range(1, 6):
+            assert f"failure {i}" in report
+
+    def test_no_failed_block_when_no_failures(self, tmp_path):
+        """The block is omitted entirely when the store has no failed missions."""
+        missions_file = tmp_path / "missions.md"
+        missions_file.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n")
+        with patch("app.daily_report.MISSIONS_FILE", missions_file), \
+             patch("app.daily_report.INSTANCE_DIR", tmp_path):
+            report = generate_report("evening")
+        assert "Failed missions:" not in report
 
 
 # ---------------------------------------------------------------------------
