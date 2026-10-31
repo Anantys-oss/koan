@@ -1200,6 +1200,7 @@ def _run_mission_verification(
     mission_title: str,
     exit_code: int,
     instance_dir: str,
+    project_name: str = "",
 ):
     """Run post-mission semantic verification.
 
@@ -1214,6 +1215,7 @@ def _run_mission_verification(
         mission_title=mission_title,
         exit_code=exit_code,
         branch_prefix=branch_prefix,
+        project_name=project_name,
     )
     # Log result to console
     print(f"[mission_runner] {format_verify_result(result)}")
@@ -2165,6 +2167,7 @@ def run_post_mission(
                 "verification",
                 _run_mission_verification,
                 project_path, mission_title, exit_code, instance_dir,
+                project_name,
                 pipeline_expired=_pipeline_expired,
             )
             if verify_result is not None:
