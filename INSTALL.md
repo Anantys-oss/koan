@@ -610,23 +610,21 @@ Or wrap your entire session:
 caffeinate -s make run
 ```
 
-The `-s` flag prevents system sleep even when the display is off. The display will still turn off normally (saving power), but the CPU keeps running.
+The `-s` flag prevents system sleep even when the display is off, but only on AC power (`man caffeinate`: "valid only when system is running on AC power"); on battery, use `caffeinate -i`. The display will still turn off normally (saving power), but the CPU keeps running.
 
 ### Using `pmset` (persistent)
 
 To make the setting survive reboots:
 
 ```bash
-# Disable sleep on AC power
+# Disable idle sleep on AC power
 sudo pmset -c sleep 0
-sudo pmset -c disablesleep 1
 ```
 
 To revert:
 
 ```bash
 sudo pmset -c sleep 10
-sudo pmset -c disablesleep 0
 ```
 
 ### macOS System Settings
@@ -634,6 +632,18 @@ sudo pmset -c disablesleep 0
 Alternatively: **System Settings → Energy → Prevent automatic sleeping when the display is off** — toggle ON.
 
 > **Tip:** `caffeinate -s` is the safest option — it only affects the current session and stops automatically when you kill it.
+
+### MacBook with the lid closed
+
+None of the options above keeps a MacBook awake with the lid closed: macOS sleeps on lid close unless power, an external display and a keyboard or mouse are connected (closed-display mode). Without a display, `disablesleep` keeps it running:
+
+```bash
+sudo pmset -a disablesleep 1     # no sleep at all, lid closed included
+pmset -g | grep SleepDisabled    # SleepDisabled 1 while it is on
+sudo pmset -a disablesleep 0     # back to normal sleep
+```
+
+`disablesleep` is a system-wide setting: it ignores `-c` and applies on battery too, and it stays on after a restart until you set it back to `0`. Keep the Mac plugged in and out of a bag while it is on.
 
 ## Environment Variables Reference
 
