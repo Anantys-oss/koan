@@ -23,6 +23,7 @@ from app.pr_submit import (
     guess_project_name,
     submit_draft_pr,
 )
+from skills.core.shared import build_footer
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +40,6 @@ _SUMMARY_RE = re.compile(
     r"pr_url:\s*(?P<pr_url>.+)\n"
     r"INCIDENT_SUMMARY_END",
 )
-
-
-def _build_footer() -> str:
-    from app.pr_footer import build_koan_footer
-    return build_koan_footer()
 
 
 def run_incident(
@@ -237,7 +233,7 @@ def _submit_incident_pr(
         f"## Incident Details\n\n"
         f"```\n{error_snippet}\n```\n\n"
         f"## Changes\n\n{commits_text}\n\n"
-        f"---\n{_build_footer()}"
+        f"---\n{build_footer()}"
     )
 
     try:

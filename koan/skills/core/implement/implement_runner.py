@@ -40,6 +40,7 @@ from app.pr_submit import (
 )
 from app.private_review_gate import format_gate_note, run_gate_for_skill
 from app.prompts import load_prompt_or_skill
+from skills.core.shared import build_footer
 
 logger = logging.getLogger(__name__)
 
@@ -63,11 +64,6 @@ _PLAN_MARKER_RE = re.compile(
     r"^#{2,}\s+(?:Implementation Phases|Phase \d+|Summary|Changes in this iteration)",
     re.MULTILINE | re.IGNORECASE,
 )
-
-
-def _build_footer() -> str:
-    from app.pr_footer import build_koan_footer
-    return build_koan_footer()
 
 
 def run_implement(
@@ -986,7 +982,7 @@ def _submit_implement_pr(
     pr_body = (
         f"## Summary\n\n{summary}\n\n"
         f"Closes {issue_url}\n\n"
-        f"---\n{_build_footer()}"
+        f"---\n{build_footer()}"
     )
 
     try:
@@ -996,7 +992,7 @@ def _submit_implement_pr(
             pr_body = (
                 f"{format_description(desc)}\n\n"
                 f"Closes {issue_url}\n\n"
-                f"---\n{_build_footer()}"
+                f"---\n{build_footer()}"
             )
     except Exception as e:
         logger.warning("describe_pr failed, using fallback body: %s", e)
