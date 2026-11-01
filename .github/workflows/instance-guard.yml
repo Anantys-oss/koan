@@ -3,6 +3,8 @@ name: 📁 Instance Guard
 # Fails a PR that tracks files where they must never live:
 #   • instance/                 — the private, gitignored runtime tree (force-added leak)
 #   • instance.example/skills/  — the fresh-instance template must stay skill-free
+#   • projects.yaml + backups   — live config with operator paths/private repos
+#                                 (only the projects.example.yaml template may be tracked)
 # Fast and dependency-free: checkout + stdlib Python only, no venv, no pip. See
 # scripts/instance_guard.py.
 #
@@ -30,5 +32,5 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: 📁 Check for leaked instance/ and instance.example/skills/ files
+      - name: 📁 Check for leaked instance/, instance.example/skills/ and projects.yaml files
         run: python3 scripts/instance_guard.py
