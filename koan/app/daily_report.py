@@ -99,12 +99,13 @@ def _extract_mission_title(line: str) -> Optional[str]:
     return text if text else None
 
 
-def _parse_completed_missions(target_date: Optional[date] = None) -> List[str]:
-    """Extract completed missions from missions.md.
+def _parse_missions_by_marker(marker: str, target_date: Optional[date] = None) -> List[str]:
+    """Extract mission titles from the store by lifecycle marker (✅ or ❌).
 
     Args:
-        target_date: If provided, only return missions completed on this date.
-                     If None, return all completed missions (legacy behavior).
+        marker: Completion marker emoji — "✅" (done) or "❌" (failed).
+        target_date: If provided, only return missions marked on this date.
+                     If None, return all matching missions (legacy behavior).
     """
     # The SQLite store is authoritative; missions.md is only a generated export.
     # Read the store directly rather than gating on the export file's presence —
@@ -113,21 +114,42 @@ def _parse_completed_missions(target_date: Optional[date] = None) -> List[str]:
     from app.mission_store.transition import read_sections
 
     sections = read_sections(MISSIONS_FILE.parent)
-    completed = []
-    for item in sections["done"]:
+    state = "done" if marker == "✅" else "failed"
+    titles = []
+    for item in sections.get(state, []):
         first_line = item.split("\n")[0]
 
         if target_date is not None:
-            # Filter by ✅ completion date
-            match = re.search(r"✅\s*\((\d{4}-\d{2}-\d{2})", first_line)
+            # Filter by the marker's timestamp date
+            match = re.search(re.escape(marker) + r"\s*\((\d{4}-\d{2}-\d{2})", first_line)
             if not match or match.group(1) != target_date.strftime("%Y-%m-%d"):
                 continue
 
         title = _extract_mission_title(first_line)
         if title:
-            completed.append(title)
+            titles.append(title)
 
-    return completed
+    return titles
+
+
+def _parse_completed_missions(target_date: Optional[date] = None) -> List[str]:
+    """Extract completed missions from missions.md.
+
+    Args:
+        target_date: If provided, only return missions completed on this date.
+                     If None, return all completed missions (legacy behavior).
+    """
+    return _parse_missions_by_marker("✅", target_date)
+
+
+def _parse_failed_missions(target_date: Optional[date] = None) -> List[str]:
+    """Extract failed missions from the store.
+
+    Args:
+        target_date: If provided, only return missions failed on this date.
+                     If None, return all failed missions.
+    """
+    return _parse_missions_by_marker("❌", target_date)
 
 
 def _count_pending_missions() -> int:
@@ -156,6 +178,7 @@ def generate_report(report_type: str = "morning") -> str:
 
     journal = _read_journal(target)
     completed = _parse_completed_missions(target_date=target)
+    failed = _parse_failed_missions(target_date=target)
     pending = _count_pending_missions()
 
     lines = [f"-- {header} --", ""]
@@ -164,6 +187,12 @@ def generate_report(report_type: str = "morning") -> str:
     if completed:
         lines.append("Completed missions:")
         lines.extend(f"  . {m}" for m in completed[-5:])
+        lines.append("")
+
+    # Failed missions
+    if failed:
+        lines.append("Failed missions:")
+        lines.extend(f"  . {m}" for m in failed[-5:])
         lines.append("")
 
     # Pending missions
