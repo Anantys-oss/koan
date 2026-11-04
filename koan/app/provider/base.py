@@ -76,6 +76,16 @@ PROVIDER_ERROR_EVENT_TYPES = {
 }
 
 
+def is_provider_error_type(event_type: Any) -> bool:
+    """True when *event_type* names a provider-level error event.
+
+    The single predicate for :data:`PROVIDER_ERROR_EVENT_TYPES`: JSONL
+    ``type`` values are normalized to ``str`` (a missing/None type is ``""``),
+    so callers never duplicate the membership test or the normalization.
+    """
+    return str(event_type or "") in PROVIDER_ERROR_EVENT_TYPES
+
+
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
