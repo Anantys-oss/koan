@@ -24,7 +24,7 @@ git checkout stable
 git pull origin stable
 ```
 
-See [docs/maint.md](docs/maint.md) for the release procedure and cadence philosophy.
+See [docs/operations/maint.md](docs/operations/maint.md) for the release procedure and cadence philosophy.
 
 ## Quick Start (Wizard)
 
