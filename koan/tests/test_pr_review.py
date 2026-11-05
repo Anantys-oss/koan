@@ -458,6 +458,16 @@ class TestDetectTestCommand:
         (tmp_path / "tests").mkdir()
         assert detect_test_command(str(tmp_path)) == "pytest"
 
+    def test_poetry_project(self, tmp_path):
+        # Regression (issue #2519): a bare `pytest` runs in Kōan's
+        # interpreter, where the project's dependencies are missing, so
+        # Poetry projects always report "Tests: failed (FAILED)".
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.poetry]\nname = "my-lib"\nversion = "0.1.0"\n'
+        )
+        (tmp_path / "tests").mkdir()
+        assert detect_test_command(str(tmp_path)) == "poetry run pytest"
+
     def test_python_with_makefile(self, tmp_path):
         (tmp_path / "Makefile").write_text("test:\n\tpytest\n")
         (tmp_path / "pyproject.toml").write_text("[tool.pytest]\n")
