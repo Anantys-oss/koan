@@ -358,7 +358,7 @@ class TestCheckPrCreated:
         mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
         result = check_pr_created("/project", "implement login")
         assert result.status == CheckStatus.FAIL
-        assert "ahead-count unavailable: git-error" in result.message
+        assert "ahead-count unavailable: git error" in result.message
         assert "keeping title-based FAIL" in capsys.readouterr().err
 
     @patch("app.mission_verifier.local_remote_default_branch")
