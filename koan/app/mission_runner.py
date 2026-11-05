@@ -1180,10 +1180,12 @@ def _apply_verify_requeue_signal(result: dict, verify_result, mission_title: str
     would make the re-queue unreachable. This only *signals*; the lifecycle
     transition happens in ``_finalize_mission``.
 
-    A ``pr_created`` FAIL is already behaviour-gated upstream — it cannot
-    fire without a Kōan branch, commits ahead of the base, and gh's positive
-    "no PR" answer — so it re-queues regardless of the mission title: the
-    title is exactly what the missing work is stranded behind. An empty
+    A ``pr_created`` FAIL is already behaviour-gated upstream — it fires on
+    a Kōan branch with commits ahead of the base and gh's positive "no PR"
+    answer, or (logged) as the pre-gate title-based fallback for a code
+    mission when the ahead-count cannot be observed — so it re-queues
+    regardless of the mission title: the title is exactly what the missing
+    work is stranded behind. An empty
     branch from ``check_diff_coherence`` is still only a failure for code
     missions: for an analysis / no-code mission it is the *expected*
     outcome, and re-queueing one would re-run it needlessly and emit false
