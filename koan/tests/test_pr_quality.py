@@ -672,6 +672,88 @@ class TestRunQualityPipeline:
         assert result["pr_enriched"] == "https://github.com/o/r/pull/1"
         assert result["gate_blocked"] is False
 
+    @patch("app.pr_quality.post_quality_comment")
+    @patch("app.pr_quality.enrich_pr_description")
+    @patch("app.pr_quality.validate_branch")
+    @patch("app.pr_quality.scan_changes")
+    @patch("app.pr_quality.run_git_strict")
+    def test_uses_configured_test_command(
+        self, mock_git, mock_scan, mock_branch, mock_enrich, mock_comment
+    ):
+        from app.pr_quality import run_quality_pipeline
+
+        mock_git.return_value = "koan/feature"
+        mock_scan.return_value = {"clean": True, "issues": []}
+        mock_branch.return_value = {"valid": True, "issues": []}
+        mock_enrich.return_value = None
+
+        with patch(
+            "app.pr_review.detect_test_command", return_value="make test"
+        ) as mock_detect, \
+             patch(
+            "app.claude_step.run_project_tests",
+            return_value={"passed": True, "output": "", "details": "OK"},
+        ) as mock_tests:
+            result = run_quality_pipeline(
+                "/project", "koan/", test_command="poetry run pytest"
+            )
+
+        assert result["tests"]["passed"] is True
+        mock_tests.assert_called_once()
+        assert mock_tests.call_args.kwargs["test_cmd"] == "poetry run pytest"
+        mock_detect.assert_not_called()
+
+    @patch("app.pr_quality.post_quality_comment")
+    @patch("app.pr_quality.enrich_pr_description")
+    @patch("app.pr_quality.validate_branch")
+    @patch("app.pr_quality.scan_changes")
+    @patch("app.pr_quality.run_git_strict")
+    def test_default_detection_and_timeout_when_no_override(
+        self, mock_git, mock_scan, mock_branch, mock_enrich, mock_comment
+    ):
+        from app.pr_quality import run_quality_pipeline
+
+        mock_git.return_value = "koan/feature"
+        mock_scan.return_value = {"clean": True, "issues": []}
+        mock_branch.return_value = {"valid": True, "issues": []}
+        mock_enrich.return_value = None
+
+        with patch(
+            "app.pr_review.detect_test_command", return_value="make test"
+        ), patch(
+            "app.claude_step.run_project_tests",
+            return_value={"passed": True, "output": "", "details": "OK"},
+        ) as mock_tests:
+            run_quality_pipeline("/project", "koan/")
+
+        assert mock_tests.call_args.kwargs["test_cmd"] == "make test"
+        assert mock_tests.call_args.kwargs["timeout"] == 120
+
+    @patch("app.pr_quality.post_quality_comment")
+    @patch("app.pr_quality.enrich_pr_description")
+    @patch("app.pr_quality.validate_branch")
+    @patch("app.pr_quality.scan_changes")
+    @patch("app.pr_quality.run_git_strict")
+    def test_custom_timeout_passed_to_test_run(
+        self, mock_git, mock_scan, mock_branch, mock_enrich, mock_comment
+    ):
+        from app.pr_quality import run_quality_pipeline
+
+        mock_git.return_value = "koan/feature"
+        mock_scan.return_value = {"clean": True, "issues": []}
+        mock_branch.return_value = {"valid": True, "issues": []}
+        mock_enrich.return_value = None
+
+        with patch(
+            "app.pr_review.detect_test_command", return_value="make test"
+        ), patch(
+            "app.claude_step.run_project_tests",
+            return_value={"passed": True, "output": "", "details": "OK"},
+        ) as mock_tests:
+            run_quality_pipeline("/project", "koan/", test_timeout=300)
+
+        assert mock_tests.call_args.kwargs["timeout"] == 300
+
     @patch("app.pr_quality.run_git_strict")
     def test_skips_wrong_prefix(self, mock_git):
         from app.pr_quality import run_quality_pipeline
@@ -883,6 +965,111 @@ class TestGetQualityGateMode:
 
         result = _get_quality_gate_mode("/tmp/instance", "test")
         assert result == "warn"
+
+
+class TestGetQualityTestSettings:
+    """Test _get_quality_test_settings (pr_quality.test_command / test_timeout)."""
+
+    @patch("app.projects_config.get_project_config")
+    @patch("app.projects_config.load_projects_config")
+    def test_returns_configured_settings(self, mock_load, mock_config):
+        from app.mission_runner import _get_quality_test_settings
+
+        mock_load.return_value = {"projects": {}}
+        mock_config.return_value = {
+            "pr_quality": {"test_command": "poetry run pytest", "test_timeout": 300},
+        }
+
+        command, timeout = _get_quality_test_settings("/tmp/instance", "test")
+        assert command == "poetry run pytest"
+        assert timeout == 300
+
+    @patch("app.projects_config.get_project_config")
+    @patch("app.projects_config.load_projects_config")
+    def test_defaults_without_config(self, mock_load, mock_config):
+        from app.mission_runner import _get_quality_test_settings
+
+        mock_load.return_value = {"projects": {}}
+        mock_config.return_value = {}
+
+        command, timeout = _get_quality_test_settings("/tmp/instance", "test")
+        assert command is None
+        assert timeout == 120
+
+    @patch("app.projects_config.get_project_config")
+    @patch("app.projects_config.load_projects_config")
+    def test_partial_settings(self, mock_load, mock_config):
+        from app.mission_runner import _get_quality_test_settings
+
+        mock_load.return_value = {"projects": {}}
+        mock_config.return_value = {"pr_quality": {"test_timeout": 60}}
+
+        command, timeout = _get_quality_test_settings("/tmp/instance", "test")
+        assert command is None
+        assert timeout == 60
+
+    @patch("app.projects_config.get_project_config")
+    @patch("app.projects_config.load_projects_config")
+    @pytest.mark.parametrize("settings", [
+        {"test_command": 42},                       # not a string
+        {"test_command": "   "},                    # blank
+        {"test_timeout": 0},                        # non-positive
+        {"test_timeout": -5},                       # negative
+        {"test_timeout": "120"},                    # not a number
+        {"test_timeout": True},                     # bool is not a valid duration
+    ])
+    def test_rejects_invalid_values(self, mock_load, mock_config, settings):
+        from app.mission_runner import _get_quality_test_settings
+
+        mock_load.return_value = {"projects": {}}
+        mock_config.return_value = {"pr_quality": settings}
+
+        command, timeout = _get_quality_test_settings("/tmp/instance", "test")
+        assert command is None
+        assert timeout == 120
+
+    def test_defaults_on_exception(self):
+        from app.mission_runner import _get_quality_test_settings
+
+        with patch("app.projects_config.load_projects_config", side_effect=Exception("fail")):
+            command, timeout = _get_quality_test_settings("/tmp/instance", "test")
+        assert command is None
+        assert timeout == 120
+
+    @patch("app.pr_quality.run_quality_pipeline")
+    def test_pipeline_forwards_configured_settings(self, mock_pipeline):
+        from app.mission_runner import _run_quality_pipeline
+
+        config = {
+            "projects": {"test": {"pr_quality": {
+                "gate": "strict",
+                "test_command": "tox",
+                "test_timeout": 300,
+            }}},
+        }
+        _run_quality_pipeline(
+            "/tmp/instance", "test", "/tmp/project", lambda s: None,
+            projects_config=config,
+        )
+
+        mock_pipeline.assert_called_once()
+        kwargs = mock_pipeline.call_args.kwargs
+        assert kwargs["test_command"] == "tox"
+        assert kwargs["test_timeout"] == 300
+        assert kwargs["gate_mode"] == "strict"
+
+    @patch("app.pr_quality.run_quality_pipeline")
+    def test_pipeline_forwards_defaults_without_config(self, mock_pipeline):
+        from app.mission_runner import _run_quality_pipeline
+
+        _run_quality_pipeline(
+            "/tmp/instance", "test", "/tmp/project", lambda s: None,
+            projects_config={"projects": {"test": {}}},
+        )
+
+        kwargs = mock_pipeline.call_args.kwargs
+        assert kwargs["test_command"] is None
+        assert kwargs["test_timeout"] == 120
 
 
 class TestCheckAutoMergeWithQuality:
