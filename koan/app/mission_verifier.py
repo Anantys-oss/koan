@@ -15,6 +15,7 @@ after Claude returns, providing independent validation before quality
 gates and auto-merge.
 """
 
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -100,16 +101,135 @@ def expects_tests(title: str) -> bool:
 # Individual verification checks
 # ---------------------------------------------------------------------------
 
-def _get_base_ref(project_path: str) -> Optional[str]:
-    """Determine the base ref for diffing."""
-    for ref in ("upstream/main", "origin/main", "upstream/master", "origin/master"):
+# Memo of (project_name, project_path, projects.yaml mtime) -> resolved
+# base branch. resolve_base_branch may reach for `git ls-remote` when the
+# local symbolic ref is unset; the four base-dependent checks would each
+# trigger that call otherwise. The mtime in the key (and in
+# load_projects_config's own cache) invalidates an entry when
+# projects.yaml is edited, so a base_branch change is picked up without a
+# process restart. main/master results are deliberately NOT cached:
+# resolve_base_branch falls back to a guessed "main" when detection fails
+# (network blip, unset refs/remotes/origin/HEAD), and caching that guess
+# would keep the configured-base fallback off until run.py restarts — the
+# silent no-op this module exists to catch.
+_base_branch_memo: dict = {}
+
+
+def _projects_yaml_mtime() -> Optional[float]:
+    """mtime of the active projects.yaml, or None when absent/unresolvable.
+
+    Feeds the memo key so config edits invalidate cached resolutions.
+    """
+    koan_root = os.environ.get("KOAN_ROOT", "")
+    if not koan_root:
+        return None
+    try:
+        from app.projects_config import resolve_projects_config_path
+
+        return resolve_projects_config_path(koan_root).stat().st_mtime
+    except OSError:
+        return None
+
+
+def _explicit_base_refs(project_name: str) -> List[str]:
+    """Refs for the operator's explicitly configured base branch.
+
+    Only the project entry's git_auto_merge.base_branch in projects.yaml
+    qualifies — a value the operator wrote is authoritative, so it is
+    probed before the well-known main/master refs. Returns [] for
+    main/master (already covered by those probes) and on any failure: the
+    verifier must never raise out of a check.
+    """
+    if not project_name:
+        return []
+    try:
+        from app.projects_config import get_explicit_base_branch
+
+        base = get_explicit_base_branch(project_name)
+    except Exception as e:
+        print(
+            f"[verifier] explicit base-branch lookup failed for "
+            f"{project_name!r}: {e}", file=sys.stderr
+        )
+        return []
+    if not base or base in ("main", "master"):
+        return []
+    return [f"upstream/{base}", f"origin/{base}"]
+
+
+def _configured_base_refs(project_name: str, project_path: str) -> List[str]:
+    """Candidate base refs from the project's configured base branch.
+
+    Returns [] when the project name is empty, the configured base is
+    main/master (already covered by the well-known refs), or resolution
+    fails — the verifier must never raise out of a check.
+    """
+    try:
+        from app.projects_config import resolve_base_branch
+
+        key = (project_name, project_path, _projects_yaml_mtime())
+        base = _base_branch_memo.get(key)
+        if base is None:
+            base = resolve_base_branch(project_name, project_path)
+            # Cache only real answers: main/master is also the fallback
+            # resolve_base_branch returns when detection fails, and
+            # caching that guess would freeze a transient failure for the
+            # process lifetime.
+            if base not in ("main", "master"):
+                _base_branch_memo[key] = base
+    except Exception as e:
+        print(
+            f"[verifier] base-branch resolution failed for "
+            f"{project_name!r}: {e}", file=sys.stderr
+        )
+        return []
+    if not base or base in ("main", "master"):
+        return []
+    return [f"upstream/{base}", f"origin/{base}"]
+
+
+def _get_base_ref(project_path: str, project_name: str = "") -> Optional[str]:
+    """Determine the base ref for diffing.
+
+    An explicitly configured base branch (the project entry's
+    git_auto_merge.base_branch) is probed first — the mission ran against
+    that base, so the diff must be taken against it even when the repo
+    also has a main/master. Well-known main/master refs come next, then
+    the detected/inherited base (defaults-section base_branch or the
+    remote's default branch) so projects on any other base branch are
+    verified too.
+    """
+    refs: List[str] = []
+    if project_name:
+        refs.extend(_explicit_base_refs(project_name))
+    refs.extend(("upstream/main", "origin/main", "upstream/master", "origin/master"))
+    if project_name:
+        refs.extend(
+            r for r in _configured_base_refs(project_name, project_path)
+            if r not in refs
+        )
+    for ref in refs:
         rc, _, _ = run_git("rev-parse", "--verify", ref, cwd=project_path)
         if rc == 0:
             return ref
     return None
 
 
-def check_diff_coherence(project_path: str, branch_prefix: str) -> Check:
+def _no_base_check(name: str, project_name: str) -> Check:
+    """'No base ref found' outcome for a base-dependent check.
+
+    WARN when a project name was supplied: resolution had everything it
+    needed and still found nothing, and format_verify_result drops SKIPs —
+    an invisible no-op gate is exactly the failure this module exists to
+    catch. Legacy callers without a project name keep the original SKIP.
+    """
+    status = CheckStatus.WARN if project_name else CheckStatus.SKIP
+    return Check(name, status, "No base ref found")
+
+
+def check_diff_coherence(
+    project_path: str, branch_prefix: str, project_name: str = ""
+) -> Check:
     """Verify the branch has meaningful changes (not empty or trivially small).
 
     An empty branch after a code mission is a strong signal of failure.
@@ -124,9 +244,9 @@ def check_diff_coherence(project_path: str, branch_prefix: str) -> Check:
     if not branch.startswith(branch_prefix):
         return Check("diff_coherence", CheckStatus.SKIP, f"Not on {branch_prefix}* branch")
 
-    base_ref = _get_base_ref(project_path)
+    base_ref = _get_base_ref(project_path, project_name)
     if not base_ref:
-        return Check("diff_coherence", CheckStatus.SKIP, "No base ref found")
+        return _no_base_check("diff_coherence", project_name)
 
     # Count changed files
     rc, diff_stat, _ = run_git(
@@ -159,7 +279,9 @@ def check_diff_coherence(project_path: str, branch_prefix: str) -> Check:
     )
 
 
-def check_test_coverage(project_path: str, mission_title: str) -> Check:
+def check_test_coverage(
+    project_path: str, mission_title: str, project_name: str = ""
+) -> Check:
     """Verify that test files were modified for missions that should have tests.
 
     Only checks if test files were touched in the diff — does not run tests.
@@ -170,9 +292,9 @@ def check_test_coverage(project_path: str, mission_title: str) -> Check:
             "Mission type does not typically require tests"
         )
 
-    base_ref = _get_base_ref(project_path)
+    base_ref = _get_base_ref(project_path, project_name)
     if not base_ref:
-        return Check("test_coverage", CheckStatus.SKIP, "No base ref found")
+        return _no_base_check("test_coverage", project_name)
 
     rc, changed_files, _ = run_git(
         "diff", "--name-only", f"{base_ref}...HEAD", cwd=project_path
@@ -282,7 +404,7 @@ def check_pr_created(
         return Check("pr_created", status, "No PR found for current branch")
 
 
-def check_commit_quality(project_path: str) -> Check:
+def check_commit_quality(project_path: str, project_name: str = "") -> Check:
     """Verify commit messages are clean and well-formed.
 
     Checks for:
@@ -290,9 +412,9 @@ def check_commit_quality(project_path: str) -> Check:
     - Leftover fixup/squash commits
     - Very short messages (< 10 chars)
     """
-    base_ref = _get_base_ref(project_path)
+    base_ref = _get_base_ref(project_path, project_name)
     if not base_ref:
-        return Check("commit_quality", CheckStatus.SKIP, "No base ref found")
+        return _no_base_check("commit_quality", project_name)
 
     rc, log_output, _ = run_git(
         "log", "--format=%s", f"{base_ref}..HEAD", cwd=project_path
@@ -324,7 +446,7 @@ def check_commit_quality(project_path: str) -> Check:
 
 
 def check_mission_alignment(
-    project_path: str, mission_title: str
+    project_path: str, mission_title: str, project_name: str = ""
 ) -> Check:
     """Heuristic check that changed files/commits relate to the mission title.
 
@@ -356,9 +478,9 @@ def check_mission_alignment(
             "No meaningful keywords in mission title"
         )
 
-    base_ref = _get_base_ref(project_path)
+    base_ref = _get_base_ref(project_path, project_name)
     if not base_ref:
-        return Check("mission_alignment", CheckStatus.SKIP, "No base ref found")
+        return _no_base_check("mission_alignment", project_name)
 
     # Get changed files and commit messages
     rc, changed_files, _ = run_git(
@@ -400,6 +522,7 @@ def verify_mission(
     mission_title: str = "",
     exit_code: int = 0,
     branch_prefix: str = "koan/",
+    project_name: str = "",
 ) -> VerifyResult:
     """Run the full post-mission verification pipeline.
 
@@ -408,6 +531,8 @@ def verify_mission(
         mission_title: Mission description (empty for autonomous sessions).
         exit_code: Claude CLI exit code.
         branch_prefix: Expected branch prefix.
+        project_name: Project name for base-branch resolution
+            (git_auto_merge.base_branch / remote default detection).
 
     Returns:
         VerifyResult with all check outcomes.
@@ -422,7 +547,9 @@ def verify_mission(
         ))
         # Still check diff coherence to see if partial work was done
         try:
-            checks.append(check_diff_coherence(project_path, branch_prefix))
+            checks.append(
+                check_diff_coherence(project_path, branch_prefix, project_name)
+            )
         except Exception as e:
             print(f"[verifier] diff_coherence failed: {e}", file=sys.stderr)
         result = VerifyResult(
@@ -436,11 +563,11 @@ def verify_mission(
     checks.append(Check("exit_code", CheckStatus.PASS, "Claude CLI exited successfully"))
 
     check_fns = [
-        lambda: check_diff_coherence(project_path, branch_prefix),
-        lambda: check_test_coverage(project_path, mission_title),
+        lambda: check_diff_coherence(project_path, branch_prefix, project_name),
+        lambda: check_test_coverage(project_path, mission_title, project_name),
         lambda: check_pr_created(project_path, mission_title, branch_prefix),
-        lambda: check_commit_quality(project_path),
-        lambda: check_mission_alignment(project_path, mission_title),
+        lambda: check_commit_quality(project_path, project_name),
+        lambda: check_mission_alignment(project_path, mission_title, project_name),
     ]
 
     for fn in check_fns:
