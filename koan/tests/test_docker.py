@@ -679,3 +679,54 @@ class TestImageCleanGuard:
         wf = (REPO_ROOT / ".github" / "workflows" / "docker-publish.yml").read_text()
         assert "verify_image_clean.sh" in wf, \
             "docker-publish.yml does not invoke the image guard"
+
+
+class TestDevImagePublishing:
+    """Every push to main must publish a commit-traceable GHCR image (#2529)."""
+
+    WORKFLOWS = REPO_ROOT / ".github" / "workflows"
+
+    @staticmethod
+    def _load(path):
+        import yaml
+
+        wf = yaml.safe_load(path.read_text())
+        # PyYAML (YAML 1.1) parses the bare `on:` key as boolean True.
+        wf["on"] = wf.pop(True, wf.get("on")) or {}
+        return wf
+
+    def _main_push_publish_jobs(self):
+        for path in sorted(self.WORKFLOWS.glob("*.yml")):
+            wf = self._load(path)
+            push = wf["on"].get("push") if isinstance(wf["on"], dict) else None
+            if not push or "main" not in (push.get("branches") or []):
+                continue
+            for job in (wf.get("jobs") or {}).values():
+                if job.get("uses") == "./.github/workflows/docker-publish.yml":
+                    yield path, wf, job
+
+    def test_push_to_main_publishes_sha_tagged_image(self):
+        tags = [
+            job["with"]["tags"] for _, _, job in self._main_push_publish_jobs()
+        ]
+        assert any("type=sha" in t for t in tags), (
+            "no workflow publishes a git-sha-tagged image on push to main"
+        )
+
+    def test_main_push_never_mints_release_tags(self):
+        reserved = re.compile(
+            r"type=semver|value=(stable|latest)\b|value=v?\d+(\.\d+){1,2}\b"
+        )
+        for path, _, job in self._main_push_publish_jobs():
+            assert not reserved.search(job["with"]["tags"]), (
+                f"{path.name} mints a release-owned tag on push to main"
+            )
+
+    def test_main_push_cancels_superseded_builds(self):
+        jobs = list(self._main_push_publish_jobs())
+        assert jobs, "no workflow publishes an image on push to main"
+        for path, wf, _ in jobs:
+            concurrency = wf.get("concurrency") or {}
+            assert concurrency.get("cancel-in-progress") is True, (
+                f"{path.name} lets stale main builds overwrite :devel"
+            )
