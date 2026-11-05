@@ -15,7 +15,7 @@ and `/gha_audit`, so a `CRITICAL` finding looks the same in every skill.
 | Tier | Emoji | Heading (`/review` only) |
 |------|-------|--------------------------|
 | `critical` | 🔴 | Blocking |
-| `high` | 🟠 | High Priority (no current caller) |
+| `high` | 🟠 | — |
 | `medium` | 🟡 | Important |
 | `low` | 🟢 | Suggestions |
 

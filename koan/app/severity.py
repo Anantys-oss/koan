@@ -9,8 +9,6 @@ and audit's effort scheme (_EFFORT_LABELS) — different axes.
 """
 from __future__ import annotations
 
-CANONICAL_SEVERITIES = ("critical", "high", "medium", "low")
-
 SEVERITY_EMOJI = {
     "critical": "🔴",
     "high": "🟠",
@@ -18,16 +16,17 @@ SEVERITY_EMOJI = {
     "low": "🟢",
 }
 
+CANONICAL_SEVERITIES = tuple(SEVERITY_EMOJI)
+
 # review's warning→medium (🟡) and suggestion→low (🟢) keep its rendering exact.
 SEVERITY_ALIASES = {
     "warning": "medium",
     "suggestion": "low",
 }
 
-# Consumed by /review only; 'high' has no current caller.
+# Consumed by /review only.
 SEVERITY_HEADING = {
     "critical": "Blocking",
-    "high": "High Priority",
     "medium": "Important",
     "low": "Suggestions",
 }

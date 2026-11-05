@@ -2449,6 +2449,9 @@ def _fix_nested_fences(text: str) -> str:
     return "\n".join(result)
 
 
+# review's 3-tier severity contract, in render order.
+_REVIEW_SEVERITIES = ("critical", "warning", "suggestion")
+
 # Posted to the PR when the model's output cannot be parsed into the structured
 # review format. A short placeholder is posted instead of raw narration / JSON.
 _UNPARSEABLE_REVIEW_NOTICE = (
@@ -2678,14 +2681,14 @@ def _format_review_as_markdown(
     index_to_label: dict = {}
     finding_id_by_index: dict = {}
     next_finding_id = 1
-    for sev in ("critical", "warning", "suggestion"):
+    for sev in _REVIEW_SEVERITIES:
         for idx, _item in by_severity.get(sev, []):
             finding_id_by_index[idx] = next_finding_id
             index_to_label[idx] = f"{sev} #{next_finding_id}"
             next_finding_id += 1
 
     # Emit severity sections (skip empty ones)
-    for sev in ("critical", "warning", "suggestion"):
+    for sev in _REVIEW_SEVERITIES:
         items = by_severity.get(sev, [])
         if not items:
             continue
@@ -2756,7 +2759,7 @@ def _format_review_as_markdown(
 
     # Severity filter hint — only show when there are findings at multiple
     # severity levels so the hint is actually useful.
-    severity_count = sum(1 for s in ("critical", "warning", "suggestion") if by_severity.get(s))
+    severity_count = sum(1 for s in _REVIEW_SEVERITIES if by_severity.get(s))
     if severity_count > 1:
         lines.append("")
         lines.append("---")
@@ -3149,7 +3152,7 @@ def _format_inline_finding_body(item: dict) -> str:
     title header, then the full comment, then the code snippet (if any).
     """
     sev = item.get("severity", "suggestion")
-    if sev not in ("critical", "warning", "suggestion"):
+    if sev not in _REVIEW_SEVERITIES:
         sev = "suggestion"
     emoji = severity_emoji(sev)
     heading = severity_heading(sev)
