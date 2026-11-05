@@ -35,6 +35,7 @@ from app.constants import (
     TIMEOUT_ALERT_THRESHOLD as _TIMEOUT_ALERT_THRESHOLD,
     TIMEOUT_ALERT_WINDOW as _TIMEOUT_ALERT_WINDOW,
 )
+from app.instance_leak_rules import classify as _classify_leak
 from app.run_log import log_safe as _log_runner, suppress_logged
 
 
@@ -2401,8 +2402,77 @@ def run_post_mission(
         _deadline_timer.cancel()
 
 
+def _staged_changes(instance_dir: str) -> List[Tuple[str, str, Optional[str]]]:
+    """Staged changes as ``(status, path[, new_path])`` entries.
+
+    ``--name-status -z``: NUL-separated so non-ASCII names arrive unquoted —
+    line-oriented git output C-quotes them (core.quotePath) and the path-based
+    leak rules would miss a quoted name. Renames/copies carry their source as
+    the third field. Raises RuntimeError on git failure (fail closed).
+    """
+    from app.git_utils import run_git as run_git_rc
+
+    rc, out, err = run_git_rc(
+        "diff", "--cached", "--name-status", "-z", cwd=instance_dir, timeout=10
+    )
+    if rc != 0:
+        raise RuntimeError(f"could not read staged changes: {err}")
+    entries: List[Tuple[str, str, Optional[str]]] = []
+    tokens = [t for t in out.split("\0") if t]
+    i = 0
+    while i < len(tokens):
+        status, path = tokens[i], tokens[i + 1]
+        i += 2
+        if status[:1] in ("R", "C"):
+            entries.append((status, path, tokens[i]))
+            i += 1
+        else:
+            entries.append((status, path, None))
+    return entries
+
+
+def _block_leaking_paths(
+    instance_dir: str, changes: List[Tuple[str, str, Optional[str]]]
+) -> Tuple[List[Tuple[str, str, Optional[str]]], List[str]]:
+    """Unstage staged changes that would track a leaking path.
+
+    Returns ``(remaining, blocked)``: the changes that may still be committed,
+    and the blocked leak paths for the operator message. A staged *deletion*
+    of a leaking path is allowed through — unstaging it would resurrect the
+    tracked entry and strand the leak on the remote forever. Raises
+    RuntimeError when unstaging fails, so commit_instance blocks the whole
+    commit rather than risk pushing a leak.
+    """
+    blocked_entries: set = set()
+    for entry in changes:
+        status, path, new_path = entry
+        if status[:1] == "D":
+            continue  # removing a tracked leak is cleanup, never blocked
+        target = new_path if status[:1] in ("R", "C") else path
+        if target is not None and _classify_leak(target) is not None:
+            blocked_entries.add(entry)
+    if not blocked_entries:
+        return list(changes), []
+    from app.git_utils import run_git as run_git_rc
+
+    reset_paths = [p for e in blocked_entries for p in e[1:] if p]
+    rc, _out, err = run_git_rc("reset", "--", *reset_paths, cwd=instance_dir, timeout=10)
+    if rc != 0:
+        raise RuntimeError(f"could not unstage leaking paths {reset_paths}: {err}")
+    blocked = [
+        (e[2] if e[0][:1] in ("R", "C") else e[1]) for e in sorted(blocked_entries)
+    ]
+    return [e for e in changes if e not in blocked_entries], blocked
+
+
 def commit_instance(instance_dir: str, message: str = "") -> bool:
     """Commit and push instance directory changes.
+
+    Pre-push leak gate: staged changes that would track a path the instance
+    leak rules classify as a leak (app.instance_leak_rules, shared with the
+    post-push CI guard in scripts/instance_guard.py) are unstaged before the
+    commit, so they are neither committed nor pushed. Deletions of leaking
+    paths are allowed through so a tracked leak can be cleaned up.
 
     Args:
         instance_dir: Path to instance directory.
@@ -2416,10 +2486,19 @@ def commit_instance(instance_dir: str, message: str = "") -> bool:
 
         run_git(instance_dir, "add", "-A")
 
-        # Check if there are staged changes
-        status = run_git(instance_dir, "diff", "--cached", "--name-only")
-        if not status:
+        # Pre-push leak gate: refuse to commit+push private paths.
+        staged = _staged_changes(instance_dir)
+        if not staged:
             return False  # No changes
+        remaining, blocked = _block_leaking_paths(instance_dir, staged)
+        if blocked:
+            print(
+                "[commit_instance] Blocked leaking path(s) from commit+push: "
+                + ", ".join(blocked),
+                file=sys.stderr,
+            )
+        if not remaining:
+            return False  # everything staged was a leak — nothing committed
 
         if not message:
             message = f"koan: {datetime.now().strftime('%Y-%m-%d-%H:%M')}"

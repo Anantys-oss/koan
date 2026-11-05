@@ -1010,119 +1010,134 @@ class TestRunPostMissionKoanRoot:
 
 
 class TestCommitInstance:
-    """Test commit_instance function."""
+    """Test commit_instance function.
 
+    commit_instance drives two git helpers and both must be patched:
+    ``app.git_sync.run_git`` (string-returning, used for add/commit/
+    rev-parse/push) and ``app.git_utils.run_git`` (returns ``(rc, out,
+    err)``, used by the pre-push leak gate to read staged changes with
+    ``diff --cached --name-status -z`` — it needs the rc to fail closed).
+    """
+
+    @patch("app.git_utils.run_git")
     @patch("app.git_sync.run_git")
-    def test_commits_and_pushes_when_changes(self, mock_git, tmp_path):
+    def test_commits_and_pushes_when_changes(self, mock_git, mock_git_rc, tmp_path):
         from app.mission_runner import commit_instance
 
-        # run_git calls: add -A, diff --cached --name-only, commit, rev-parse, push
+        # git_sync.run_git calls: add -A, commit, rev-parse, push
         mock_git.side_effect = [
-            "",                    # git add -A (no output)
-            "file1.md\nfile2.md",  # git diff --cached --name-only (has changes)
-            "",                    # git commit
-            "main",                # git rev-parse --abbrev-ref HEAD
-            "",                    # git push origin main
+            "",        # git add -A (no output)
+            "",        # git commit
+            "main",    # git rev-parse --abbrev-ref HEAD
+            "",        # git push origin main
         ]
+        # git_utils.run_git: diff --cached --name-status -z (has changes)
+        mock_git_rc.return_value = (0, "A\0file1.md\0A\0file2.md\0", "")
 
         result = commit_instance(str(tmp_path))
         assert result is True
-        assert mock_git.call_count == 5
+        assert mock_git.call_count == 4
 
+    @patch("app.git_utils.run_git")
     @patch("app.git_sync.run_git")
-    def test_returns_false_when_no_changes(self, mock_git, tmp_path):
+    def test_returns_false_when_no_changes(self, mock_git, mock_git_rc, tmp_path):
         from app.mission_runner import commit_instance
 
         mock_git.side_effect = [
             "",   # git add -A
-            "",   # git diff --cached --name-only (no changes → empty string)
         ]
+        # diff --cached --name-status -z (no changes → empty output)
+        mock_git_rc.return_value = (0, "", "")
 
         result = commit_instance(str(tmp_path))
         assert result is False
-        assert mock_git.call_count == 2
+        assert mock_git.call_count == 1
 
-
+    @patch("app.git_utils.run_git")
     @patch("app.git_sync.run_git")
-    def test_pushes_to_current_branch_not_hardcoded_main(self, mock_git, tmp_path):
+    def test_pushes_to_current_branch_not_hardcoded_main(self, mock_git, mock_git_rc, tmp_path):
         """commit_instance should detect and push to the current branch."""
         from app.mission_runner import commit_instance
 
-        # run_git calls: add -A, diff, commit, rev-parse, push
+        # git_sync.run_git calls: add -A, commit, rev-parse, push
         mock_git.side_effect = [
-            "",                    # git add -A
-            "file1.md",            # git diff --cached --name-only
-            "",                    # git commit
-            "develop",             # git rev-parse --abbrev-ref HEAD
-            "",                    # git push origin develop
+            "",        # git add -A
+            "",        # git commit
+            "develop", # git rev-parse --abbrev-ref HEAD
+            "",        # git push origin develop
         ]
+        mock_git_rc.return_value = (0, "A\0file1.md\0", "")
 
         result = commit_instance(str(tmp_path))
         assert result is True
-        assert mock_git.call_count == 5
+        assert mock_git.call_count == 4
         # Verify push uses detected branch, not "main"
-        push_call = mock_git.call_args_list[4]
+        push_call = mock_git.call_args_list[3]
         assert push_call[0] == (str(tmp_path), "push", "origin", "develop")
 
+    @patch("app.git_utils.run_git")
     @patch("app.git_sync.run_git")
-    def test_skips_push_on_empty_branch(self, mock_git, tmp_path):
+    def test_skips_push_on_empty_branch(self, mock_git, mock_git_rc, tmp_path):
         """If rev-parse returns empty, skip push instead of pushing to main."""
         from app.mission_runner import commit_instance
 
         mock_git.side_effect = [
-            "",          # git add -A
-            "changes",   # git diff --cached --name-only
-            "",          # git commit
-            "",          # git rev-parse --abbrev-ref HEAD (empty)
+            "",   # git add -A
+            "",   # git commit
+            "",   # git rev-parse --abbrev-ref HEAD (empty)
         ]
+        mock_git_rc.return_value = (0, "A\0changes\0", "")
 
         result = commit_instance(str(tmp_path))
         assert result is True
-        # Should NOT have called push (only 4 git calls, not 5)
-        assert mock_git.call_count == 4
+        # Should NOT have called push (only 3 git calls, not 4)
+        assert mock_git.call_count == 3
 
+    @patch("app.git_utils.run_git")
     @patch("app.git_sync.run_git")
-    def test_skips_push_on_detached_head(self, mock_git, tmp_path):
+    def test_skips_push_on_detached_head(self, mock_git, mock_git_rc, tmp_path):
         """If rev-parse returns 'HEAD' (detached), skip push."""
         from app.mission_runner import commit_instance
 
         mock_git.side_effect = [
-            "",          # git add -A
-            "changes",   # git diff --cached --name-only
-            "",          # git commit
-            "HEAD",      # git rev-parse --abbrev-ref HEAD (detached)
+            "",     # git add -A
+            "",     # git commit
+            "HEAD", # git rev-parse --abbrev-ref HEAD (detached)
         ]
+        mock_git_rc.return_value = (0, "A\0changes\0", "")
 
         result = commit_instance(str(tmp_path))
         assert result is True
-        assert mock_git.call_count == 4
+        assert mock_git.call_count == 3
 
+    @patch("app.git_utils.run_git")
     @patch("app.git_sync.run_git")
-    def test_returns_false_on_push_failure(self, mock_git, tmp_path):
+    def test_returns_false_on_push_failure(self, mock_git, mock_git_rc, tmp_path):
         """If git push raises, commit_instance returns False gracefully."""
         from app.mission_runner import commit_instance
 
         mock_git.side_effect = [
-            "",          # git add -A
-            "changes",   # git diff --cached --name-only
-            "",          # git commit
-            "main",      # git rev-parse --abbrev-ref HEAD
-            Exception("network error"),  # git push fails
+            "",                         # git add -A
+            "",                         # git commit
+            "main",                     # git rev-parse --abbrev-ref HEAD
+            Exception("network error"), # git push fails
         ]
+        mock_git_rc.return_value = (0, "A\0changes\0", "")
 
         result = commit_instance(str(tmp_path))
         assert result is False
 
+    @patch("app.git_utils.run_git")
     @patch("app.git_sync.run_git")
-    def test_returns_false_on_commit_failure(self, mock_git, tmp_path):
+    def test_returns_false_on_commit_failure(self, mock_git, mock_git_rc, tmp_path):
         """If git commit raises, commit_instance returns False gracefully."""
         from app.mission_runner import commit_instance
 
         mock_git.side_effect = [
-            "",          # git add -A
-            "changes",   # git diff --cached --name-only
-            Exception("commit failed"),  # git commit raises
+            "",                         # git add -A
+            Exception("commit failed"), # git commit raises
         ]
+        mock_git_rc.return_value = (0, "A\0changes\0", "")
 
         result = commit_instance(str(tmp_path))
         assert result is False
@@ -2372,42 +2387,44 @@ class TestCheckAutoMergeBranchPrefix:
 class TestCommitInstanceEdgeCases:
     """Additional edge cases for commit_instance."""
 
+    @patch("app.git_utils.run_git")
     @patch("app.git_sync.run_git")
-    def test_commit_message_includes_timestamp(self, mock_git, tmp_path):
+    def test_commit_message_includes_timestamp(self, mock_git, mock_git_rc, tmp_path):
         """Commit message should contain 'koan:' prefix and date-time."""
         from app.mission_runner import commit_instance
 
         mock_git.side_effect = [
-            "",          # git add -A
-            "changes",   # git diff --cached --name-only
-            "",          # git commit
-            "main",      # git rev-parse
-            "",          # git push
+            "",   # git add -A
+            "",   # git commit
+            "main",  # git rev-parse
+            "",   # git push
         ]
+        mock_git_rc.return_value = (0, "A\0changes\0", "")
 
         commit_instance(str(tmp_path))
-        commit_call = mock_git.call_args_list[2]
+        commit_call = mock_git.call_args_list[1]
         commit_msg = commit_call[0][3]  # 4th positional arg to run_git
         assert commit_msg.startswith("koan: ")
         # Should contain date format YYYY-MM-DD
         import re
         assert re.search(r"\d{4}-\d{2}-\d{2}", commit_msg)
 
+    @patch("app.git_utils.run_git")
     @patch("app.git_sync.run_git")
-    def test_custom_message_used_when_provided(self, mock_git, tmp_path):
+    def test_custom_message_used_when_provided(self, mock_git, mock_git_rc, tmp_path):
         """Custom message overrides the default timestamp message."""
         from app.mission_runner import commit_instance
 
         mock_git.side_effect = [
-            "",          # git add -A
-            "changes",   # git diff --cached --name-only
-            "",          # git commit
-            "main",      # git rev-parse
-            "",          # git push
+            "",   # git add -A
+            "",   # git commit
+            "main",  # git rev-parse
+            "",   # git push
         ]
+        mock_git_rc.return_value = (0, "A\0changes\0", "")
 
         commit_instance(str(tmp_path), "koan: quota exhausted 2026-03-07-17:00")
-        commit_call = mock_git.call_args_list[2]
+        commit_call = mock_git.call_args_list[1]
         commit_msg = commit_call[0][3]
         assert commit_msg == "koan: quota exhausted 2026-03-07-17:00"
 
