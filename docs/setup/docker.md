@@ -106,8 +106,9 @@ make docker-pull-up
 > ```
 >
 > The **🐳 Publish Container** workflow (repo Actions → "Run workflow") remains for
-> on-demand images from `main` or `incubating` with a custom tag (default `devel`);
-> it pushes **only** the requested tag.
+> on-demand images from `main` or `incubating` with a custom tag (default `test`);
+> it pushes **only** the requested tag. `devel` is reserved for the automatic
+> workflow there, alongside the release-owned `stable` / `latest` / semver tags.
 
 > **UID/GID on the prebuilt image.** The published image runs as UID/GID
 > **1000**. On Linux hosts whose user isn't 1000, bind-mounted `instance/` and
@@ -225,10 +226,11 @@ if they shipped, a CLI session whose `cwd` fell inside the image's `/app` checko
 could auto-load them (the leak class addressed at runtime by isolating session
 `cwd`). Excluding them removes the material from the artifact entirely.
 
-This is enforced at build time: `docker-publish.yml` (the shared build/push
-workflow behind the release, dev, and manual-publish flows) runs
-`scripts/verify_image_clean.sh` against the freshly built image and fails the
-build if any of that tooling is found under `/app`. See issue #2383.
+`scripts/verify_image_clean.sh` checks a freshly built image and fails if any of
+that tooling is found under `/app`. It is **not yet wired** into
+`docker-publish.yml` (the shared build/push workflow behind the release, dev, and
+manual-publish flows), so published images currently rely on `.dockerignore`
+alone. Wiring it in is tracked in issue #2383.
 
 ### Recommended dev packages
 

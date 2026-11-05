@@ -730,3 +730,20 @@ class TestDevImagePublishing:
             assert concurrency.get("cancel-in-progress") is True, (
                 f"{path.name} lets stale main builds overwrite :devel"
             )
+
+    def test_manual_publish_cannot_overwrite_devel(self):
+        """`devel` is owned by the main-push workflow; a manual dispatch from
+        another tree would make it regress (#2529)."""
+        for path in sorted(self.WORKFLOWS.glob("*.yml")):
+            wf = self._load(path)
+            on = wf["on"] if isinstance(wf["on"], dict) else {}
+            dispatch = on.get("workflow_dispatch") or {}
+            tag_input = (dispatch.get("inputs") or {}).get("tag") or {}
+            assert tag_input.get("default") != "devel", (
+                f"{path.name} defaults a manual publish to the main-owned :devel tag"
+            )
+        manual = (self.WORKFLOWS / "publish-container.yml").read_text()
+        reserved = re.search(r"grep -qE '(\^\([^']*)'", manual.split("Validate tag", 1)[1])
+        assert reserved and "devel" in reserved.group(1).split("|"), (
+            "publish-container.yml does not reserve the devel tag"
+        )
