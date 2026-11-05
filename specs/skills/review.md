@@ -323,7 +323,7 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   funnel that adds a literal output contract MUST extend that carve-out.
 - **Renderer-owned scaffolding stays English, deliberately.** The strings Python
   itself emits around that prose are structure, not conversation, and are **not**
-  localized: the `## PR Review` heading it builds, the `_SEVERITY_HEADING` tier
+  localized: the `## PR Review` heading it builds, the `app.severity.SEVERITY_HEADING` tier
   names (`Blocking`/`Important`/`Suggestions`), and the verdict line. A stable
   heading is what lets a human scan any PR the same way, so a non-English
   preference yields English scaffolding around translated prose, by design.
