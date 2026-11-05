@@ -1,6 +1,8 @@
 name: 🐳 Publish Container
 
 # Manual image publishing for non-release tags (devel builds, test images).
+# Pushes to main already publish sha-<commit> + devel automatically via
+# publish-dev-container.yml; use this for other refs/tags on demand.
 # Pick the source branch with the workflow_dispatch ref selector (main or
 # incubating only) and the image tag via the input. Release-owned tags
 # (stable, latest, vX.Y semver) are banned here — they are minted exclusively
