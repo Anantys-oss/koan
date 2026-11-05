@@ -2911,7 +2911,7 @@ def _cli_runtime_auth_signal(
     if exit_code == 0 or not stdout_text or not provider_name:
         return False
 
-    from app.provider.base import PROVIDER_ERROR_EVENT_TYPES
+    from app.provider.base import is_provider_error_type
 
     runtime_lines: list[str] = []
     for line in stdout_text.splitlines():
@@ -2925,9 +2925,8 @@ def _cli_runtime_auth_signal(
             continue
         with contextlib.suppress(json.JSONDecodeError):
             event = json.loads(stripped)
-            if (
-                isinstance(event, dict)
-                and str(event.get("type") or "") in PROVIDER_ERROR_EVENT_TYPES
+            if isinstance(event, dict) and is_provider_error_type(
+                event.get("type")
             ):
                 runtime_lines.append(stripped)
 

@@ -2039,6 +2039,222 @@ class TestFormatCliError:
 
 
 # ---------------------------------------------------------------------------
+# is_provider_error_type
+# ---------------------------------------------------------------------------
+
+
+class TestIsProviderErrorType:
+    """Predicate for JSONL event types that signal a provider error.
+
+    Single source of truth for what counts as a provider error event —
+    shared by error-preview extraction and runtime auth/quota detection so
+    the recognized set stays in sync across modules (issue #2342).
+    """
+
+    def test_all_registered_error_types(self):
+        from app.provider.base import PROVIDER_ERROR_EVENT_TYPES
+        from app.provider.base import is_provider_error_type
+
+        assert PROVIDER_ERROR_EVENT_TYPES, "set must not be empty"
+        for etype in PROVIDER_ERROR_EVENT_TYPES:
+            assert is_provider_error_type(etype) is True
+
+    def test_non_error_types(self):
+        from app.provider.base import is_provider_error_type
+
+        for etype in (
+            "result",
+            "context_overflow",
+            "system",
+            "assistant",
+            "turn.completed",
+            "",
+        ):
+            assert is_provider_error_type(etype) is False
+
+    def test_non_string_and_none(self):
+        from app.provider.base import is_provider_error_type
+
+        assert is_provider_error_type(None) is False
+        assert is_provider_error_type(42) is False
+
+
+# ---------------------------------------------------------------------------
+# _extract_provider_error_preview
+# ---------------------------------------------------------------------------
+
+
+def _events(*objs) -> str:
+    """JSONL: one JSON document per line."""
+    return "\n".join(json.dumps(o) for o in objs)
+
+
+class TestExtractProviderErrorPreview:
+    """Behavioral parity for JSONL provider error preview extraction.
+
+    Pins the observable contract of the scan: the last non-empty preview
+    wins, unrecognized event types are ignored, and extraction is
+    shape-keyed (no provider-name checks). The extractor-dispatch refactor
+    (issue #2342) must keep all of these green.
+    """
+
+    def test_empty_and_non_json_stdout(self):
+        from app.provider import _extract_provider_error_preview
+
+        assert _extract_provider_error_preview("") == ""
+        assert _extract_provider_error_preview(None) == ""
+        assert (
+            _extract_provider_error_preview("plain text line\n{broken json")
+            == ""
+        )
+        assert _extract_provider_error_preview(_events([1, 2], "str", 42)) == ""
+
+    def test_ignores_non_error_event_types(self):
+        from app.provider import _extract_provider_error_preview
+
+        assert _extract_provider_error_preview(
+            _events(
+                {"type": "thread.started"},
+                {"type": "system", "message": "noise"},
+                {"type": None, "message": "noise"},
+                {"type": "turn.failed"},
+            )
+        ) == ""
+
+    def test_error_event_message(self):
+        from app.provider import _extract_provider_error_preview
+
+        assert (
+            _extract_provider_error_preview(
+                _events({"type": "error", "message": "  boom  "})
+            )
+            == "boom"
+        )
+
+    def test_error_event_falls_back_to_nested_error_message(self):
+        from app.provider import _extract_provider_error_preview
+
+        assert (
+            _extract_provider_error_preview(
+                _events({"type": "turn.failed", "error": {"message": "nested"}})
+            )
+            == "nested"
+        )
+
+    def test_blank_message_falls_back_to_nested_error(self):
+        from app.provider import _extract_provider_error_preview
+
+        assert (
+            _extract_provider_error_preview(
+                _events(
+                    {
+                        "type": "response.failed",
+                        "message": "   ",
+                        "error": {"message": "fallback"},
+                    }
+                )
+            )
+            == "fallback"
+        )
+
+    def test_failed_result_envelope_carries_preview(self):
+        from app.provider import _extract_provider_error_preview
+
+        for status in ("failed", "aborted", "FAILED"):
+            assert (
+                _extract_provider_error_preview(
+                    _events(
+                        {"type": "result", "status": status, "result": "oops"}
+                    )
+                )
+                == "oops"
+            )
+
+    def test_successful_result_envelope_is_not_an_error(self):
+        from app.provider import _extract_provider_error_preview
+
+        assert (
+            _extract_provider_error_preview(
+                _events(
+                    {"type": "result", "status": "success", "result": "done"}
+                )
+            )
+            == ""
+        )
+
+    def test_result_envelope_non_string_result_ignored(self):
+        from app.provider import _extract_provider_error_preview
+
+        assert (
+            _extract_provider_error_preview(
+                _events({"type": "result", "status": "failed", "result": 123})
+            )
+            == ""
+        )
+
+    def test_fatal_context_overflow_carries_preview(self):
+        from app.provider import _extract_provider_error_preview
+
+        assert (
+            _extract_provider_error_preview(
+                _events(
+                    {
+                        "type": "context_overflow",
+                        "recovered": False,
+                        "error": "ctx oom",
+                    }
+                )
+            )
+            == "ctx oom"
+        )
+
+    def test_recovered_context_overflow_is_not_an_error(self):
+        from app.provider import _extract_provider_error_preview
+
+        assert (
+            _extract_provider_error_preview(
+                _events(
+                    {
+                        "type": "context_overflow",
+                        "recovered": True,
+                        "error": "ctx oom",
+                    }
+                )
+            )
+            == ""
+        )
+
+    def test_last_non_empty_preview_wins(self):
+        from app.provider import _extract_provider_error_preview
+
+        assert (
+            _extract_provider_error_preview(
+                _events(
+                    {"type": "error", "message": "first"},
+                    {"type": "result", "status": "failed", "result": "second"},
+                    {"type": "task.failed"},
+                    {"type": "error", "message": "third"},
+                )
+            )
+            == "third"
+        )
+
+    def test_preview_survives_surrounding_noise(self):
+        from app.provider import _extract_provider_error_preview
+
+        stdout = "\n".join(
+            [
+                "",
+                "warning: not json",
+                json.dumps({"type": "error", "message": "real error"}),
+                "",
+                "trailing noise",
+            ]
+        )
+        assert _extract_provider_error_preview(stdout) == "real error"
+
+
+# ---------------------------------------------------------------------------
 # _write_system_prompt_file / cleanup_managed_paths
 # ---------------------------------------------------------------------------
 

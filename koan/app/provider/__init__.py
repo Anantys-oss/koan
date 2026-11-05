@@ -30,7 +30,7 @@ import sys
 import tempfile
 from collections import deque
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # Re-export base class and constants for convenience
 from app.provider.base import (  # noqa: F401
@@ -41,6 +41,7 @@ from app.provider.base import (  # noqa: F401
     READ_ONLY_TOOLS,
     SIDE_EFFECT_TOOLS,
     TOOL_NAME_MAP,
+    is_provider_error_type,
 )
 
 # Import concrete providers
@@ -56,47 +57,93 @@ from app.provider.ollama_launch import OllamaLaunchProvider  # noqa: F401
 from app.token_parser import clamp_cached_input, dominant_stats_model
 
 
+def _result_error_preview(event: Dict[str, Any]) -> str:
+    """Haze-style terminal envelope: the error text is ``result`` when the
+    status is "failed"/"aborted". Shape-keyed — no provider-name checks."""
+    status = str(event.get("status") or "").lower()
+    if status not in {"failed", "aborted"}:
+        return ""
+    result = event.get("result")
+    if not isinstance(result, str):
+        return ""
+    return result.strip()
+
+
+def _context_overflow_preview(event: Dict[str, Any]) -> str:
+    """A fatal (unrecovered) context overflow reports its error inline."""
+    if event.get("recovered") is not False:
+        return ""
+    error = event.get("error")
+    if not isinstance(error, str):
+        return ""
+    return error.strip()
+
+
+def _error_event_preview(event: Dict[str, Any]) -> str:
+    """Generic provider error event: ``message`` first, then ``error.message``."""
+    message = event.get("message")
+    if isinstance(message, str) and message.strip():
+        return message.strip()
+    error = event.get("error")
+    if isinstance(error, dict):
+        err_message = error.get("message")
+        if isinstance(err_message, str) and err_message.strip():
+            return err_message.strip()
+    return ""
+
+
+# event_type → extractor callback. One row per event shape that can carry a
+# provider error: adding a shape means adding one early-return extractor and
+# one row, never another branch in the scan loop. The generic error types
+# (:data:`PROVIDER_ERROR_EVENT_TYPES`) share :func:`_error_event_preview`;
+# the special rows merge LAST so a type ever added to both sets keeps its
+# dedicated extractor, matching the original precedence.
+_ERROR_PREVIEW_EXTRACTORS: Dict[str, Callable[[Dict[str, Any]], str]] = (
+    {etype: _error_event_preview for etype in PROVIDER_ERROR_EVENT_TYPES}
+    | {
+        "result": _result_error_preview,
+        "context_overflow": _context_overflow_preview,
+    }
+)
+
+
+def _parse_jsonl_event(line: str) -> Optional[Dict[str, Any]]:
+    """Parse one JSONL line into a dict event, or ``None`` when it is not one."""
+    stripped = line.strip()
+    if not stripped:
+        return None
+    try:
+        event = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    return event if isinstance(event, dict) else None
+
+
+def _event_error_preview(event: Dict[str, Any]) -> str:
+    """Dispatch one parsed event to its registered extractor ('' when none)."""
+    extractor = _ERROR_PREVIEW_EXTRACTORS.get(str(event.get("type") or ""))
+    if extractor is None:
+        return ""
+    return extractor(event)
+
+
 def _extract_provider_error_preview(stdout: str) -> str:
-    """Return the most useful direct provider error from JSONL stdout."""
-    previews: List[str] = []
+    """Return the most useful direct provider error from JSONL stdout.
+
+    Single pass: each line is parsed once, then dispatched to the extractor
+    registered for its event type (:data:`_ERROR_PREVIEW_EXTRACTORS`). The
+    LAST non-empty preview wins — terminal envelopes usually arrive last, so
+    the session's final state is what surfaces.
+    """
+    last = ""
     for line in (stdout or "").splitlines():
-        stripped = line.strip()
-        if not stripped:
+        event = _parse_jsonl_event(line)
+        if event is None:
             continue
-        try:
-            event = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict):
-            continue
-        etype = str(event.get("type") or "")
-        # Haze-style failures: the terminal result envelope carries the error
-        # text in ``result`` with status "failed"/"aborted", and a fatal
-        # context overflow reports its error inline. Shape-keyed — no
-        # provider-name checks.
-        if etype == "result":
-            status = str(event.get("status") or "").lower()
-            result = event.get("result")
-            if status in {"failed", "aborted"} and isinstance(result, str) and result.strip():
-                previews.append(result.strip())
-            continue
-        if etype == "context_overflow" and event.get("recovered") is False:
-            error = event.get("error")
-            if isinstance(error, str) and error.strip():
-                previews.append(error.strip())
-            continue
-        if etype not in PROVIDER_ERROR_EVENT_TYPES:
-            continue
-        message = event.get("message")
-        if isinstance(message, str) and message.strip():
-            previews.append(message.strip())
-            continue
-        error = event.get("error")
-        if isinstance(error, dict):
-            err_message = error.get("message")
-            if isinstance(err_message, str) and err_message.strip():
-                previews.append(err_message.strip())
-    return previews[-1] if previews else ""
+        preview = _event_error_preview(event)
+        if preview:
+            last = preview
+    return last
 
 
 def _format_cli_error(returncode: int, stdout: str, stderr: str) -> str:

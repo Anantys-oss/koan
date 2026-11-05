@@ -8,7 +8,7 @@ import subprocess
 import sys
 from typing import Any, List, Optional, Sequence, Tuple
 
-from app.provider.base import CLIProvider, PROVIDER_ERROR_EVENT_TYPES
+from app.provider.base import CLIProvider, is_provider_error_type
 
 
 _CODEX_QUOTA_PATTERNS = [
@@ -259,8 +259,9 @@ class CodexProvider(CLIProvider):
         return bool(_CODEX_QUOTA_RE.search(line))
 
     def _event_has_quota_error(self, event: dict[str, Any]) -> bool:
-        event_type = str(event.get("type") or "").lower()
-        if event_type not in PROVIDER_ERROR_EVENT_TYPES:
+        # Codex may capitalize event types; normalize before the shared
+        # predicate, which matches the canonical lowercase set.
+        if not is_provider_error_type(str(event.get("type") or "").lower()):
             return False
         return _CODEX_QUOTA_RE.search(self._error_event_text(event)) is not None
 
