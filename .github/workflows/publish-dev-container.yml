@@ -1,0 +1,33 @@
+name: 🐳 Publish Dev Container
+
+# Automatic dev image on every push to main, so fixes that land between
+# releases are pullable without a manual dispatch (#2529). Publishes:
+#   - sha-<full-commit-sha>  immutable, traceable to the exact commit
+#   - devel                  rolling, always the newest main build
+# Release-owned tags (stable, latest, semver) are never touched here — they
+# are minted exclusively by release.yml.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+# A newer push supersedes an in-flight build, so :devel can never be
+# overwritten by a stale commit. Cancelled commits get no sha- tag; any later
+# sha- image contains their changes.
+concurrency:
+  group: publish-dev-container
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: publish
+    uses: ./.github/workflows/docker-publish.yml
+    with:
+      tags: |
+        type=sha,format=long,prefix=sha-
+        type=raw,value=devel
+    secrets: inherit
