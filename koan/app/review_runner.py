@@ -921,6 +921,7 @@ def build_review_prompt(
     project_name: str = "",
     prior_review: Optional[str] = None,
     issue_context: Optional[str] = None,
+    file_growth: str = "",
 ) -> Tuple[str, str]:
     """Build a prompt for Claude to review a PR.
 
@@ -1061,6 +1062,7 @@ def build_review_prompt(
         REPO_CONVENTIONS=repo_conventions,
         DISPOSITIONS=_build_dispositions_block(project_name),
         COMPREHENSIVE_DISCOVERY=_build_discovery_block(project_name),
+        FILE_GROWTH=file_growth,
     )
 
     if plan_body:
@@ -4499,6 +4501,15 @@ def _run_review_body(
     # Track review wall-clock time for footer attribution
     _review_start = time.monotonic()
 
+    # Step 2a: deterministic file-growth signal (#2505). Measured from the
+    # pinned worktree (head = its verified HEAD; base = step 1g's merge-base
+    # when already resolved, else one best-effort lookup). Fail-open to ""
+    # -- the signal must never cost the review.
+    file_growth = _resolve_file_growth_block(
+        project_path, owner, repo, context.get("base") or "",
+        known_base_sha=_base_sha,
+    )
+
     # Step 2: Build review prompt. Surface the bot's last structured review (if
     # any) as authoritative prior context so a re-review builds on it.
     prior_review_text = (
@@ -4511,6 +4522,7 @@ def _run_review_body(
         plan_body=plan_body or None, project_path=project_path,
         triaged_files=_triaged_files, project_name=project_name or "",
         prior_review=prior_review_text,
+        file_growth=file_growth,
     )
 
     # Resolve provider/model for footer attribution against the review_mode

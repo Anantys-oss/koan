@@ -8859,3 +8859,43 @@ class TestFileGrowthResolver:
         assert _resolve_file_growth_block(
             str(tmp_path / "nope"), "o", "r", "main",
         ) == ""
+
+
+@pytest.fixture
+def fg_review_skill_dir(tmp_path):
+    prompts_dir = tmp_path / "prompts"
+    prompts_dir.mkdir()
+    (prompts_dir / "review.md").write_text(
+        "Review: {TITLE}\n{SKIPPED_FILES}\n{FILE_GROWTH}Diff: {DIFF}\n"
+    )
+    return tmp_path
+
+
+class TestFileGrowthPromptWiring:
+    def test_file_growth_renders_into_the_slot(
+        self, pr_context, fg_review_skill_dir,
+    ):
+        prompt, _ = build_review_prompt(
+            pr_context, skill_dir=fg_review_skill_dir,
+            file_growth="FG-MARKER",
+        )
+        assert "FG-MARKER" in prompt
+
+    def test_empty_file_growth_leaves_prompt_unchanged(
+        self, pr_context, fg_review_skill_dir,
+    ):
+        base_prompt, _ = build_review_prompt(
+            pr_context, skill_dir=fg_review_skill_dir,
+        )
+        explicit, _ = build_review_prompt(
+            pr_context, skill_dir=fg_review_skill_dir, file_growth="",
+        )
+        assert base_prompt == explicit
+
+    def test_structural_partial_contains_file_growth_slot(self):
+        """The shared partial (included by all three main prompts) has the
+        slot, so the signal reaches default, plan-aware and architecture
+        reviews alike."""
+        from app.prompts import PROMPT_DIR
+        partial = PROMPT_DIR / "_partials" / "review-structural-quality.md"
+        assert "{FILE_GROWTH}" in partial.read_text()
