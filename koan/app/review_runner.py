@@ -3778,33 +3778,131 @@ def _apply_review_diff_filters(
     return context, triaged_files
 
 
+def _reflect_review(
+    review_data: dict,
+    diff: str,
+    project_path: str,
+    skill_dir: Optional[Path],
+    pname: str,
+) -> None:
+    """Run the reflection pass over ``review_data['file_comments']`` in place."""
+    if not review_data.get("file_comments"):
+        return
+    from app.cli_provider import resolve_role_provider
+    from app.config import get_model_config, get_review_reflect_config
+    # Resolve the reflect model against the review_mode PROVIDER's section,
+    # since the reflect pass runs on that same binary (see _run_claude_review).
+    review_provider = resolve_role_provider("review_mode", pname)
+    models = get_model_config(
+        pname,
+        role_providers={
+            "reflect": review_provider.name,
+            "lightweight": review_provider.name,
+        },
+    )
+    reflect_cfg = get_review_reflect_config()
+    reflect_model = models.get("reflect") or models.get("lightweight")
+    reflect_threshold = reflect_cfg.get("threshold", 5)
+    calibration_hints = _load_calibration_hints(pname or None)
+    reflected_findings, retained_indices = _reflect_findings(
+        review_data["file_comments"],
+        diff,
+        project_path,
+        reflect_model,
+        reflect_threshold,
+        skill_dir=skill_dir,
+        calibration_hints=calibration_hints,
+        project_name=pname,
+    )
+    _reconcile_review_after_reflection(
+        review_data, reflected_findings, retained_indices,
+    )
+
+
+def _try_codex_backend(
+    project_path: str,
+    base_branch: str,
+    diff: str,
+    skill_dir: Optional[Path],
+    pname: str,
+) -> Optional[Tuple[Optional[dict], str, Optional[str], str]]:
+    """Opt-in Codex adversarial path (specs/skills/review.md).
+
+    Returns the analysis 4-tuple when the Codex path decided the outcome
+    (success, or failure with fallback disabled), or ``None`` to continue
+    with the default provider review (disabled, or failed with fallback).
+    """
+    from app.config import get_review_codex_adversarial_config
+    cfg = get_review_codex_adversarial_config(pname)
+    if not cfg["enabled"]:
+        return None
+
+    from app.codex_adversarial_review import run_adversarial_review
+    # The companion is silent while it runs; stay under the outer watchdog.
+    stall = _review_stall_timeout()
+    timeout = min(cfg["timeout_seconds"], stall) if stall else cfg["timeout_seconds"]
+    review_data, raw_output, error = run_adversarial_review(
+        project_path=project_path,
+        base_ref=base_branch,
+        companion_script=cfg["companion_script"],
+        timeout_seconds=timeout,
+        model=cfg["model"],
+    )
+    if review_data is not None:
+        if cfg["run_reflection"]:
+            _reflect_review(review_data, diff, project_path, skill_dir, pname)
+        return review_data, raw_output, None, "codex"
+    if not cfg["fallback_to_default"]:
+        # Empty raw_output ⇒ callers report a failed review with ``error``
+        # instead of posting the unparseable-review placeholder.
+        return None, "", error or "codex adversarial review failed", "codex"
+    print(
+        f"[review_runner] codex adversarial review failed ({error}); "
+        "falling back to the default provider review",
+        file=sys.stderr,
+    )
+    return None
+
+
 def _run_review_analysis(
     prompt: str,
     project_path: str,
     diff: str,
     skill_dir: Optional[Path] = None,
     project_name: Optional[str] = None,
-) -> Tuple[Optional[dict], str, Optional[str]]:
-    """Run the provider review and parse it into structured review data.
+    base_branch: str = "",
+) -> Tuple[Optional[dict], str, Optional[str], str]:
+    """Run the review and parse it into structured review data.
 
-    Invokes the provider once, then retries once if the first response fails
-    to parse or breaks a review rule — the retry guidance is tailored to the
-    failure mode (rule violations are listed when the output was valid JSON,
-    otherwise a JSON-only instruction), so the model actually learns what to
-    fix. Then runs the reflection pass over any findings.
+    When ``base_branch`` is given and ``review_codex_adversarial`` is
+    enabled, the Codex companion runs first (see :func:`_try_codex_backend`).
+    Otherwise — or on Codex failure with fallback — invokes the provider once,
+    then retries once if the first response fails to parse or breaks a review
+    rule — the retry guidance is tailored to the failure mode (rule violations
+    are listed when the output was valid JSON, otherwise a JSON-only
+    instruction), so the model actually learns what to fix. Then runs the
+    reflection pass over any findings.
 
-    Returns ``(review_data, raw_output, error)``:
+    Returns ``(review_data, raw_output, error, backend)``:
       - ``review_data``: parsed + reflected review dict, or ``None`` when the
-        provider produced output that could not be parsed/validated.
-      - ``raw_output``: the first provider response ("" when the provider
-        produced nothing); callers may use it for a regex fallback.
-      - ``error``: short provider error string, set only when the provider
-        produced no output at all.
+        output could not be parsed/validated.
+      - ``raw_output``: the first response ("" when nothing usable was
+        produced); callers may use it for a regex fallback.
+      - ``error``: short error string, set only when no output was produced.
+      - ``backend``: ``"codex"`` or ``"provider"`` — which path produced the
+        outcome, for footer attribution.
     """
     pname = project_name or ""
+    if base_branch:
+        codex_outcome = _try_codex_backend(
+            project_path, base_branch, diff, skill_dir, pname,
+        )
+        if codex_outcome is not None:
+            return codex_outcome
+
     raw_output, error = _run_claude_review(prompt, project_path, project_name=pname)
     if not raw_output:
-        return None, "", error
+        return None, "", error, "provider"
 
     review_data, validation_errors = _parse_and_validate_review(raw_output)
     if review_data is None:
@@ -3813,39 +3911,10 @@ def _run_review_analysis(
         if retry_output:
             review_data, _ = _parse_and_validate_review(retry_output)
 
-    if review_data is not None and review_data.get("file_comments"):
-        from app.cli_provider import resolve_role_provider
-        from app.config import get_model_config, get_review_reflect_config
-        # Resolve the reflect model against the review_mode PROVIDER's section,
-        # since the reflect pass runs on that same binary (see _run_claude_review).
-        review_provider = resolve_role_provider("review_mode", pname)
-        models = get_model_config(
-            pname,
-            role_providers={
-                "reflect": review_provider.name,
-                "lightweight": review_provider.name,
-            },
-        )
-        reflect_cfg = get_review_reflect_config()
-        reflect_model = models.get("reflect") or models.get("lightweight")
-        reflect_threshold = reflect_cfg.get("threshold", 5)
-        calibration_hints = _load_calibration_hints(project_name)
-        original_findings = review_data["file_comments"]
-        reflected_findings, retained_indices = _reflect_findings(
-            original_findings,
-            diff,
-            project_path,
-            reflect_model,
-            reflect_threshold,
-            skill_dir=skill_dir,
-            calibration_hints=calibration_hints,
-            project_name=pname,
-        )
-        _reconcile_review_after_reflection(
-            review_data, reflected_findings, retained_indices,
-        )
+    if review_data is not None:
+        _reflect_review(review_data, diff, project_path, skill_dir, pname)
 
-    return review_data, raw_output, error
+    return review_data, raw_output, error, "provider"
 
 
 def run_private_review(
@@ -3927,7 +3996,7 @@ def run_private_review(
     )
 
     notify_fn(f"Analyzing code changes on `{context['branch']}` privately...")
-    review_data, raw_output, error = _run_review_analysis(
+    review_data, raw_output, error, _backend = _run_review_analysis(
         prompt, project_path, context.get("diff", ""), skill_dir=skill_dir,
         project_name=project_name,
     )
@@ -4354,10 +4423,15 @@ def _run_review_body(
 
     # Step 3: Run provider review (read-only)
     notify_fn(f"Analyzing code changes on `{context['branch']}`...")
-    review_data, raw_output, error = _run_review_analysis(
+    review_data, raw_output, error, review_backend = _run_review_analysis(
         prompt, project_path, context.get("diff", ""), skill_dir=skill_dir,
-        project_name=project_name,
+        project_name=project_name, base_branch=context.get("base") or "",
     )
+    if review_backend == "codex":
+        # Footer must advertise what actually produced the review.
+        from app.config import get_review_codex_adversarial_config
+        review_provider_name = "codex"
+        review_model = get_review_codex_adversarial_config(project_name or "")["model"]
     if not raw_output:
         detail = f" ({error})" if error else ""
         return False, f"Provider review failed for PR #{pr_number}{detail}.", None
