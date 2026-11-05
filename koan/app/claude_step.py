@@ -1211,6 +1211,14 @@ def run_project_tests(project_path: str, test_cmd: str = "make test",
                 failed_match = re.search(r'(\d+)\s+failed', output, re.IGNORECASE)
                 if failed_match:
                     details = f"{failed_match.group(0)}, {count_match.group(0)}"
+        elif not passed:
+            # No parseable test count — the suite died before reporting
+            # results (e.g. ModuleNotFoundError at collection). Surface the
+            # last output line so the report shows the real error instead of
+            # a bare "FAILED" (issue #2519).
+            lines = [line.strip() for line in output.splitlines() if line.strip()]
+            if lines:
+                details = lines[-1][:200]
 
         return {"passed": passed, "output": output[-3000:], "details": details}
     except subprocess.TimeoutExpired:
