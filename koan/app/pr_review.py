@@ -17,6 +17,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -115,6 +116,15 @@ def build_quality_review_prompt(project_path: str, skill_name: str = "", skill_d
 def detect_test_command(project_path: str) -> Optional[str]:
     """Detect the test command for a project by examining common files.
 
+    Precedence:
+    1. Makefile with a ``test:`` target → ``make test``
+    2. Python project with a tests directory → ``poetry run pytest`` for
+       Poetry projects (``[tool.poetry]`` in pyproject or a ``poetry.lock``),
+       ``uv run pytest`` for ``uv.lock`` projects, else bare ``pytest``.
+       Running through the project's own tooling keeps the suite in the
+       project's environment, where its dependencies are installed.
+    3. Node.js project with a ``test`` script → ``npm test``
+
     Returns:
         Shell command string to run tests, or None if not detected.
     """
@@ -131,7 +141,7 @@ def detect_test_command(project_path: str) -> Optional[str]:
     if (p / "pytest.ini").exists() or (p / "pyproject.toml").exists() or (p / "setup.py").exists():
         # Check if there's a tests directory
         if (p / "tests").is_dir() or (p / "koan" / "tests").is_dir():
-            return "make test" if makefile.exists() else "pytest"
+            return _detect_python_test_command(p)
 
     # Node.js
     pkg_json = p / "package.json"
@@ -144,6 +154,35 @@ def detect_test_command(project_path: str) -> Optional[str]:
             pass
 
     return None
+
+
+def _detect_python_test_command(p: Path) -> str:
+    """Pick the pytest invocation for a Python project.
+
+    Runs the suite through the project's own environment when one is
+    detectable, so the project's dependencies are available (a bare
+    ``pytest`` runs in Kōan's interpreter and fails collection on
+    environment-managed projects — issue #2519):
+
+    - ``poetry run pytest`` — ``[tool.poetry]`` in pyproject or ``poetry.lock``
+    - ``uv run pytest`` — ``uv.lock`` present
+    - ``pytest`` — otherwise
+    """
+    pyproject = p / "pyproject.toml"
+    if pyproject.exists():
+        try:
+            if "[tool.poetry]" in pyproject.read_text():
+                return "poetry run pytest"
+        except OSError:
+            print(
+                f"[pr_review] Could not read {pyproject}; "
+                "assuming bare pytest", file=sys.stderr,
+            )
+    if (p / "poetry.lock").exists():
+        return "poetry run pytest"
+    if (p / "uv.lock").exists():
+        return "uv run pytest"
+    return "pytest"
 
 
 def detect_skills(project_path: str = "") -> Tuple[Optional[str], Optional[str]]:
