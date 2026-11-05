@@ -74,6 +74,24 @@ defaults:
   #   budget_aware: true         # Skip/limit rounds when quota is tight
   #   dedup: true                # Skip re-reviewing the same clean PR head
 
+  # Post-mission quality pipeline — controls the Quality Report embedded
+  # in the PR description after each mission (code scan, test run, branch
+  # hygiene) and the auto-merge gate it feeds.
+  #
+  # - gate: "strict" | "warn" | "off" — block auto-merge on failing tests
+  #   or secret findings (strict), report only (warn, default), or never
+  #   gate (off)
+  # - test_command: override the auto-detected test command. Detection
+  #   picks `make test` (Makefile `test:` target), `poetry run pytest`
+  #   (Poetry project), `uv run pytest` (uv.lock), or bare `pytest`;
+  #   set this for projects that need something else (tox, npm test, ...)
+  # - test_timeout: test run timeout in seconds (default: 120)
+  #
+  # pr_quality:
+  #   gate: warn
+  #   # test_command: "poetry run pytest"
+  #   # test_timeout: 300
+
   # CLI provider — which AI CLI to use ("claude", "codex", "copilot", "local")
   # Per-project overrides allow different providers for different repos.
   # Can also be set globally in config.yaml or via KOAN_CLI_PROVIDER env var.

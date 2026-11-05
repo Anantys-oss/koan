@@ -1850,6 +1850,24 @@ class TestValidateProjectKeyTypes:
         with pytest.raises(ValueError, match="projects.app.cli_provider.*must be str"):
             load_projects_config(koan_root)
 
+    def test_pr_quality_must_be_dict(self, koan_root):
+        _write_yaml(koan_root, 'projects:\n  app:\n    path: /tmp/app\n    pr_quality: "strict"')
+        with pytest.raises(ValueError, match="projects.app.pr_quality.*must be dict"):
+            load_projects_config(koan_root)
+
+    def test_pr_quality_accepts_test_settings(self, koan_root):
+        _write_yaml(koan_root, """
+projects:
+  app:
+    path: /tmp/app
+    pr_quality:
+      gate: strict
+      test_command: poetry run pytest
+      test_timeout: 300
+""")
+        config = load_projects_config(koan_root)
+        assert config["projects"]["app"]["pr_quality"]["test_command"] == "poetry run pytest"
+
     def test_stagnation_accepts_dict(self, koan_root):
         _write_yaml(koan_root, "projects:\n  app:\n    path: /tmp/app\n    stagnation:\n      enabled: false")
         config = load_projects_config(koan_root)
