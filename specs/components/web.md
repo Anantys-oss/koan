@@ -34,7 +34,7 @@ dashboard/  (Flask blueprints via create_app())
   └─ _helpers.py  ← passphrase gate, cache-buster, context processor, template filters
 
 dashboard_service/  (pure logic, no Flask client needed to test)
-  missions · journal · plans · progress · stats + read_file/mask_sensitive/validate_yaml
+  missions · journal · plans · progress · stats + read_file/mask_sensitive/restore_redacted_values/validate_yaml
 
 api/  (Flask blueprints via create_app())
   auth (require_token) · mission_index (sidecar) · skill_catalog (core-only) ·

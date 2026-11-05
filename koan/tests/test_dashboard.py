@@ -2145,6 +2145,48 @@ class TestConfigPage:
         assert data["ok"] is False
         assert "redacted" in data["error"].lower()
 
+    def test_put_config_restores_redacted_value_from_disk(self, app_client, tmp_path):
+        """A <redacted> value for a key that exists on disk is restored,
+        not rejected — the editor must be able to save masked content."""
+        config_path = tmp_path / "instance" / "config.yaml"
+        original = "telegram:\n  bot_token: \"\"\n  chat_id: \"\"\n"
+        config_path.write_text(original)
+        masked = dashboard_service.mask_sensitive(config_path.read_text())
+        assert "<redacted>" in masked
+        resp = app_client.put(
+            "/api/config/config",
+            json={"content": masked},
+        )
+        assert resp.status_code == 200
+        assert config_path.read_text() == original
+
+    def test_put_config_masked_roundtrip_keeps_unrelated_edits(self, app_client, tmp_path):
+        config_path = tmp_path / "instance" / "config.yaml"
+        config_path.write_text("telegram:\n  bot_token: \"\"\nchance: 10\n")
+        masked = dashboard_service.mask_sensitive(config_path.read_text())
+        edited = masked.replace("chance: 10", "chance: 20")
+        resp = app_client.put(
+            "/api/config/config",
+            json={"content": edited},
+        )
+        assert resp.status_code == 200
+        assert config_path.read_text() == "telegram:\n  bot_token: \"\"\nchance: 20\n"
+
+    def test_put_config_masked_example_config_roundtrip(self, app_client, tmp_path):
+        """The default (example) config, masked by the editor, must save back
+        byte-identical — bot_token: \"\" is redacted in the view, so saving
+        must not 422 or clobber the value."""
+        example = Path(__file__).resolve().parents[2] / "instance.example" / "config.yaml"
+        config_path = tmp_path / "instance" / "config.yaml"
+        config_path.write_text(example.read_text())
+        masked = dashboard_service.mask_sensitive(config_path.read_text())
+        resp = app_client.put(
+            "/api/config/config",
+            json={"content": masked},
+        )
+        assert resp.status_code == 200
+        assert config_path.read_text() == example.read_text()
+
     def test_put_config_invalid_json_body(self, app_client):
         resp = app_client.put(
             "/api/config/config",

@@ -63,8 +63,9 @@ _JIRA_BROWSE_RE = re.compile(
 # with an optional _hash / _salt suffix (password_hash, password_salt).
 # Keys like session_token_limit, budget_tokens, max_tokens do NOT match
 # because the stem must appear at the *end* of the key (before :), not in
-# the middle or as a plural (tokens).
+# the middle or as a plural (tokens). [ \t] (not \s) around the colon so a
+# sensitive key with an empty value cannot swallow the next line's key.
 _SENSITIVE_KEY_RE = re.compile(
-    r'(?m)^(\s*[A-Za-z0-9_.\-]*(?:token|password|passwd|api_key|secret|private_key|access_key|signing_key|encryption_key|credential|passphrase)(?:_hash|_salt)?\s*:\s*)\S+',
+    r'(?m)^(\s*[A-Za-z0-9_.\-]*(?:token|password|passwd|api_key|secret|private_key|access_key|signing_key|encryption_key|credential|passphrase)(?:_hash|_salt)?[ \t]*:[ \t]*)\S+',
     re.IGNORECASE,
 )

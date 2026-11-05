@@ -19,6 +19,7 @@ from app.automation_rules import (
 from app.dashboard import state
 from app.dashboard_service import journal as journal_svc
 from app.dashboard_service import missions as missions_svc
+from app.dashboard_service import restore_redacted_values
 from app.dashboard_service import stats as stats_svc
 from app.dashboard_service import validate_yaml
 from app.recurring import (
@@ -54,6 +55,7 @@ def api_config_save(target: str):
     }
     if target not in paths:
         return jsonify({"ok": False, "error": f"Unknown config target: {target}"}), 404
+    path = paths[target]
 
     data = request.get_json(silent=True)
     if data is None:
@@ -62,6 +64,10 @@ def api_config_save(target: str):
     if content is None:
         return jsonify({"ok": False, "error": "Missing content"}), 400
 
+    # The editor shows masked content; a <redacted> value means "unchanged",
+    # so restore the on-disk value before the placeholder guard below.
+    existing = path.read_text(errors="replace") if path.exists() else ""
+    content = restore_redacted_values(existing, content)
     if state._SENSITIVE_KEY_RE.search(content) and "<redacted>" in content:
         return jsonify({"ok": False, "error": "Content contains <redacted> placeholders — cannot save masked values"}), 422
 
@@ -69,7 +75,6 @@ def api_config_save(target: str):
     if error:
         return jsonify({"ok": False, "error": f"Invalid YAML: {error}"}), 422
 
-    path = paths[target]
     try:
         atomic_write(path, content)
     except OSError as e:
