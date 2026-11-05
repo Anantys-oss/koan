@@ -40,6 +40,7 @@ from app.project_koan import get_review_always_check
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt
 from app.github_alerts import build_alert
 from app.rebase_pr import fetch_pr_context
+from app.severity import severity_emoji, severity_heading
 from app.utils import KOAN_ROOT, truncate_diff_with_skips
 from app.review_markers import (
     SUMMARY_TAG,
@@ -974,7 +975,7 @@ def _with_language_directive(prompt: str) -> str:
     ``system-prompts/review-language-directive.md``.
 
     The scaffolding Python itself renders (the ``## PR Review`` heading it
-    builds, the ``_SEVERITY_HEADING`` tier names) likewise stays English by
+    builds, the ``app.severity.SEVERITY_HEADING`` tier names) likewise stays English by
     design — see ``specs/skills/review.md``.
 
     Empty when the human ran ``/language reset`` (input-language mode) — the
@@ -1964,9 +1965,6 @@ def _parse_error_hunter_output(raw_output: str) -> list:
     return []
 
 
-_ERROR_HUNTER_SEVERITY_EMOJI = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡"}
-
-
 def _format_error_hunter_findings(
     findings: list, owner: str = "", repo: str = "", head_sha: str = "",
     start_id: int = 1,
@@ -1978,7 +1976,8 @@ def _format_error_hunter_findings(
     lines = ["## Silent Failure Analysis", ""]
     for finding_id, f in enumerate(findings, start_id):
         severity = f.get("severity", "?")
-        emoji = _ERROR_HUNTER_SEVERITY_EMOJI.get(severity, "⚪")
+        # Only the hunter's 3-tier contract gets a colour; anything else stays ⚪.
+        emoji = severity_emoji(severity) if severity in severity_order else "⚪"
         pattern = f.get("pattern", "unknown pattern")
         file_path = f.get("file", "")
         line_hint = f.get("line_hint", "")
@@ -2450,17 +2449,8 @@ def _fix_nested_fences(text: str) -> str:
     return "\n".join(result)
 
 
-_SEVERITY_EMOJI = {
-    "critical": "🔴",
-    "warning": "🟡",
-    "suggestion": "🟢",
-}
-
-_SEVERITY_HEADING = {
-    "critical": "Blocking",
-    "warning": "Important",
-    "suggestion": "Suggestions",
-}
+# review's 3-tier severity contract, in render order.
+_REVIEW_SEVERITIES = ("critical", "warning", "suggestion")
 
 # Posted to the PR when the model's output cannot be parsed into the structured
 # review format. A short placeholder is posted instead of raw narration / JSON.
@@ -2691,19 +2681,19 @@ def _format_review_as_markdown(
     index_to_label: dict = {}
     finding_id_by_index: dict = {}
     next_finding_id = 1
-    for sev in ("critical", "warning", "suggestion"):
+    for sev in _REVIEW_SEVERITIES:
         for idx, _item in by_severity.get(sev, []):
             finding_id_by_index[idx] = next_finding_id
             index_to_label[idx] = f"{sev} #{next_finding_id}"
             next_finding_id += 1
 
     # Emit severity sections (skip empty ones)
-    for sev in ("critical", "warning", "suggestion"):
+    for sev in _REVIEW_SEVERITIES:
         items = by_severity.get(sev, [])
         if not items:
             continue
-        emoji = _SEVERITY_EMOJI[sev]
-        heading = _SEVERITY_HEADING[sev]
+        emoji = severity_emoji(sev)
+        heading = severity_heading(sev)
         lines.append(f"### {emoji} {heading}")
         lines.append("")
         for idx, item in items:
@@ -2769,7 +2759,7 @@ def _format_review_as_markdown(
 
     # Severity filter hint — only show when there are findings at multiple
     # severity levels so the hint is actually useful.
-    severity_count = sum(1 for s in ("critical", "warning", "suggestion") if by_severity.get(s))
+    severity_count = sum(1 for s in _REVIEW_SEVERITIES if by_severity.get(s))
     if severity_count > 1:
         lines.append("")
         lines.append("---")
@@ -3162,10 +3152,10 @@ def _format_inline_finding_body(item: dict) -> str:
     title header, then the full comment, then the code snippet (if any).
     """
     sev = item.get("severity", "suggestion")
-    if sev not in _SEVERITY_EMOJI:
+    if sev not in _REVIEW_SEVERITIES:
         sev = "suggestion"
-    emoji = _SEVERITY_EMOJI[sev]
-    heading = _SEVERITY_HEADING[sev]
+    emoji = severity_emoji(sev)
+    heading = severity_heading(sev)
     title = item.get("title", "").strip() or "Finding"
 
     lines = [f"{emoji} {heading}: {title}", ""]

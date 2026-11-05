@@ -6712,6 +6712,18 @@ class TestReviewSchemaClosePr:
 class TestFormatErrorHunterFindings:
     """Tests for _format_error_hunter_findings collapsible output."""
 
+    def test_out_of_contract_severity_keeps_white_marker(self):
+        from app.review_runner import _format_error_hunter_findings
+
+        findings = [
+            {"severity": "LOW", "pattern": "low issue", "file": "a.py"},
+            {"severity": "HIGH", "pattern": "high issue", "file": "b.py"},
+        ]
+        result = _format_error_hunter_findings(findings)
+        assert "🟢" not in result  # LOW is outside the hunter's 3-tier contract
+        assert "⚪" in result
+        assert "🟠" in result
+
     def test_basic_collapsible_structure(self):
         from app.review_runner import _format_error_hunter_findings
 

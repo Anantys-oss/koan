@@ -484,6 +484,18 @@ class TestFormatReport:
         assert "3" in result
         assert "my-project" in result
 
+    def test_low_renders_canonical_green(self):
+        from skills.core.gha_audit.handler import _format_report, Finding, CRITICAL, LOW
+
+        findings = [
+            Finding(CRITICAL, "rule1", "Bad", "ci.yml", 10),
+            Finding(LOW, "rule2", "Minor", "ci.yml"),
+        ]
+        result = _format_report("my-project", findings, 1)
+        assert "\U0001f534 **CRITICAL** (1)" in result
+        assert "\U0001f7e2 **LOW** (1)" in result
+        assert "⚪" not in result
+
     def test_report_with_findings(self):
         from skills.core.gha_audit.handler import _format_report, Finding, CRITICAL, LOW
 
