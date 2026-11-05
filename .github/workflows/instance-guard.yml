@@ -9,8 +9,9 @@ name: 📁 Instance Guard
 # scripts/instance_guard.py.
 #
 # This is the backstop. The first line of defense is pre-push:
-# app.mission_runner.commit_instance runs the same pure find_violations() over
-# staged paths and unstages any hit before committing/pushing.
+# app.mission_runner.commit_instance imports the same pure rules
+# (app.instance_leak_rules) and unstages any staged hit before committing/pushing.
+# See docs/security/instance-guard.md.
 #
 # Read-only: no `contents: write`, no push, no secrets beyond the default token.
 
