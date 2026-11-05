@@ -41,6 +41,12 @@ from app.review_runner import (
     _write_review_findings_sidecar,
     _load_calibration_hints,
     _reconcile_review_after_reflection,
+    _build_file_growth_block,
+    _compute_file_growth_rows,
+    _git_grep_line_counts,
+    _resolve_file_growth_block,
+    _FILE_GROWTH_THRESHOLD,
+    _FILE_GROWTH_MAX_ROWS,
 )
 
 
@@ -8691,3 +8697,165 @@ class TestPinnedWorktreeInRunReview:
         assert ok is True
         assert "merged" in msg
         pin.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Deterministic file-growth signal (#2505)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def worktree_repo(tmp_path):
+    """Real git repo: base commit, then a head commit crossing 1000 lines."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        r = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True, text=True, check=True,
+        )
+        return r.stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (repo / "big.py").write_text("line = 1\n" * 990)
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    base_sha = git("rev-parse", "HEAD")
+    (repo / "big.py").write_text("line = 1\n" * 1010)
+    (repo / "tiny.py").write_text("x = 1\n")
+    git("add", "-A")
+    git("commit", "-qm", "head")
+    head_sha = git("rev-parse", "HEAD")
+    return repo, base_sha, head_sha, git
+
+
+class TestFileGrowthBlock:
+    """#2505: deterministic before/after line counts from the pinned worktree."""
+
+    def test_crossing_file_reported_with_measured_counts(self, worktree_repo):
+        repo, base, head, _git = worktree_repo
+        block = _build_file_growth_block(str(repo), base, head)
+        assert "`big.py`" in block
+        assert "990" in block and "1010" in block and "+20" in block
+        assert "tiny.py" not in block
+
+    def test_no_crossing_yields_empty_block(self, worktree_repo):
+        repo, _base, head, git = worktree_repo
+        # Rewind to a state where nothing is at/over the threshold:
+        # fresh repo with only a small file.
+        small = repo / "small_only"
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "add", "-q",
+             str(small), "HEAD~1"],
+            capture_output=True, text=True, check=True,
+        )
+        try:
+            assert _build_file_growth_block(str(small), head, head) == ""
+        finally:
+            subprocess.run(
+                ["git", "-C", str(repo), "worktree", "remove", "--force",
+                 str(small)],
+                capture_output=True, text=True,
+            )
+
+    def test_base_equals_head_yields_empty_block(self, worktree_repo):
+        repo, _base, head, _git = worktree_repo
+        assert _compute_file_growth_rows(str(repo), head, head) == []
+
+    def test_fail_open_when_not_a_repo(self, tmp_path):
+        assert _build_file_growth_block(
+            str(tmp_path / "nope"), "abc" * 5, "def" * 5,
+        ) == ""
+
+    def test_fail_open_on_bad_base_sha(self, worktree_repo):
+        repo, _base, head, _git = worktree_repo
+        assert _build_file_growth_block(str(repo), "0" * 40, head) == ""
+
+    def test_rename_reported_under_new_path_with_old_before_count(
+        self, worktree_repo,
+    ):
+        repo, base, head, git = worktree_repo
+        git("mv", "big.py", "big_renamed.py")
+        git("commit", "-qm", "rename")
+        new_head = git("rev-parse", "HEAD")
+        rows = _compute_file_growth_rows(str(repo), base, new_head)
+        assert rows == [("big_renamed.py", 990, 1010)]
+
+    def test_binary_files_are_excluded(self, worktree_repo):
+        repo, base, head, git = worktree_repo
+        (repo / "blob.bin").write_bytes(b"\x00\x01\x02" * 2000)
+        git("add", "-A")
+        git("commit", "-qm", "binary")
+        new_head = git("rev-parse", "HEAD")
+        rows = _compute_file_growth_rows(str(repo), base, new_head)
+        assert all(path != "blob.bin" for path, _b, _a in rows)
+        assert any(path == "big.py" for path, _b, _a in rows)
+
+    def test_row_cap_and_overflow_note(self, worktree_repo):
+        repo, base, head, git = worktree_repo
+        for i in range(30):
+            (repo / f"extra_{i:02d}.py").write_text("y = 1\n" * 1200)
+        git("add", "-A")
+        git("commit", "-qm", "many big files")
+        new_head = git("rev-parse", "HEAD")
+        rows = _compute_file_growth_rows(str(repo), base, new_head)
+        assert len(rows) == 31  # 30 new + big.py
+        block = _build_file_growth_block(str(repo), base, new_head)
+        # After-desc sort: all 30 extras (1200) outrank big.py (1010), so the
+        # 25 shown rows are all extras; the 6 unshown land in the overflow note.
+        assert block.count("| `extra_") == _FILE_GROWTH_MAX_ROWS
+        assert "+6 more" in block
+        assert "`big.py`" not in block
+
+    def test_counts_match_wc_l_semantics(self, worktree_repo):
+        """git grep -c '' counts \\n-terminated lines, like wc -l."""
+        repo, base, head, git = worktree_repo
+        counts = _git_grep_line_counts(str(repo), head, ["tiny.py"])
+        assert counts == {"tiny.py": 1}
+        # Absent paths simply have no entry (treated as 0 upstream).
+        assert _git_grep_line_counts(str(repo), base, ["tiny.py"]) == {}
+
+
+class TestFileGrowthResolver:
+    """The _run_review_body seam: worktree HEAD + merge-base → block."""
+
+    def test_resolver_reuses_known_base_sha(self, worktree_repo, monkeypatch):
+        repo, base, _head, _git = worktree_repo
+        monkeypatch.setattr(
+            "app.review_runner._merge_base_sha",
+            lambda *a, **k: pytest.fail("must not be called"),
+        )
+        block = _resolve_file_growth_block(
+            str(repo), "o", "r", "main", known_base_sha=base,
+        )
+        assert "`big.py`" in block
+
+    def test_resolver_looks_up_merge_base_when_unknown(
+        self, worktree_repo, monkeypatch,
+    ):
+        repo, base, _head, _git = worktree_repo
+        calls = []
+
+        def fake_merge_base(owner, repo_, base_ref, head_sha):
+            calls.append((owner, repo_, base_ref, head_sha))
+            return base
+
+        monkeypatch.setattr("app.review_runner._merge_base_sha", fake_merge_base)
+        block = _resolve_file_growth_block(str(repo), "o", "r", "main")
+        assert calls and calls[0][:3] == ("o", "r", "main")
+        assert calls[0][3].startswith("") and len(calls[0][3]) == 40
+        assert "`big.py`" in block
+
+    def test_resolver_empty_when_base_lookup_fails(self, worktree_repo, monkeypatch):
+        repo, _base, _head, _git = worktree_repo
+        monkeypatch.setattr(
+            "app.review_runner._merge_base_sha", lambda *a, **k: "",
+        )
+        assert _resolve_file_growth_block(str(repo), "o", "r", "main") == ""
+
+    def test_resolver_empty_when_not_a_repo(self, tmp_path):
+        assert _resolve_file_growth_block(
+            str(tmp_path / "nope"), "o", "r", "main",
+        ) == ""

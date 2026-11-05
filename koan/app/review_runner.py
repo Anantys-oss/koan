@@ -36,6 +36,7 @@ from app.run_log import log
 from app.diff_compressor import compress_diff
 from app.github import run_gh, sanitize_github_comment, find_bot_comment
 from app.github_url_parser import ISSUE_URL_PATTERN
+from app.git_utils import run_git
 from app.project_koan import get_review_always_check
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt
 from app.github_alerts import build_alert
@@ -741,6 +742,171 @@ def _pinned_files_in_diff(raw_diff: str, patterns: list) -> list:
     from app.diff_compressor import path_matches_any
     names = re.findall(r'^diff --git a/\S+ b/(\S+)', raw_diff, flags=re.MULTILINE)
     return [n for n in names if path_matches_any(n, patterns)]
+
+
+# ---------------------------------------------------------------------------
+# Deterministic file-growth signal (#2505).
+#
+# The structural-quality lens asks about files pushed past a healthy size,
+# but the only measurement was the model running `wc -l` itself -- a
+# heuristic it may skip. The pinned worktree lets the runner measure
+# before/after line counts for every changed file and hand the reviewer a
+# fact block instead. Threshold matches the partial's fallback convention
+# (~1000 lines); repo-specific limits stay the model's call, applied to
+# these measured numbers.
+# ---------------------------------------------------------------------------
+
+_FILE_GROWTH_THRESHOLD = 1000
+_FILE_GROWTH_MAX_ROWS = 25
+
+
+def _git_grep_line_counts(worktree: str, sha: str, paths: list) -> dict:
+    """Map *paths* to their line counts in tree *sha*.
+
+    One ``git grep -I -c ''`` per tree: the empty pattern matches every
+    line, so the per-file match count is the line count (measured equal to
+    ``wc -l`` for text files). ``-I`` treats binary files as non-matching,
+    so binaries get no entry — plain count mode would still count their
+    ``\\n``-terminated "lines", which is meaningless for them. Absent paths
+    likewise have no entry; callers treat missing as 0/NA. Exit 1 ("no
+    matches") is a normal outcome, not an error.
+    """
+    rc, out, err = run_git(
+        "-c", "core.quotePath=false",
+        "grep", "-I", "-c", "", sha, "--", *paths,
+        cwd=worktree, timeout=60,
+    )
+    if rc not in (0, 1):
+        raise RuntimeError(f"git grep failed (rc={rc}): {err or 'no stderr'}")
+    counts: dict = {}
+    prefix = sha + ":"
+    for line in out.splitlines():
+        if not line.startswith(prefix):
+            continue
+        path, sep, count = line[len(prefix):].rpartition(":")
+        if sep and count.isdigit():
+            counts[path] = int(count)
+    return counts
+
+
+def _compute_file_growth_rows(
+    worktree: str, base_sha: str, head_sha: str,
+    threshold: int = _FILE_GROWTH_THRESHOLD,
+) -> list:
+    """[(path, before, after), ...] for changed files with after >= threshold.
+
+    *after* is measured at *head_sha* (the pinned PR head), *before* at
+    *base_sha* (the merge-base) and is 0 for new files. Renames and
+    copy-pairs are reported under the NEW path, with *before* taken at the
+    old path. Sorted by after (desc) then path so the rendered table is
+    stable. Raises RuntimeError on git failure; the caller degrades to "".
+    """
+    if not (worktree and base_sha and head_sha) or base_sha == head_sha:
+        return []
+    rc, out, err = run_git(
+        "diff", "--name-status", "-M", "-z", base_sha, head_sha,
+        cwd=worktree, timeout=60,
+    )
+    if rc != 0:
+        raise RuntimeError(f"git diff failed (rc={rc}): {err or 'no stderr'}")
+    fields = out.split("\0")
+    changes: list = []  # (head_path, base_path)
+    i = 0
+    while i < len(fields):
+        status = fields[i]
+        if not status:
+            i += 1
+            continue
+        if status[0] in ("R", "C") and i + 2 < len(fields):
+            changes.append((fields[i + 2], fields[i + 1]))
+            i += 3
+        elif status[0] in ("A", "M", "T") and i + 1 < len(fields):
+            changes.append((fields[i + 1], fields[i + 1]))
+            i += 2
+        else:
+            # D and anything unrecognized: nothing to measure on the head side.
+            i += 2
+    if not changes:
+        return []
+    after = _git_grep_line_counts(worktree, head_sha, [p for p, _ in changes])
+    kept = [(hp, bp) for hp, bp in changes if after.get(hp, 0) >= threshold]
+    if not kept:
+        return []
+    before_paths = sorted({bp for _, bp in kept})
+    before = _git_grep_line_counts(worktree, base_sha, before_paths)
+    rows = [(hp, before.get(bp, 0), after[hp]) for hp, bp in kept]
+    rows.sort(key=lambda r: (-r[2], r[0]))
+    return rows
+
+
+def _build_file_growth_block(
+    worktree: str, base_sha: str, head_sha: str,
+) -> str:
+    """Render the ``{FILE_GROWTH}`` fact block, or "" when there is no signal.
+
+    "" is the common case (no changed file at/over the threshold) and keeps
+    the prompt content-identical to the pre-signal review. Never raises.
+    """
+    try:
+        rows = _compute_file_growth_rows(worktree, base_sha, head_sha)
+    except Exception as e:
+        log("review", f"file-growth signal skipped: {e}")
+        return ""
+    if not rows:
+        return ""
+    shown = rows[:_FILE_GROWTH_MAX_ROWS]
+    lines = [
+        "**File Growth Signals (measured).** The line counts below were "
+        "computed from this PR's base and head commits — facts, not "
+        "estimates. Cite the table row for a file instead of re-running "
+        "`wc -l` on it.",
+        "",
+        "| File | Before | After | Δ |",
+        "| --- | ---: | ---: | ---: |",
+    ]
+    for path, before, after in shown:
+        lines.append(f"| `{path}` | {before} | {after} | {after - before:+d} |")
+    extra = len(rows) - len(shown)
+    if extra > 0:
+        lines.append(f"| … +{extra} more changed file(s) at or over the limit | | | |")
+    lines += [
+        "",
+        f"Listed = changed files whose head count is at or over "
+        f"{_FILE_GROWTH_THRESHOLD} lines. A row with Before below that limit "
+        "is a confirmed crossing; a row already past it that grew further is "
+        "the same signal on an already-large file. If the repo's own "
+        "convention states a different limit, apply it to these numbers and "
+        "check other changed files with the read-only shell. The table is "
+        "evidence — raise a finding per the severity bar; do not file the "
+        "numbers themselves as a finding.",
+    ]
+    return "\n".join(lines)
+
+
+def _resolve_file_growth_block(
+    worktree: str, owner: str, repo: str, base_ref: str,
+    known_base_sha: str = "",
+) -> str:
+    """File-growth fact block for a pinned PR-head worktree, or "".
+
+    The head is the worktree's own HEAD -- the pin already verified it
+    against GitHub's live ``headRefOid``, so no extra API round-trip. The
+    base is the merge-base: reuse *known_base_sha* when the caller already
+    resolved it (the reuse gate), else one best-effort lookup. Every
+    failure degrades to "" so the signal can never cost the review.
+    """
+    try:
+        rc, head, _err = run_git("rev-parse", "HEAD", cwd=worktree, timeout=10)
+        if rc != 0 or not head:
+            log("review", f"file-growth signal skipped: no HEAD in {worktree!r}")
+            return ""
+        base = known_base_sha or _merge_base_sha(owner, repo, base_ref, head)
+        if not base:
+            return ""
+        return _build_file_growth_block(worktree, base, head)
+    except Exception as e:
+        log("review", f"file-growth signal skipped: {e}")
+        return ""
 
 
 def build_review_prompt(
