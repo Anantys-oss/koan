@@ -477,6 +477,37 @@ def get_project_running_indicator(config: dict, project_name: str) -> dict:
     return {**base, **{k: v for k, v in ri.items() if v is not None}}
 
 
+def get_explicit_base_branch(project_name: str) -> Optional[str]:
+    """Return the project's explicitly configured base_branch, or None.
+
+    Reads only the project entry's ``git_auto_merge.base_branch`` from
+    projects.yaml — no defaults-section inheritance, no remote detection,
+    no fallback. Callers that must distinguish "the operator chose this
+    branch" from "this is a guess" use this; ``resolve_base_branch()`` is
+    for callers that just need a usable answer.
+
+    Safe to call when KOAN_ROOT is unset or the config is missing (returns
+    None). Never raises.
+    """
+    import os
+
+    try:
+        koan_root = os.environ.get("KOAN_ROOT", "")
+        if not koan_root:
+            return None
+        config = load_projects_config(koan_root)
+        if not config:
+            return None
+        proj_cfg = _find_project_entry(config.get("projects", {}) or {}, project_name) or {}
+        proj_am = proj_cfg.get("git_auto_merge", {}) or {}
+        base = proj_am.get("base_branch")
+        if isinstance(base, str) and base.strip():
+            return base.strip()
+        return None
+    except (ValueError, OSError, KeyError):
+        return None
+
+
 def resolve_base_branch(
     project_name: str, project_path: Optional[str] = None
 ) -> str:

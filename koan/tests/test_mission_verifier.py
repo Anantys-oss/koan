@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -654,9 +655,33 @@ class TestGetBaseRefOffMain:
         # a repo with no main/master refs has no base.
         assert _get_base_ref(str(develop_repo)) is None
 
-    def test_well_known_main_wins_over_config(self, dev_project, tmp_path):
-        # A repo that really does have origin/main resolves to it even when
-        # the project config names a different base branch.
+    def test_explicit_config_wins_over_well_known_main(
+        self, dev_project, tmp_path
+    ):
+        # The operator wrote base_branch: develop in projects.yaml — the
+        # mission ran against develop, so the diff must be taken against it
+        # even when the repo also has an origin/main.
+        bare = tmp_path / "both.git"
+        bare.mkdir()
+        _git(bare, "init", "--bare", "-b", "main", ".")
+        seed = tmp_path / "seed"
+        _git(tmp_path, "clone", str(bare), "seed")
+        _commit_file(seed, "a.txt", "main line\n", "initial commit on main")
+        _git(seed, "push", "origin", "main")
+        _git(seed, "checkout", "-b", "develop")
+        _commit_file(seed, "b.txt", "dev line\n", "initial commit on develop")
+        _git(seed, "push", "origin", "develop")
+
+        repo = tmp_path / "work"
+        _git(tmp_path, "clone", str(bare), "work")
+        _git(repo, "checkout", "-b", "koan/feature", "origin/develop")
+        assert _get_base_ref(str(repo), dev_project) == "origin/develop"
+
+    def test_falls_back_to_main_when_configured_base_missing(
+        self, dev_project, tmp_path
+    ):
+        # Config names develop but the repo has no develop branch (stale
+        # config): the well-known refs still carry the check.
         bare = tmp_path / "main.git"
         bare.mkdir()
         _git(bare, "init", "--bare", "-b", "main", ".")
@@ -681,6 +706,57 @@ class TestGetBaseRefOffMain:
         monkeypatch.setenv("KOAN_ROOT", str(develop_repo.parent / "missing"))
         assert _get_base_ref(str(develop_repo), "ghostproj") == "origin/develop"
 
+    def test_main_fallback_not_cached(self, develop_repo, monkeypatch):
+        # resolve_base_branch returns its guessed "main" when detection
+        # fails. That guess must not be memoised: the next mission retries
+        # resolution instead of reusing the guess for the process lifetime.
+        monkeypatch.setenv("KOAN_ROOT", str(develop_repo.parent / "missing"))
+        calls = {"n": 0}
+
+        def flaky_resolve(name, path=None):
+            calls["n"] += 1
+            return "main" if calls["n"] == 1 else "develop"
+
+        monkeypatch.setattr(
+            "app.projects_config.resolve_base_branch", flaky_resolve
+        )
+        assert _get_base_ref(str(develop_repo), "ghostproj") is None
+        assert _get_base_ref(str(develop_repo), "ghostproj") == "origin/develop"
+        assert calls["n"] == 2  # the "main" guess was not memoised
+
+    def test_config_edit_invalidates_memo(
+        self, develop_repo, tmp_path, monkeypatch
+    ):
+        # Operator edits projects.yaml while the process runs: the memo is
+        # keyed on the file mtime, so the new explicit base_branch is
+        # picked up without a restart (load_projects_config re-reads on
+        # mtime change, so the fresh value is what gets re-resolved).
+        root = tmp_path / "koanroot"
+        (root / "instance").mkdir(parents=True)
+        yaml_path = root / "instance" / "projects.yaml"
+        monkeypatch.setenv("KOAN_ROOT", str(root))
+        yaml_path.write_text(
+            "projects:\n  memoproj:\n    path: /unused\n"
+        )
+        # No explicit base_branch: resolution falls to remote detection
+        # and the answer lands in the memo.
+        assert _get_base_ref(str(develop_repo), "memoproj") == "origin/develop"
+
+        # The operator now writes an explicit base_branch...
+        _git(develop_repo, "branch", "release")
+        _git(develop_repo, "push", "origin", "release")
+        yaml_path.write_text(
+            "projects:\n"
+            "  memoproj:\n"
+            "    path: /unused\n"
+            "    git_auto_merge:\n"
+            "      base_branch: release\n"
+        )
+        # Force a distinct mtime (coarse filesystems may not advance it).
+        os.utime(yaml_path, (time.time() + 5, time.time() + 5))
+        # ...and the stale memo must not keep diffing against the old base.
+        assert _get_base_ref(str(develop_repo), "memoproj") == "origin/release"
+
 
 class TestChecksOnOffMainBase:
     def test_diff_coherence_passes_on_develop_base(self, develop_repo, dev_project):
@@ -694,6 +770,22 @@ class TestChecksOnOffMainBase:
         # Guard: without a project name the old SKIP behaviour holds.
         check = check_diff_coherence(str(develop_repo), "koan/")
         assert check.status == CheckStatus.SKIP
+        assert "No base ref found" in check.message
+
+    def test_diff_coherence_warns_with_project_name_when_base_unresolved(
+        self, tmp_path, monkeypatch
+    ):
+        # With a project name the resolver had everything it needed; an
+        # unresolved base must surface as a WARN (format_verify_result
+        # drops SKIPs — a silent gate no-op is the bug being fixed).
+        # Remote-less repo: no well-known refs, no remote to detect from.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git(repo, "init", "-b", "koan/feature", ".")
+        _commit_file(repo, "a.txt", "x\n", "initial commit")
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path / "missing"))
+        check = check_diff_coherence(str(repo), "koan/", "ghostproj")
+        assert check.status == CheckStatus.WARN
         assert "No base ref found" in check.message
 
     def test_commit_quality_warns_on_fixup(self, develop_repo, dev_project):
@@ -724,11 +816,17 @@ class TestChecksOnOffMainBase:
         assert check.status == CheckStatus.PASS
         assert "cache" in check.message
 
+    @patch("app.github.run_gh")
     def test_verify_mission_pipeline_runs_checks_off_main(
-        self, develop_repo, dev_project
+        self, mock_gh, develop_repo, dev_project
     ):
         # Full pipeline (exit_code=0 path): with the base ref resolved the
         # base-dependent checks actually run instead of skipping.
+        # `gh` is mocked — check_pr_created would otherwise spawn a real
+        # subprocess in the throwaway repo (slow, environment-dependent).
+        mock_gh.return_value = (
+            '{"number": 42, "state": "OPEN", "isDraft": true}'
+        )
         result = verify_mission(
             str(develop_repo), "implement cache layer",
             exit_code=0, project_name=dev_project,
@@ -736,3 +834,4 @@ class TestChecksOnOffMainBase:
         by_name = {c.name: c for c in result.checks}
         assert by_name["diff_coherence"].status == CheckStatus.PASS
         assert by_name["commit_quality"].status == CheckStatus.PASS
+        assert by_name["pr_created"].status == CheckStatus.PASS

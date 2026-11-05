@@ -21,6 +21,7 @@ from app.projects_config import (
     get_project_running_indicator,
     get_project_submit_to_repository,
     get_project_tools,
+    get_explicit_base_branch,
     resolve_base_branch,
     validate_project_paths,
     _validate_config,
@@ -1401,6 +1402,83 @@ projects:
         with patch("app.config._load_config", return_value={"models": {"mission": "opus"}}):
             result = get_claude_flags_for_role("mission", project_name="nonexistent")
         assert "opus" in result
+
+
+# ---------------------------------------------------------------------------
+# get_explicit_base_branch
+# ---------------------------------------------------------------------------
+
+
+class TestGetExplicitBaseBranch:
+    """Tests for get_explicit_base_branch() — project entry only, no fallbacks."""
+
+    def test_returns_explicit_project_base_branch(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / "projects.yaml").write_text("""
+projects:
+  backend:
+    path: /tmp/backend
+    git_auto_merge:
+      base_branch: develop
+""")
+        assert get_explicit_base_branch("backend") == "develop"
+
+    def test_none_when_project_absent(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / "projects.yaml").write_text("""
+projects:
+  backend:
+    path: /tmp/backend
+    git_auto_merge:
+      base_branch: develop
+""")
+        assert get_explicit_base_branch("other") is None
+
+    def test_none_for_defaults_section_only(self, tmp_path, monkeypatch):
+        """defaults.git_auto_merge.base_branch is inherited, not explicit."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / "projects.yaml").write_text("""
+defaults:
+  git_auto_merge:
+    base_branch: develop
+projects:
+  app:
+    path: /tmp/app
+""")
+        assert get_explicit_base_branch("app") is None
+
+    def test_none_when_project_has_no_auto_merge(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / "projects.yaml").write_text("""
+projects:
+  app:
+    path: /tmp/app
+""")
+        assert get_explicit_base_branch("app") is None
+
+    def test_none_when_koan_root_unset(self, monkeypatch):
+        monkeypatch.delenv("KOAN_ROOT", raising=False)
+        assert get_explicit_base_branch("app") is None
+
+    def test_none_when_projects_yaml_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        assert get_explicit_base_branch("app") is None
+
+    def test_invalid_yaml_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / "projects.yaml").write_text("not: [valid yaml")
+        assert get_explicit_base_branch("app") is None
+
+    def test_case_insensitive_project_lookup(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / "projects.yaml").write_text("""
+projects:
+  MyRepo:
+    path: /tmp/myrepo
+    git_auto_merge:
+      base_branch: release
+""")
+        assert get_explicit_base_branch("myrepo") == "release"
 
 
 # ---------------------------------------------------------------------------
