@@ -2973,6 +2973,55 @@ class TestGetReviewDiscoveryConfig:
             assert get_review_discovery_config()["enabled"] is False
 
 
+class TestGetReviewCodexAdversarialConfig:
+    """Opt-in Codex adversarial-review backend getter (default OFF)."""
+
+    def test_defaults(self):
+        from app.config import get_review_codex_adversarial_config
+        with _mock_config({}):
+            assert get_review_codex_adversarial_config() == {
+                "enabled": False,
+                "companion_script": "",
+                "timeout_seconds": 900,
+                "model": "",
+                "fallback_to_default": True,
+                "run_reflection": True,
+            }
+
+    def test_explicit_values(self):
+        from app.config import get_review_codex_adversarial_config
+        with _mock_config({"review_codex_adversarial": {
+            "enabled": True,
+            "companion_script": " /opt/codex-companion.mjs ",
+            "timeout_seconds": 600,
+            "model": "gpt-5.4",
+            "fallback_to_default": False,
+            "run_reflection": False,
+        }}):
+            cfg = get_review_codex_adversarial_config()
+        assert cfg["enabled"] is True
+        assert cfg["companion_script"] == "/opt/codex-companion.mjs"
+        assert cfg["timeout_seconds"] == 600
+        assert cfg["model"] == "gpt-5.4"
+        assert cfg["fallback_to_default"] is False
+        assert cfg["run_reflection"] is False
+
+    def test_garbled_values_fail_safe(self):
+        from app.config import get_review_codex_adversarial_config
+        with _mock_config({"review_codex_adversarial": {
+            "enabled": "??", "timeout_seconds": "soon", "companion_script": 42,
+        }}):
+            cfg = get_review_codex_adversarial_config()
+        assert cfg["enabled"] is False
+        assert cfg["timeout_seconds"] == 900
+        assert cfg["companion_script"] == ""
+
+    def test_timeout_clamped(self):
+        from app.config import get_review_codex_adversarial_config
+        with _mock_config({"review_codex_adversarial": {"timeout_seconds": 5}}):
+            assert get_review_codex_adversarial_config()["timeout_seconds"] == 60
+
+
 # --- is_mission_hooks_enabled (operator opt-in for repo shell hooks) ---
 
 

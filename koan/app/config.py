@@ -2813,6 +2813,55 @@ def get_review_discovery_config(project_name: str = "") -> dict:
     return {"enabled": _safe_bool(merged.get("enabled"), defaults["enabled"])}
 
 
+def get_review_codex_adversarial_config(project_name: str = "") -> dict:
+    """Opt-in Codex adversarial-review backend for /review analysis.
+
+    When enabled, ``/review`` runs the codex-plugin-cc companion
+    (``adversarial-review --json``) inside the pinned PR-head worktree and maps
+    its structured findings into REVIEW_SCHEMA. OFF by default: disabled means
+    the review path is byte-identical to the provider-only review.
+
+    Config key: review_codex_adversarial
+      - enabled (bool): default False.
+      - companion_script (str): absolute path to codex-companion.mjs. Required
+        when enabled; empty fails the Codex attempt (-> fallback/error).
+      - timeout_seconds (int, 60-3600): default 900. Further capped at run time
+        by the review stall bound so the outer watchdog never fires first.
+      - model (str): optional Codex model override; also shown in the footer.
+      - fallback_to_default (bool): on failure run the normal provider review.
+        Default True.
+      - run_reflection (bool): run the existing reflection pass over mapped
+        findings. Default True.
+    """
+    defaults = {
+        "enabled": False,
+        "companion_script": "",
+        "timeout_seconds": 900,
+        "model": "",
+        "fallback_to_default": True,
+        "run_reflection": True,
+    }
+    merged = _get_config_with_overrides(
+        "review_codex_adversarial", defaults, project_name)
+    try:
+        timeout = int(merged.get("timeout_seconds"))
+    except (TypeError, ValueError):
+        timeout = defaults["timeout_seconds"]
+
+    def _str(key: str) -> str:
+        value = merged.get(key)
+        return value.strip() if isinstance(value, str) else ""
+
+    return {
+        "enabled": _safe_bool(merged.get("enabled"), False),
+        "companion_script": _str("companion_script"),
+        "timeout_seconds": max(60, min(timeout, 3600)),
+        "model": _str("model"),
+        "fallback_to_default": _safe_bool(merged.get("fallback_to_default"), True),
+        "run_reflection": _safe_bool(merged.get("run_reflection"), True),
+    }
+
+
 def get_review_dispositions_config(project_name: str = "") -> dict:
     """Honor human PR-comment dispositions of findings (spec 010, US7).
 

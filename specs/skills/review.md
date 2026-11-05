@@ -71,6 +71,41 @@ See `docs/users/skills.md` for the end-user `/review` reference and
 - **Combo member:** part of `review_rebase` (`/rr`) and `ultrareview`.
 - **Async:** runs as a queued agent-loop mission.
 
+### Opt-in Codex adversarial backend
+
+When `review_codex_adversarial.enabled` is true, `run_review`'s analysis step
+first invokes the local codex-plugin-cc companion inside the pinned PR-head
+worktree. Example, for a PR targeting `main` with `model: gpt-5.4`:
+
+    node /opt/codex-plugin-cc/scripts/codex-companion.mjs adversarial-review --json --base main --model gpt-5.4
+
+Kōan builds this command itself; the operator never types it. The script
+path is `review_codex_adversarial.companion_script`, `--base` is the PR's base
+branch (`context["base"]`), and `--model` is appended only when
+`review_codex_adversarial.model` is non-empty.
+
+Contract:
+
+- **Opt-in only** (default off). Disabled ⇒ byte-identical current behaviour.
+- Only `run_review` uses it; `run_private_review` (no pinned worktree) always
+  uses the provider path.
+- Consume the companion's structured `result` object only — never parse
+  Markdown and never post raw companion JSON.
+- Map into the existing `REVIEW_SCHEMA`; presentation, LGTM derivation, inline
+  comments, accuracy gate and sidecars are unchanged.
+- Severity map: `critical→critical`, `high→critical`, `medium→warning`,
+  `low→suggestion`, unknown→`suggestion`. `lgtm` is always re-derived from the
+  mapped severities; the provider `verdict` is ignored.
+- Reflection runs over mapped findings when `run_reflection` is true.
+- On failure (not configured, node missing, timeout, non-JSON, missing
+  `result`): `fallback_to_default: true` ⇒ normal provider review;
+  otherwise the review fails with the error (never an unparseable placeholder).
+- The companion timeout is `min(timeout_seconds, review stall bound)` so the
+  outer skill-runner watchdog never kills the silent companion first.
+- Footer attribution shows provider `codex` and the configured `model` when
+  the Codex path produced the review.
+- Does not change closed/merged, pause-label, draft-skip, or `--force` gates.
+
 ## Invariants
 
 - Multi-URL queues preserve order via a single atomic locked insert.
