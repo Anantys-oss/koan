@@ -47,6 +47,7 @@ from app.review_runner import (
     _resolve_file_growth_block,
     _FILE_GROWTH_THRESHOLD,
     _FILE_GROWTH_MAX_ROWS,
+    _STRICT_QUALITY_BLOCK,
 )
 
 
@@ -8899,3 +8900,65 @@ class TestFileGrowthPromptWiring:
         from app.prompts import PROMPT_DIR
         partial = PROMPT_DIR / "_partials" / "review-structural-quality.md"
         assert "{FILE_GROWTH}" in partial.read_text()
+
+
+@pytest.fixture
+def strict_review_skill_dir(tmp_path):
+    prompts_dir = tmp_path / "prompts"
+    prompts_dir.mkdir()
+    (prompts_dir / "review-architecture.md").write_text(
+        "Arch review: {TITLE}\n{STRICT_QUALITY}\nDiff: {DIFF}\n"
+    )
+    (prompts_dir / "review.md").write_text("Default: {TITLE}\n{DIFF}\n")
+    return tmp_path
+
+
+class TestStrictQualityWiring:
+    """#2505: presumptive-blocker calibration, ultra-only."""
+
+    def test_ultra_renders_strict_calibration_in_architecture_prompt(
+        self, pr_context, strict_review_skill_dir,
+    ):
+        prompt, _ = build_review_prompt(
+            pr_context, skill_dir=strict_review_skill_dir,
+            architecture=True, ultra=True,
+        )
+        assert "Strict Quality Calibration" in prompt
+        assert "presumptively" in prompt
+
+    def test_plain_architecture_review_has_no_strict_calibration(
+        self, pr_context, strict_review_skill_dir,
+    ):
+        prompt, _ = build_review_prompt(
+            pr_context, skill_dir=strict_review_skill_dir, architecture=True,
+        )
+        assert "Strict Quality Calibration" not in prompt
+        assert "{STRICT_QUALITY}" not in prompt
+
+    def test_default_review_has_no_strict_calibration(
+        self, pr_context, strict_review_skill_dir,
+    ):
+        prompt, _ = build_review_prompt(
+            pr_context, skill_dir=strict_review_skill_dir, ultra=True,
+        )
+        # ultra implies architecture=True in run_review, so the default
+        # prompt is never selected with ultra; but even if it were, the
+        # default prompt carries no slot.
+        assert "{STRICT_QUALITY}" not in prompt
+        assert "Strict Quality Calibration" not in prompt
+
+    def test_strict_block_content_contract(self):
+        text = _STRICT_QUALITY_BLOCK
+        for signal in ("1000", "Ad-hoc branching", "Unnecessary abstraction"):
+            assert signal in text
+        assert "🟡" in text
+        assert "🔴" in text  # the "never forces a 🔴" ceiling
+
+    def test_architecture_prompt_file_contains_strict_slot(self):
+        prompts = (
+            Path(__file__).resolve().parent.parent
+            / "skills" / "core" / "review" / "prompts"
+        )
+        assert "{STRICT_QUALITY}" in (
+            prompts / "review-architecture.md"
+        ).read_text()

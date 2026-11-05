@@ -759,6 +759,31 @@ def _pinned_files_in_diff(raw_diff: str, patterns: list) -> list:
 _FILE_GROWTH_THRESHOLD = 1000
 _FILE_GROWTH_MAX_ROWS = 25
 
+# #2505: strict quality calibration, rendered only for an explicitly
+# requested ultra review. Presumptive (arguable down), never 🔴 -- it
+# tightens the structural bar for a deep audit without touching the
+# default-pass yellow-tier rules (FR-008-010), which stay prompt-fixed.
+_STRICT_QUALITY_BLOCK = """### Strict Quality Calibration (this is an ultra review)
+
+This review was explicitly requested as a deep audit, so the severity bar
+shifts for a small set of structural signals: they are **presumptively
+🟡 Important** instead of 🟢 Suggestions — "should address" by default, not
+"nice to fix". A concrete justification (in the diff, the PR description, or
+a reply from the author) still argues a finding down, and a vague instance
+of the pattern still drops out.
+
+- A file that crosses ~1000 lines (or the limit the repo's own convention
+  states) with this change. Cite the File Growth Signals table row as the
+  measured evidence.
+- Ad-hoc branching or special-case conditionals bolted into shared code that
+  is not about this feature.
+- Unnecessary abstraction — a pass-through wrapper or generic layer that
+  adds indirection without buying clarity. Name the simplification.
+
+Nothing else changes: correctness and security keep their own bar, the
+verdict rules are untouched, and the worst a strict-mode structural finding
+reaches is 🟡 — this calibration never forces a 🔴."""
+
 
 def _git_grep_line_counts(worktree: str, sha: str, paths: list) -> dict:
     """Map *paths* to their line counts in tree *sha*.
@@ -922,6 +947,7 @@ def build_review_prompt(
     prior_review: Optional[str] = None,
     issue_context: Optional[str] = None,
     file_growth: str = "",
+    ultra: bool = False,
 ) -> Tuple[str, str]:
     """Build a prompt for Claude to review a PR.
 
@@ -1063,6 +1089,7 @@ def build_review_prompt(
         DISPOSITIONS=_build_dispositions_block(project_name),
         COMPREHENSIVE_DISCOVERY=_build_discovery_block(project_name),
         FILE_GROWTH=file_growth,
+        STRICT_QUALITY=_STRICT_QUALITY_BLOCK if ultra else "",
     )
 
     if plan_body:
@@ -4082,6 +4109,8 @@ def run_private_review(
 
     plan_body = _resolve_plan_body(plan_url, context.get("body", ""))
 
+    # Strict mode is prompt text only, safe without a pinned tree; no
+    # file_growth (A10: run_private_review has no pinned PR-head worktree).
     prompt, _coverage_note = build_review_prompt(
         context,
         skill_dir=skill_dir,
@@ -4092,6 +4121,7 @@ def run_private_review(
         project_path=project_path,
         triaged_files=triaged_files,
         project_name=project_name or "",
+        ultra=ultra,
     )
 
     notify_fn(f"Analyzing code changes on `{context['branch']}` privately...")
@@ -4522,7 +4552,7 @@ def _run_review_body(
         plan_body=plan_body or None, project_path=project_path,
         triaged_files=_triaged_files, project_name=project_name or "",
         prior_review=prior_review_text,
-        file_growth=file_growth,
+        file_growth=file_growth, ultra=ultra,
     )
 
     # Resolve provider/model for footer attribution against the review_mode
