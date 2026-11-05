@@ -71,9 +71,10 @@ Dev images need no release either: every push to `main` runs
 and the rolling `devel` tag, cancelling any superseded in-flight build. The
 ad-hoc `publish-container.yml` workflow remains the out-of-band channel for other
 dev images: dispatch it on `main` or `incubating` (any other ref is refused) with
-a tag such as `devel` (the default) or `pr-123`. The release-owned tags —
-`stable`, `latest`, and semver — are never minted by either; only `release.yml`
-publishes them.
+a tag such as `test` (the default) or `pr-123`. It refuses `devel`, which only
+the automatic workflow publishes, and the release-owned tags — `stable`,
+`latest`, and semver — are never minted by either; only `release.yml` publishes
+them.
 
 ## Version scheme
 
