@@ -2568,6 +2568,41 @@ class TestRunProjectTests:
         assert "10 passed" in result["details"]
 
     @patch("app.claude_step.subprocess.run")
+    def test_failing_without_count_uses_last_output_line(self, mock_run):
+        # A suite that dies before reporting results (e.g. a missing
+        # dependency at collection) has no test count. The report should
+        # show the real error, not a bare "FAILED" (issue #2519).
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stdout="",
+            stderr=(
+                "ImportError while importing conftest 'tests/conftest.py'\n"
+                "ModuleNotFoundError: No module named 'aiofiles'\n"
+            ),
+        )
+        result = run_project_tests("/project")
+        assert result["passed"] is False
+        assert result["details"] == "ModuleNotFoundError: No module named 'aiofiles'"
+
+    @patch("app.claude_step.subprocess.run")
+    def test_failing_without_count_and_no_output_keeps_failed(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout="", stderr="\n   \n"
+        )
+        result = run_project_tests("/project")
+        assert result["passed"] is False
+        assert result["details"] == "FAILED"
+
+    @patch("app.claude_step.subprocess.run")
+    def test_failing_last_line_is_length_capped(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout="", stderr="E " + "x" * 500 + "\n"
+        )
+        result = run_project_tests("/project")
+        assert result["passed"] is False
+        assert len(result["details"]) <= 200
+
+    @patch("app.claude_step.subprocess.run")
     def test_custom_test_command(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0,
