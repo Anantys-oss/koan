@@ -339,6 +339,21 @@ class TestAuditFinding:
 
 
 class TestBuildIssueBody:
+    @pytest.mark.parametrize("severity,icon", [
+        ("critical", "\U0001f534"), ("high", "\U0001f7e0"),
+        ("medium", "\U0001f7e1"), ("low", "\U0001f7e2"),
+    ])
+    def test_canonical_severity_icon(self, severity, icon):
+        f = AuditFinding(title="t", severity=severity, problem="p", location="l")
+        assert f"| **Severity** | {icon} {severity.capitalize()} |" in _build_issue_body(f)
+
+    @pytest.mark.parametrize("severity", ["HIGH", "warning", "bogus"])
+    def test_non_canonical_severity_keeps_question_mark(self, severity):
+        # Raw LLM text is not normalized: icon must match _SEVERITY_ORDER's
+        # exact-key ranking, so non-canonical values stay ❓.
+        f = AuditFinding(title="t", severity=severity, problem="p", location="l")
+        assert f"| **Severity** | ❓ {severity.capitalize()} |" in _build_issue_body(f)
+
     def test_contains_all_sections(self):
         finding = AuditFinding(
             title="fix: something",

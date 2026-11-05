@@ -29,6 +29,7 @@ from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from app.github_alerts import build_alert
 from app.prompts import load_prompt_or_skill
+from app.severity import severity_emoji
 
 DEFAULT_MAX_ISSUES = 5
 
@@ -297,12 +298,10 @@ def _find_existing_match(
     return existing_index.get(_compute_finding_fingerprint(finding))
 
 
-_SEVERITY_LABELS = {
-    "critical": "\U0001f534",  # red circle
-    "high": "\U0001f7e0",      # orange circle
-    "medium": "\U0001f7e1",    # yellow circle
-    "low": "\U0001f7e2",       # green circle
-}
+def _severity_icon(severity: str) -> str:
+    # Only exact _SEVERITY_ORDER keys get an icon, matching ranking/thresholds.
+    return severity_emoji(severity) if severity in _SEVERITY_ORDER else "❓"
+
 
 _EFFORT_LABELS = {
     "small": "\u26a1 Quick fix",
@@ -318,7 +317,7 @@ def _build_issue_body(finding: AuditFinding) -> str:
     audit runs can dedup against this issue even if the LLM rewords
     the title between runs.
     """
-    severity_icon = _SEVERITY_LABELS.get(finding.severity, "\u2753")
+    severity_icon = _severity_icon(finding.severity)
     effort_label = _EFFORT_LABELS.get(finding.effort, finding.effort)
     fingerprint = _compute_finding_fingerprint(finding)
     lines = []
@@ -807,7 +806,7 @@ def _write_findings_to_journal(
         lines.extend([f"**Focus:** {extra_context}", ""])
 
     for i, finding in enumerate(findings, 1):
-        severity_icon = _SEVERITY_LABELS.get(finding.severity, "❓")
+        severity_icon = _severity_icon(finding.severity)
         lines.extend([
             f"### {i}. {severity_icon} {finding.severity.capitalize()} — {finding.title}",
             "",
