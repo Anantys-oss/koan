@@ -97,7 +97,8 @@ The `/config` page is a first-class operator console — change configuration wi
 hand-editing YAML or going through Telegram:
 
 - **config.yaml / projects.yaml** — raw, comment-preserving textarea editors with
-  validation (secrets are redacted in the view).
+  validation (secrets are redacted in the view; saving an unchanged redacted
+  value keeps the on-disk secret, replacing it sets a new one).
 - **Projects (form)** — pick a project, toggle an allow-listed set of per-project
   overrides (`cli_provider`, `autoreview`, `focus`, `exploration`, `rtk`,
   `devcontainer`, `max_open_prs`, `max_pending_branches`, `github_url`,

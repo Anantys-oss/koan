@@ -19,6 +19,7 @@ from app.automation_rules import (
 from app.dashboard import state
 from app.dashboard_service import journal as journal_svc
 from app.dashboard_service import missions as missions_svc
+from app.dashboard_service import restore_redacted_values
 from app.dashboard_service import stats as stats_svc
 from app.dashboard_service import validate_yaml
 from app.recurring import (
@@ -54,6 +55,7 @@ def api_config_save(target: str):
     }
     if target not in paths:
         return jsonify({"ok": False, "error": f"Unknown config target: {target}"}), 404
+    path = paths[target]
 
     data = request.get_json(silent=True)
     if data is None:
@@ -62,6 +64,8 @@ def api_config_save(target: str):
     if content is None:
         return jsonify({"ok": False, "error": "Missing content"}), 400
 
+    # Masked editor: a <redacted> value means "unchanged" — restore it from disk.
+    content = restore_redacted_values(path.read_text(errors="replace") if path.exists() else "", content)
     if state._SENSITIVE_KEY_RE.search(content) and "<redacted>" in content:
         return jsonify({"ok": False, "error": "Content contains <redacted> placeholders — cannot save masked values"}), 422
 
@@ -69,7 +73,6 @@ def api_config_save(target: str):
     if error:
         return jsonify({"ok": False, "error": f"Invalid YAML: {error}"}), 422
 
-    path = paths[target]
     try:
         atomic_write(path, content)
     except OSError as e:
@@ -104,10 +107,9 @@ def api_config_restart_if_idle():
     # goes stale "idle" after 5 min, so a longer mission would be misclassified and the
     # restart would drop in-flight work). error_recovery / a stale writer also count busy.
     agent_state = stats_svc.get_agent_state()
-    label = (agent_state.get("label") or "").lower()
     busy = (is_mission_active(state.KOAN_ROOT)
             or agent_state.get("state") in ("working", "error_recovery")
-            or "stale" in label)
+            or "stale" in (agent_state.get("label") or "").lower())
     if busy:
         return jsonify({"ok": False, "error": "agent_busy",
                         "state": agent_state.get("state")}), 409
@@ -301,10 +303,8 @@ def api_recurring_update(task_id):
     if not data:
         return jsonify({"error": "Invalid or empty JSON body"}), 400
 
-    if "frequency" in data:
-        freq = data["frequency"]
-        if freq not in ("hourly", "daily", "weekly", "every"):
-            return jsonify({"error": f"Invalid frequency: {freq}"}), 400
+    if "frequency" in data and data["frequency"] not in ("hourly", "daily", "weekly", "every"):
+        return jsonify({"error": f"Invalid frequency: {data['frequency']}"}), 400
     if "at" in data and data["at"]:
         try:
             parse_at_time(data["at"] + " _")
