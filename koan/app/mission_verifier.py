@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Optional
 
+from app.git_prep import local_remote_default_branch
 from app.git_utils import run_git, run_git_strict
 
 
@@ -107,6 +108,78 @@ def _get_base_ref(project_path: str) -> Optional[str]:
         if rc == 0:
             return ref
     return None
+
+
+# States of the ahead-count the gate could not observe — the branch may well
+# be ahead, the check just could not look. The caller logs these and, for
+# code missions, keeps the pre-gate title-based FAIL.
+_UNOBSERVABLE_AHEAD_REASONS = ("no-base-ref", "git-error", "unparseable-count")
+
+# Operator-readable form of each unobservable reason, for the WARN/FAIL
+# message (same style as "PR check inconclusive: <ErrorType>").
+_AHEAD_REASON_NOTES = {
+    "no-base-ref": "no base ref",
+    "git-error": "git error",
+    "unparseable-count": "unparseable count",
+}
+
+
+def _branch_ahead_of_base(
+    project_path: str, branch: str, branch_prefix: str
+) -> "tuple[bool, str]":
+    """Return ``(ahead, reason)`` for the stranded-work observation.
+
+    The behaviour gate for the missing-PR FAIL. It replaces the title-verb
+    gate, which knew ~15 verbs and let any other phrasing ("Ship X")
+    complete as a silent success with commits stranded on the branch —
+    the bug class #2518 patched by adding "deliver", re-opened by every
+    verb it missed.
+
+    ``reason`` separates observed states (``"ahead"``, ``"empty"``,
+    ``"not-koan-branch"``) from states the gate could not observe
+    (``"no-base-ref"``, ``"git-error"``, ``"unparseable-count"``). The
+    caller keeps the WARN on an unobservable count, logs the degrade, and
+    for code missions falls back to the pre-gate title-based FAIL so the
+    gate only widens, never narrows, what was FAILing before. The base ref
+    is the project's actual base branch (the remote's default branch from
+    local refs), not a hard-coded main/master guess — see
+    ``_ahead_base_ref``.
+    """
+    if not branch.startswith(branch_prefix):
+        return False, "not-koan-branch"
+    base_ref = _ahead_base_ref(project_path)
+    if not base_ref:
+        return False, "no-base-ref"
+    rc, count, _ = run_git(
+        "rev-list", "--count", f"{base_ref}..HEAD", cwd=project_path
+    )
+    if rc != 0:
+        return False, "git-error"
+    try:
+        ahead = int(count.strip() or 0) > 0
+    except ValueError:
+        return False, "unparseable-count"
+    return ahead, "ahead" if ahead else "empty"
+
+
+def _ahead_base_ref(project_path: str) -> Optional[str]:
+    """Base ref for the ahead-count: the project's actual base branch.
+
+    Reads ``refs/remotes/<remote>/HEAD`` (set by clone or a fetch with
+    ``--set-head``) — local refs only, no network, so the post-mission
+    verify phase never pays for a remote round-trip. Falls back to the
+    legacy main/master list in ``_get_base_ref`` when no remote records a
+    default branch, so resolution only ever gets wider, never narrower.
+    """
+    for remote in ("upstream", "origin"):
+        name = local_remote_default_branch(remote, project_path)
+        if not name:
+            continue
+        ref = f"{remote}/{name}"
+        rc, _, _ = run_git("rev-parse", "--verify", ref, cwd=project_path)
+        if rc == 0:
+            return ref
+    return _get_base_ref(project_path)
 
 
 def check_diff_coherence(project_path: str, branch_prefix: str) -> Check:
@@ -217,9 +290,16 @@ def _gh_says_no_pr(exc: Exception) -> bool:
 def check_pr_created(
     project_path: str, mission_title: str, branch_prefix: str = "koan/"
 ) -> Check:
-    """Verify that a draft PR was created for code-changing missions.
+    """Verify that a draft PR was created for the mission's branch.
 
     Uses `gh pr view` to check for an existing PR on the current branch.
+    On a positive "no PR" answer the verdict is the observed branch
+    behaviour (Kōan prefix + commits ahead of the base), not the title:
+    FAIL on stranded commits, WARN carrying the reason otherwise — except
+    a code mission keeps the pre-gate title-based FAIL when the ahead-count
+    cannot be observed at all (no base ref, failed git call), so an
+    infrastructure error never un-FAILs what the old gate caught. Analysis
+    missions SKIP outright.
     """
     if _is_analysis_mission(mission_title):
         return Check(
@@ -266,20 +346,52 @@ def check_pr_created(
                 "pr_created", CheckStatus.WARN,
                 f"PR check inconclusive: {type(e).__name__}"
             )
-        # A code mission on a Kōan-created branch that left no PR behind did
-        # not finish: the work exists but nobody is told about it. As a WARN it
+        # A Kōan-created branch that left commits behind and no PR did not
+        # finish: the work exists but nobody is told about it. As a WARN it
         # completed as a success and went out silently, with the commits
         # stranded on the branch. FAIL routes it into the verify re-queue,
-        # which is capped and tags the reason. Anything else — a rebase, a
-        # chore, or a branch Kōan did not create (a base branch not named
-        # main/master, so the SKIP above missed it) — may legitimately end
-        # without a PR, and keeps the WARN. Same precondition as
-        # `check_diff_coherence`.
-        is_koan_code_branch = (
-            _is_code_mission(mission_title) and branch.startswith(branch_prefix)
+        # which is capped and tags the reason. The gate is the observed
+        # behaviour — `branch_prefix*` branch, commits ahead of the base ref —
+        # not the mission title: a title list only knew ~15 verbs and let any
+        # other phrasing ("Ship X") complete silently (#2518, re-opened by
+        # every verb it missed). Anything the gate cannot positively observe
+        # keeps the WARN with the reason in the message: an empty branch is
+        # diff_coherence's verdict, and a branch Kōan did not create may
+        # legitimately end without a PR. When the ahead-count itself is
+        # unobservable (no base ref, failed git call) the degrade is logged —
+        # a silent WARN here is how #2518-class stranding happens — and a
+        # code mission keeps the pre-gate title-based FAIL, so the behaviour
+        # gate only widens what was FAILing before, never narrows it.
+        ahead, reason = _branch_ahead_of_base(project_path, branch, branch_prefix)
+        if ahead:
+            return Check("pr_created", CheckStatus.FAIL, "No PR found for current branch")
+        if reason in _UNOBSERVABLE_AHEAD_REASONS:
+            fallback = _is_code_mission(mission_title)
+            print(
+                f"[verifier] pr_created ahead-count unavailable ({reason}); "
+                + ("keeping title-based FAIL (code mission)"
+                   if fallback else "degrading to WARN"),
+                file=sys.stderr,
+            )
+            note = _AHEAD_REASON_NOTES[reason]
+            if fallback:
+                return Check(
+                    "pr_created", CheckStatus.FAIL,
+                    f"No PR found for current branch "
+                    f"(ahead-count unavailable: {note}; code-mission fallback)",
+                )
+            return Check(
+                "pr_created", CheckStatus.WARN,
+                f"No PR found for current branch (ahead-count unavailable: {note})",
+            )
+        note = (
+            "branch not ahead of base" if reason == "empty"
+            else "branch outside configured prefix"
         )
-        status = CheckStatus.FAIL if is_koan_code_branch else CheckStatus.WARN
-        return Check("pr_created", status, "No PR found for current branch")
+        return Check(
+            "pr_created", CheckStatus.WARN,
+            f"No PR found for current branch ({note})",
+        )
 
 
 def check_commit_quality(project_path: str) -> Check:

@@ -4,7 +4,7 @@ title: "Mission Lifecycle"
 description: "Explains the mission queue format and lifecycle (Pending/In Progress/Done/Failed), org-wide missions, branch prep, direct skill dispatch, scheduling, recovery/retries, and missions.md integrity/size-bound safeguards."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-09-21
+updated: 2026-11-05
 ---
 
 # Mission Lifecycle
@@ -130,24 +130,44 @@ After a mission exits successfully, the RARV Verify phase
 `run_post_mission()` signals a re-queue and `_finalize_mission()` moves the
 mission back to **Pending** with a `[verify-failed: <summary>]` context tag
 instead of completing it. On a successful (exit 0) mission two checks can
-FAIL: `check_diff_coherence` (an empty branch) and `check_pr_created` (a code
-mission that produced commits on a `<branch_prefix>*` branch but no pull
+FAIL: `check_diff_coherence` (an empty branch) and `check_pr_created` (a
+Kōan-created branch with commits ahead of the base that never became a pull
 request) — the rest only PASS/WARN/SKIP. Both mean the mission stopped short of
 its own outcome, so a single failure is already a strong, unambiguous signal,
 and requiring two would make the re-queue unreachable.
 
 `check_pr_created` FAILs only when `gh` positively answered that the branch has
-no pull request. When the check itself could not run — expired auth, a timeout,
+no pull request **and** the observed behaviour shows stranded work: the branch
+starts with the configured `branch_prefix` *and* carries commits ahead of the
+base ref (`rev-list --count <base>..HEAD > 0`). `<base>` is the project's
+actual base branch — the remote's default branch read from local refs
+(`refs/remotes/<remote>/HEAD`, no network round-trip) — with the legacy
+`main`/`master` ref list as fallback, so a repo based on, say, `develop` is
+gated against `origin/develop`, not skipped. The gate is the behaviour, not
+the mission title — a title-verb list only knew ~15 verbs and let any other
+phrasing ("Ship X") complete as a silent success with commits stranded on the
+branch, the bug class #2518 patched by adding a verb and re-opened by every
+verb it missed. When the check itself could not run — expired auth, a timeout,
 `gh` missing, or a project with no GitHub remote — it stays a WARN reading
 `PR check inconclusive: <ErrorType>`, so an infrastructure problem never
-re-queues a mission whose PR may well exist. The FAIL also requires the branch
-to start with the configured `branch_prefix`, the same precondition
-`check_diff_coherence` applies: a branch Kōan did not create — including a base
-branch not named `main`/`master` — keeps the WARN.
+re-queues a mission whose PR may well exist. So does anything the gate cannot
+positively observe — an empty branch (that is `check_diff_coherence`'s
+verdict) or a branch Kōan did not create, including a base branch not named
+`main`/`master` — which keeps the WARN, with the reason in the message. When
+the ahead-count itself is unobservable (no base ref, a failed `rev-list`, an
+unparseable count) the degrade is logged to stderr, and a **code mission**
+keeps the pre-gate title-based FAIL — the behaviour gate only widens what was
+FAILing before, never narrows it, so an infrastructure error cannot quietly
+turn a stranded code mission back into a silent success. Verb-less missions
+with an unobservable ahead-count keep the WARN.
 
-- The re-queue is restricted to **code missions** (`_is_code_mission()`): an
-  empty branch is the *expected* outcome for an analysis / no-code mission, so
-  those complete normally regardless of `check_diff_coherence`. This avoids
+- A `pr_created` FAIL re-queues **regardless of the mission title**: it is
+  already behaviour-gated upstream (or is the logged code-mission fallback
+  when the gate could not observe), and the stranded work does not depend on
+  what the mission was called.
+- An empty-branch `check_diff_coherence` FAIL re-queues only for **code
+  missions** (`_is_code_mission()`): an empty branch is the *expected* outcome
+  for an analysis / no-code mission, so those complete normally. This avoids
   re-running a no-code mission twice and emitting false failure notices.
 - The cap is `verification.max_requeue` in `config.yaml` (default **2**); `0`
   disables the verify re-queue entirely.

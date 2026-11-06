@@ -30,6 +30,34 @@ _NO_PR_ERROR = (
 )
 
 
+def _git_ahead(branch: str, count: str):
+    """Git call sequence: on ``branch``, base ref resolves, ``count`` ahead.
+
+    Pairs with ``local_remote_default_branch`` mocked to
+    ``[None, "main"]`` (upstream unset, origin default → main), so the
+    resolved base ref is ``origin/main``.
+    """
+    return [
+        (0, branch, ""),   # rev-parse --abbrev-ref HEAD
+        (0, "", ""),       # rev-parse --verify origin/main
+        (0, count, ""),    # rev-list --count origin/main..HEAD
+    ]
+
+
+def _git_no_base_ref(branch: str):
+    """Git call sequence: on ``branch``, no remote default branch and none
+    of the four legacy base refs exist. Pairs with
+    ``local_remote_default_branch`` mocked to ``[None, None]``.
+    """
+    return [
+        (0, branch, ""),   # rev-parse --abbrev-ref HEAD
+        (1, "", ""),       # rev-parse --verify upstream/main
+        (1, "", ""),       # rev-parse --verify origin/main
+        (1, "", ""),       # rev-parse --verify upstream/master
+        (1, "", ""),       # rev-parse --verify origin/master
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Mission type classification
 # ---------------------------------------------------------------------------
@@ -222,23 +250,153 @@ class TestCheckPrCreated:
         assert "#42" in result.message
         assert "draft" in result.message
 
+    @patch("app.mission_verifier.local_remote_default_branch")
     @patch("app.mission_verifier.run_git")
     @patch("app.github.run_gh")
-    def test_fail_no_pr_on_code_mission(self, mock_gh, mock_git):
+    def test_fail_no_pr_on_code_mission(self, mock_gh, mock_git, mock_remote):
         """Commits on a branch and no PR means the mission stopped short."""
-        mock_git.return_value = (0, "koan/my-branch", "")
+        mock_remote.side_effect = [None, "main"]
+        mock_git.side_effect = _git_ahead("koan/my-branch", "3")
         mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
         result = check_pr_created("/project", "implement login")
         assert result.status == CheckStatus.FAIL
+        assert result.message == "No PR found for current branch"
 
+    @patch("app.mission_verifier.local_remote_default_branch")
     @patch("app.mission_verifier.run_git")
     @patch("app.github.run_gh")
-    def test_warn_no_pr_on_other_mission(self, mock_gh, mock_git):
-        """A non-code mission may legitimately end without a PR."""
-        mock_git.return_value = (0, "koan/my-branch", "")
+    def test_fail_no_pr_on_branch_with_commits_regardless_of_title(self, mock_gh, mock_git, mock_remote):
+        """The gate is behaviour, not the title. A verb-less mission that
+        leaves commits on a Kōan branch and no PR behind stopped short too —
+        the title-verb list let "Ship X" complete as a silent success, the
+        bug class #2518 patched by adding "deliver" and re-opened by every
+        verb it missed.
+        """
+        mock_remote.side_effect = [None, "main"]
+        mock_git.side_effect = _git_ahead("koan/my-branch", "2")
+        mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
+        result = check_pr_created("/project", "Ship the new landing page")
+        assert result.status == CheckStatus.FAIL
+
+    @patch("app.mission_verifier.local_remote_default_branch")
+    @patch("app.mission_verifier.run_git")
+    @patch("app.github.run_gh")
+    def test_fail_no_pr_on_rebase_title_with_commits(self, mock_gh, mock_git, mock_remote):
+        """A rebase-titled mission ending on a Kōan branch with commits ahead
+        and no PR is the same unfinished state — the title no longer excuses it.
+        """
+        mock_remote.side_effect = [None, "main"]
+        mock_git.side_effect = _git_ahead("koan/my-branch", "1")
         mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
         result = check_pr_created("/project", "rebase onto the base branch")
+        assert result.status == CheckStatus.FAIL
+
+    @patch("app.mission_verifier.local_remote_default_branch")
+    @patch("app.mission_verifier.run_git")
+    @patch("app.github.run_gh")
+    def test_warn_no_pr_on_branch_without_commits(self, mock_gh, mock_git, mock_remote):
+        """An empty Kōan branch carries no stranded work — diff_coherence owns
+        that verdict, and unverifiable "has work" degrades to the WARN.
+        """
+        mock_remote.side_effect = [None, "main"]
+        mock_git.side_effect = _git_ahead("koan/my-branch", "0")
+        mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
+        result = check_pr_created("/project", "Ship the new landing page")
         assert result.status == CheckStatus.WARN
+        assert "branch not ahead of base" in result.message
+
+    @patch("app.mission_verifier.local_remote_default_branch")
+    @patch("app.mission_verifier.run_git")
+    @patch("app.github.run_gh")
+    def test_warn_no_pr_when_base_ref_unknown(self, mock_gh, mock_git, mock_remote):
+        """Without a base ref the ahead-count cannot be observed: a verb-less
+        mission stays WARN (with the reason) — the title-based FAIL fallback
+        is reserved for code missions.
+        """
+        mock_remote.side_effect = [None, None]
+        mock_git.side_effect = _git_no_base_ref("koan/my-branch")
+        mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
+        result = check_pr_created("/project", "Ship the new landing page")
+        assert result.status == CheckStatus.WARN
+        assert "ahead-count unavailable: no base ref" in result.message
+
+    @patch("app.mission_verifier.local_remote_default_branch")
+    @patch("app.mission_verifier.run_git")
+    @patch("app.github.run_gh")
+    def test_fail_code_mission_fallback_when_ahead_count_unobservable(
+        self, mock_gh, mock_git, mock_remote, capsys
+    ):
+        """A missing base ref used to FAIL for code missions (title + prefix
+        gate). Keep that FAIL as a fallback when the ahead-count cannot be
+        observed, so an infrastructure gap never un-FAILs what the old gate
+        caught — and log the degrade instead of failing silently.
+        """
+        mock_remote.side_effect = [None, None]
+        mock_git.side_effect = _git_no_base_ref("koan/my-branch")
+        mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
+        result = check_pr_created("/project", "implement login")
+        assert result.status == CheckStatus.FAIL
+        assert "ahead-count unavailable: no base ref" in result.message
+        assert "code-mission fallback" in result.message
+        assert "unavailable (no-base-ref)" in capsys.readouterr().err
+
+    @patch("app.mission_verifier.local_remote_default_branch")
+    @patch("app.mission_verifier.run_git")
+    @patch("app.github.run_gh")
+    def test_fail_git_error_fallback_when_rev_list_fails(
+        self, mock_gh, mock_git, mock_remote, capsys
+    ):
+        """rev-list rc≠0 (lock contention, timeout) is unobservable, not
+        "no work": a code mission keeps the title-based FAIL, logged.
+        """
+        mock_remote.side_effect = [None, "main"]
+        mock_git.side_effect = [
+            (0, "koan/my-branch", ""),   # rev-parse --abbrev-ref HEAD
+            (0, "", ""),                 # rev-parse --verify origin/main
+            (128, "", "index.lock"),     # rev-list --count origin/main..HEAD
+        ]
+        mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
+        result = check_pr_created("/project", "implement login")
+        assert result.status == CheckStatus.FAIL
+        assert "ahead-count unavailable: git error" in result.message
+        assert "keeping title-based FAIL" in capsys.readouterr().err
+
+    @patch("app.mission_verifier.local_remote_default_branch")
+    @patch("app.mission_verifier.run_git")
+    @patch("app.github.run_gh")
+    def test_fail_unparseable_count_fallback_code_mission(
+        self, mock_gh, mock_git, mock_remote
+    ):
+        """An unparseable rev-list count is unobservable, like a failed call:
+        a code mission keeps the title-based FAIL.
+        """
+        mock_remote.side_effect = [None, "main"]
+        mock_git.side_effect = [
+            (0, "koan/my-branch", ""),   # rev-parse --abbrev-ref HEAD
+            (0, "", ""),                 # rev-parse --verify origin/main
+            (0, "not-a-number", ""),     # rev-list --count origin/main..HEAD
+        ]
+        mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
+        result = check_pr_created("/project", "implement login")
+        assert result.status == CheckStatus.FAIL
+        assert "ahead-count unavailable: unparseable count" in result.message
+
+    @patch("app.mission_verifier.local_remote_default_branch")
+    @patch("app.mission_verifier.run_git")
+    @patch("app.github.run_gh")
+    def test_warn_unobservable_non_code_mission_carries_reason(
+        self, mock_gh, mock_git, mock_remote, capsys
+    ):
+        """A verb-less mission has no title-based FAIL to fall back to —
+        WARN, with the reason the gate could not look, and a log line.
+        """
+        mock_remote.side_effect = [None, None]
+        mock_git.side_effect = _git_no_base_ref("koan/my-branch")
+        mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
+        result = check_pr_created("/project", "Ship the new landing page")
+        assert result.status == CheckStatus.WARN
+        assert "ahead-count unavailable: no base ref" in result.message
+        assert "degrading to WARN" in capsys.readouterr().err
 
     @patch("app.mission_verifier.run_git")
     @patch("app.github.run_gh")
@@ -249,19 +407,66 @@ class TestCheckPrCreated:
         result = check_pr_created("/project", "implement login")
         assert result.status == CheckStatus.WARN
 
+    @patch("app.mission_verifier.local_remote_default_branch")
     @patch("app.mission_verifier.run_git")
     @patch("app.github.run_gh")
-    def test_fail_respects_configured_branch_prefix(self, mock_gh, mock_git):
-        """A custom prefix branch still FAILs; an unrelated one only WARNs."""
+    def test_fail_respects_configured_branch_prefix(self, mock_gh, mock_git, mock_remote):
+        """A custom prefix branch still FAILs; an unrelated one only WARNs.
+        Title carries no code verb — the prefix + commits carry the verdict.
+        """
         mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
-        mock_git.return_value = (0, "bot/my-branch", "")
+        # Only the first call (a bot/* branch) reaches base resolution.
+        mock_remote.side_effect = [None, "main"]
+        mock_git.side_effect = _git_ahead("bot/my-branch", "1")
         assert check_pr_created(
-            "/project", "implement login", "bot/"
+            "/project", "Ship the feature", "bot/"
         ).status == CheckStatus.FAIL
-        mock_git.return_value = (0, "feature/hand-made", "")
-        assert check_pr_created(
-            "/project", "implement login", "bot/"
-        ).status == CheckStatus.WARN
+        mock_git.side_effect = _git_ahead("feature/hand-made", "1")
+        result = check_pr_created("/project", "Ship the feature", "bot/")
+        assert result.status == CheckStatus.WARN
+        assert "branch outside configured prefix" in result.message
+
+    @patch("app.mission_verifier.local_remote_default_branch")
+    @patch("app.mission_verifier.run_git")
+    @patch("app.github.run_gh")
+    def test_fail_uses_project_base_branch_not_hardcoded_main(
+        self, mock_gh, mock_git, mock_remote
+    ):
+        """The ahead-count runs against the project's actual base branch —
+        the remote's default branch from local refs — not a hard-coded
+        main/master guess: a repo based on `develop` is gated on
+        `origin/develop`.
+        """
+        mock_remote.side_effect = [None, "develop"]
+        mock_git.side_effect = [
+            (0, "koan/my-branch", ""),   # rev-parse --abbrev-ref HEAD
+            (0, "", ""),                 # rev-parse --verify origin/develop
+            (0, "2", ""),                # rev-list --count origin/develop..HEAD
+        ]
+        mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
+        result = check_pr_created("/project", "Ship the new landing page")
+        assert result.status == CheckStatus.FAIL
+        assert result.message == "No PR found for current branch"
+
+    @patch("app.mission_verifier.local_remote_default_branch")
+    @patch("app.mission_verifier.run_git")
+    @patch("app.github.run_gh")
+    def test_fail_base_ref_list_fallback_when_no_remote_default(
+        self, mock_gh, mock_git, mock_remote
+    ):
+        """Without a recorded remote default branch the legacy main/master
+        ref list still resolves the base — resolution only gets wider,
+        never narrower.
+        """
+        mock_remote.side_effect = [None, None]
+        mock_git.side_effect = [
+            (0, "koan/my-branch", ""),   # rev-parse --abbrev-ref HEAD
+            (0, "", ""),                 # rev-parse --verify upstream/main
+            (0, "1", ""),                # rev-list --count upstream/main..HEAD
+        ]
+        mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
+        result = check_pr_created("/project", "Ship the new landing page")
+        assert result.status == CheckStatus.FAIL
 
     @patch("app.mission_verifier.run_git")
     @patch("app.github.run_gh")
