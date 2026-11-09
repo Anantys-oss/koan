@@ -13,4 +13,4 @@ pytest-xdist>=3.8.0
 
 # Slack provider (Socket Mode bridge). Pure-Python, light; only loaded when
 # KOAN_MESSAGING_PROVIDER=slack. Telegram remains the default provider.
-slack-sdk>=3.45.0
+slack-sdk>=3.46.0
