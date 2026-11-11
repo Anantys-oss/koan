@@ -6,14 +6,15 @@ name: 🐳 Publish Container
 # Pick the source branch with the workflow_dispatch ref selector (main or
 # incubating only) and the image tag via the input. Release-owned tags
 # (stable, latest, vX.Y semver) are banned here — they are minted exclusively
-# by release.yml. `devel` is banned too: it is owned by publish-dev-container.yml
-# so it always tracks the newest main build.
+# by release.yml. `devel` and `sha-*` are banned too: they are owned by
+# publish-dev-container.yml so devel tracks the newest main build and each
+# sha- tag stays pinned to its main commit.
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Docker tag to publish (default: test; stable/latest/semver are reserved for release.yml, devel for publish-dev-container.yml)"
+        description: "Docker tag to publish (default: test; stable/latest/semver are reserved for release.yml, devel/sha-* for publish-dev-container.yml)"
         required: false
         type: string
         default: test
@@ -51,8 +52,9 @@ jobs:
             exit 1
           fi
           # stable / latest / semver tags are minted only by release.yml,
-          # devel only by publish-dev-container.yml — never manually.
-          if printf '%s' "$TAG" | grep -qE '^(stable|latest|devel|v?[0-9]+(\.[0-9]+){1,2})$'; then
+          # devel and sha-<commit> only by publish-dev-container.yml — never
+          # manually (a sha- tag must stay pinned to its main commit).
+          if printf '%s' "$TAG" | grep -qE '^(stable|latest|devel|sha-.*|v?[0-9]+(\.[0-9]+){1,2})$'; then
             echo "::error::Tag '$TAG' is reserved for the release / dev-image workflows. Use 'test', 'pr-123' or another ad-hoc tag."
             exit 1
           fi

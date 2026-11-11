@@ -744,6 +744,15 @@ class TestDevImagePublishing:
             )
         manual = (self.WORKFLOWS / "publish-container.yml").read_text()
         reserved = re.search(r"grep -qE '(\^\([^']*)'", manual.split("Validate tag", 1)[1])
-        assert reserved and "devel" in reserved.group(1).split("|"), (
-            "publish-container.yml does not reserve the devel tag"
-        )
+        assert reserved, "publish-container.yml has no reserved-tag check"
+        # POSIX ERE and Python `re` agree for this pattern: test behaviour,
+        # not spelling.
+        pattern = reserved.group(1)
+        for tag in ("devel", "sha-" + "0" * 40, "stable", "latest", "v1.2"):
+            assert re.fullmatch(pattern, tag), (
+                f"publish-container.yml does not reserve the {tag} tag"
+            )
+        for tag in ("test", "pr-123"):
+            assert not re.fullmatch(pattern, tag), (
+                f"publish-container.yml wrongly reserves the ad-hoc {tag} tag"
+            )

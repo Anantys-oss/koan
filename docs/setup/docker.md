@@ -99,6 +99,8 @@ make docker-pull-up
 > A newer push cancels an in-flight build, so `:devel` never regresses to a stale
 > commit; a cancelled commit simply gets no `sha-` tag (any later one contains it).
 > Neither tag ever updates `:latest` or `:stable`, which move only on a real release.
+> The build is **not gated on tests**: `:devel` is the newest `main` build, not a
+> verified one — pin a known-good `sha-` tag if that matters.
 >
 > ```bash
 > make docker-pull-up KOAN_IMAGE=ghcr.io/anantys-oss/koan:devel
@@ -107,8 +109,8 @@ make docker-pull-up
 >
 > The **🐳 Publish Container** workflow (repo Actions → "Run workflow") remains for
 > on-demand images from `main` or `incubating` with a custom tag (default `test`);
-> it pushes **only** the requested tag. `devel` is reserved for the automatic
-> workflow there, alongside the release-owned `stable` / `latest` / semver tags.
+> it pushes **only** the requested tag. `devel` and `sha-*` are reserved for the
+> automatic workflow there, alongside the release-owned `stable` / `latest` / semver tags.
 
 > **UID/GID on the prebuilt image.** The published image runs as UID/GID
 > **1000**. On Linux hosts whose user isn't 1000, bind-mounted `instance/` and
