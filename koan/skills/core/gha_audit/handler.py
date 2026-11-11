@@ -3,6 +3,8 @@
 import re
 from pathlib import Path
 
+from app.severity import severity_emoji
+
 
 # ---------------------------------------------------------------------------
 # Vulnerability patterns
@@ -384,12 +386,6 @@ def _format_report(project, findings, file_count):
         by_severity.setdefault(f.severity, []).append(f)
 
     severity_order = [CRITICAL, HIGH, MEDIUM, LOW]
-    severity_emoji = {
-        CRITICAL: "\U0001f534",
-        HIGH: "\U0001f7e0",
-        MEDIUM: "\U0001f7e1",
-        LOW: "\u26aa",
-    }
 
     lines = [
         f"\U0001f6e1 **GHA Audit: {project}**\n",
@@ -401,7 +397,7 @@ def _format_report(project, findings, file_count):
         items = by_severity.get(sev, [])
         if not items:
             continue
-        emoji = severity_emoji.get(sev, "")
+        emoji = severity_emoji(sev)
         lines.append(f"\n{emoji} **{sev}** ({len(items)})")
         lines.extend(f"  {item.format()}" for item in items)
 
