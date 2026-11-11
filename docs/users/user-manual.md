@@ -1669,6 +1669,7 @@ Key per-project settings:
 - **`security_review`** — Automatic diff analysis for dangerous patterns before auto-merge (see below)
 - **`review_verdict`** — Control formal APPROVE/REQUEST_CHANGES verdict submission (see below)
 - **`private_review_gate`** — Override the private `/fix`, `/implement`, and `/rebase` post-PR review/fix loop
+- **`pr_quality`** — Post-mission Quality Report and auto-merge gate: `gate` (`strict`/`warn`/`off`), `test_command` (override the auto-detected test command — `make test`, `poetry run pytest`, `uv run pytest`, or `pytest`), and `test_timeout` (seconds, default 120)
 - **`authorized_users`** — GitHub users allowed to trigger via @mention
 - **`exploration`** — Enable/disable autonomous exploration
 

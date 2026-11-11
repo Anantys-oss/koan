@@ -589,6 +589,7 @@ def run_quality_pipeline(
     run_tests: bool = True,
     test_timeout: int = 120,
     gate_mode: str = "warn",
+    test_command: Optional[str] = None,
     status_callback=None,
 ) -> dict:
     """Run the full post-mission quality pipeline.
@@ -599,6 +600,9 @@ def run_quality_pipeline(
         run_tests: Whether to run the test phase.
         test_timeout: Timeout for test execution in seconds.
         gate_mode: Quality gate mode (strict/warn/off).
+        test_command: Optional test command override (e.g. from
+            ``pr_quality.test_command`` in projects.yaml). When set, it is
+            used instead of auto-detection.
         status_callback: Optional callable for status updates.
 
     Returns:
@@ -643,10 +647,12 @@ def run_quality_pipeline(
     if run_tests:
         _report("running tests")
         try:
-            from app.pr_review import detect_test_command
             from app.claude_step import run_project_tests
 
-            test_cmd = detect_test_command(project_path)
+            test_cmd = (test_command or "").strip()
+            if not test_cmd:
+                from app.pr_review import detect_test_command
+                test_cmd = detect_test_command(project_path) or ""
             if test_cmd:
                 test_result = run_project_tests(
                     project_path, test_cmd=test_cmd, timeout=test_timeout,

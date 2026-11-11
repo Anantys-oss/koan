@@ -458,6 +458,57 @@ class TestDetectTestCommand:
         (tmp_path / "tests").mkdir()
         assert detect_test_command(str(tmp_path)) == "pytest"
 
+    def test_poetry_project(self, tmp_path):
+        # Regression (issue #2519): a bare `pytest` runs in Kōan's
+        # interpreter, where the project's dependencies are missing, so
+        # Poetry projects always report "Tests: failed (FAILED)".
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.poetry]\nname = "my-lib"\nversion = "0.1.0"\n'
+        )
+        (tmp_path / "tests").mkdir()
+        assert detect_test_command(str(tmp_path)) == "poetry run pytest"
+
+    def test_poetry_project_via_lockfile(self, tmp_path):
+        (tmp_path / "pyproject.toml").write_text(
+            "[project]\nname = \"my-lib\"\n"
+        )
+        (tmp_path / "poetry.lock").write_text("")
+        (tmp_path / "tests").mkdir()
+        assert detect_test_command(str(tmp_path)) == "poetry run pytest"
+
+    def test_uv_project(self, tmp_path):
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = \"my-lib\"\n")
+        (tmp_path / "uv.lock").write_text("")
+        (tmp_path / "tests").mkdir()
+        assert detect_test_command(str(tmp_path)) == "uv run pytest"
+
+    def test_makefile_test_target_beats_poetry(self, tmp_path):
+        (tmp_path / "Makefile").write_text("test:\n\tpoetry run pytest\n")
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.poetry]\nname = "my-lib"\n'
+        )
+        (tmp_path / "tests").mkdir()
+        assert detect_test_command(str(tmp_path)) == "make test"
+
+    def test_makefile_without_test_target_falls_through(self, tmp_path):
+        # A Makefile with no `test:` target must not force a broken
+        # `make test`; the project's environment detection still applies.
+        (tmp_path / "Makefile").write_text("build:\n\techo build\n")
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.poetry]\nname = "my-lib"\n'
+        )
+        (tmp_path / "tests").mkdir()
+        assert detect_test_command(str(tmp_path)) == "poetry run pytest"
+
+    def test_poetry_lockfile_beats_uv_lockfile(self, tmp_path):
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.poetry]\nname = "my-lib"\n'
+        )
+        (tmp_path / "poetry.lock").write_text("")
+        (tmp_path / "uv.lock").write_text("")
+        (tmp_path / "tests").mkdir()
+        assert detect_test_command(str(tmp_path)) == "poetry run pytest"
+
     def test_python_with_makefile(self, tmp_path):
         (tmp_path / "Makefile").write_text("test:\n\tpytest\n")
         (tmp_path / "pyproject.toml").write_text("[tool.pytest]\n")

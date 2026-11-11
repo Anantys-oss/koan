@@ -1097,6 +1097,52 @@ def _get_quality_gate_mode(
     return "warn"
 
 
+def _get_quality_test_settings(
+    instance_dir: str,
+    project_name: str,
+    projects_config: Optional[dict] = None,
+) -> Tuple[Optional[str], int]:
+    """Get the quality pipeline test settings for a project.
+
+    Reads ``pr_quality.test_command`` (str) and ``pr_quality.test_timeout``
+    (seconds, positive number) from the project config. Invalid or missing
+    values fall back to the pipeline defaults (auto-detected command, 120 s).
+
+    Args:
+        projects_config: Pre-loaded projects config dict. When provided,
+            skips redundant load_projects_config() call.
+
+    Returns:
+        (test_command, test_timeout) tuple.
+    """
+    test_command: Optional[str] = None
+    test_timeout: int = 120
+    try:
+        from app.projects_config import get_project_config
+        config = projects_config
+        if config is None:
+            from app.projects_config import load_projects_config
+            koan_root = _get_koan_root(instance_dir)
+            config = load_projects_config(koan_root)
+        if config:
+            pr_quality = (
+                get_project_config(config, project_name).get("pr_quality") or {}
+            )
+            cmd = pr_quality.get("test_command")
+            if isinstance(cmd, str) and cmd.strip():
+                test_command = cmd.strip()
+            timeout = pr_quality.get("test_timeout")
+            if (
+                isinstance(timeout, (int, float))
+                and not isinstance(timeout, bool)
+                and timeout > 0
+            ):
+                test_timeout = int(timeout)
+    except Exception as e:
+        _log_runner("error", f"Quality test settings config error: {e}")
+    return test_command, test_timeout
+
+
 def _run_quality_pipeline(
     instance_dir: str,
     project_name: str,
@@ -1119,13 +1165,17 @@ def _run_quality_pipeline(
     gate_mode = _get_quality_gate_mode(
         instance_dir, project_name, projects_config=projects_config,
     )
+    test_command, test_timeout = _get_quality_test_settings(
+        instance_dir, project_name, projects_config=projects_config,
+    )
 
     return run_quality_pipeline(
         project_path=project_path,
         branch_prefix=branch_prefix,
         run_tests=True,
-        test_timeout=120,
+        test_timeout=test_timeout,
         gate_mode=gate_mode,
+        test_command=test_command,
         status_callback=report_fn,
     )
 
