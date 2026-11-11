@@ -1181,6 +1181,18 @@ page_cache_reclaim:
 # review_reflect:
 #   threshold: 5            # Min score to keep a finding (0-10, default: 5)
 
+# Opt-in Codex adversarial-review backend for /review analysis. Runs the
+# codex-plugin-cc companion (adversarial-review --json) in the pinned PR-head
+# worktree and maps its findings into the normal review format.
+# Requires Node.js, an authenticated Codex CLI, and the companion script.
+# review_codex_adversarial:
+#   enabled: false
+#   companion_script: ""      # absolute path to codex-companion.mjs (required)
+#   timeout_seconds: 900      # 60-3600, capped by the review stall bound
+#   model: ""                 # optional Codex model override
+#   fallback_to_default: true # on failure, run the normal provider review
+#   run_reflection: true      # run the reflection pass over mapped findings
+
 # Review snippet validation — reconcile each finding's quoted code block against
 # the actual file content at the reviewed commit before posting. The quote is
 # model-authored; without this gate a re-review can show pre-fix source under a

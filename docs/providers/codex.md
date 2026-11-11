@@ -1,10 +1,10 @@
 ---
 type: doc
 title: "OpenAI Codex CLI Provider"
-description: "Setup and behavior guide for using OpenAI's Codex CLI as Kōan's provider, including quota/usage handling and troubleshooting."
+description: "Setup and behavior guide for using OpenAI's Codex CLI as Kōan's provider, plus the opt-in codex-plugin-cc adversarial `/review` backend, quota handling and troubleshooting."
 tags: [providers]
 created: 2026-05-28
-updated: 2026-08-18
+updated: 2026-11-05
 ---
 
 # OpenAI Codex CLI Provider
@@ -242,6 +242,31 @@ codex_update:
   enabled: true    # opt-out — set false to manage the Codex CLI yourself
   notify: true     # advertise applied updates via the messaging bridge
 ```
+
+## Codex adversarial review backend (separate from provider mode)
+
+Independent of `cli_provider`, `/review` can use the codex-plugin-cc companion's
+**adversarial-review** mode for its analysis. Enable in `instance/config.yaml`:
+
+    review_codex_adversarial:
+      enabled: true
+      companion_script: /opt/codex-plugin-cc/scripts/codex-companion.mjs
+
+Set `companion_script` to wherever the companion lives on your machine.
+Optional keys: `model` (Codex model override, also shown in the footer),
+`timeout_seconds` (default 900, capped by the review stall bound),
+`fallback_to_default` (default `true`) and `run_reflection` (default `true`).
+
+Prerequisites: Node.js, Codex CLI installed and authenticated (`codex login`),
+and the companion script on disk. The companion runs in the pinned PR-head
+worktree with `--base` set to the PR's base branch; its JSON findings are mapped
+into Kōan's normal review format (Blocking / Important / Suggestions, LGTM from
+severity: high/critical → blocking, medium → important, low → suggestion). The
+footer shows `codex` and the configured `model`. On failure Kōan falls back to
+the normal provider review unless `fallback_to_default: false`. The private
+review gate always uses the provider path. The review-language preference is
+not applied to the Codex path, so its prose may be in English. Uses Codex quota
+on every `/review`.
 
 ## Troubleshooting
 

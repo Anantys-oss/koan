@@ -67,7 +67,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 - [`providers/claude-cli-commands-official.md`](docs/providers/claude-cli-commands-official.md) — Official upstream Claude Code CLI reference listing all commands and flags.
 - [`providers/claude.md`](docs/providers/claude.md) — Setup and configuration guide for Kōan's default Claude Code CLI provider, including models, tools, per-role CLI config, MCP (`mcp_roles` per-role opt-in), KOAN_ROOT project-context isolation (`--setting-sources user`), and devcontainer mode.
 - [`providers/cline.md`](docs/providers/cline.md) — Setup and feature-mapping guide for using Cline CLI as Kōan's underlying multi-backend AI provider.
-- [`providers/codex.md`](docs/providers/codex.md) — Setup and behavior guide for using OpenAI's Codex CLI as Kōan's provider, including quota/usage handling and troubleshooting.
+- [`providers/codex.md`](docs/providers/codex.md) — Setup and behavior guide for using OpenAI's Codex CLI as Kōan's provider, plus the opt-in codex-plugin-cc adversarial `/review` backend, quota handling and troubleshooting.
 - [`providers/copilot.md`](docs/providers/copilot.md) — Setup guide and feature/tool-mapping differences for using GitHub Copilot CLI as Kōan's provider.
 - [`providers/fake.md`](docs/providers/fake.md) — Fail-closed no-op provider for deterministic, offline tests of the skill pipeline; refuses to run unless `KOAN_ALLOW_FAKE_PROVIDER=1` is set.
 - [`providers/haze.md`](docs/providers/haze.md) — Setup and behavior guide for using haze (multi-backend agentic CLI) as Kōan's provider, including stream-json integration, usage accounting, capabilities and limitations.

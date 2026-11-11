@@ -8703,3 +8703,141 @@ class TestPinnedWorktreeInRunReview:
         assert ok is True
         assert "merged" in msg
         pin.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Opt-in Codex adversarial-review backend (specs/skills/review.md)
+# ---------------------------------------------------------------------------
+
+def _codex_cfg(**overrides):
+    cfg = {
+        "enabled": True, "companion_script": "/x.mjs", "timeout_seconds": 60,
+        "model": "gpt-5.4", "fallback_to_default": True, "run_reflection": False,
+    }
+    cfg.update(overrides)
+    return cfg
+
+
+_CODEX_REVIEW = {
+    "file_comments": [],
+    "review_summary": {"lgtm": True, "summary": "ok", "checklist": []},
+}
+_PROVIDER_JSON = json.dumps(_CODEX_REVIEW)
+
+
+class TestCodexAdversarialBackend:
+    def _analyze(self, **kwargs):
+        from app.review_runner import _run_review_analysis
+        return _run_review_analysis(
+            "prompt", "/tmp/p", "diff", project_name="demo", **kwargs,
+        )
+
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.codex_adversarial_review.run_adversarial_review",
+           return_value=(copy.deepcopy(_CODEX_REVIEW), '{"result":{}}', ""))
+    @patch("app.config.get_review_codex_adversarial_config",
+           return_value=_codex_cfg())
+    def test_enabled_uses_codex(self, _cfg, mock_codex, mock_claude):
+        data, raw, err, backend = self._analyze(base_branch="main")
+        assert backend == "codex"
+        assert err is None
+        assert raw
+        assert data["review_summary"]["lgtm"] is True
+        assert mock_codex.call_args.kwargs["base_ref"] == "main"
+        assert mock_codex.call_args.kwargs["project_path"] == "/tmp/p"
+        mock_claude.assert_not_called()
+
+    @patch("app.review_runner._review_stall_timeout", return_value=45)
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.codex_adversarial_review.run_adversarial_review",
+           return_value=(copy.deepcopy(_CODEX_REVIEW), "{}", ""))
+    @patch("app.config.get_review_codex_adversarial_config",
+           return_value=_codex_cfg(timeout_seconds=900))
+    def test_timeout_capped_by_stall_bound(self, _cfg, mock_codex, _claude, _stall):
+        self._analyze(base_branch="main")
+        assert mock_codex.call_args.kwargs["timeout_seconds"] == 45
+
+    @patch("app.review_runner._run_claude_review", return_value=(_PROVIDER_JSON, ""))
+    @patch("app.codex_adversarial_review.run_adversarial_review")
+    @patch("app.config.get_review_codex_adversarial_config",
+           return_value=_codex_cfg(enabled=False))
+    def test_disabled_uses_provider(self, _cfg, mock_codex, mock_claude):
+        data, _raw, _err, backend = self._analyze(base_branch="main")
+        assert backend == "provider"
+        assert data["review_summary"]["lgtm"] is True
+        mock_codex.assert_not_called()
+
+    @patch("app.review_runner._run_claude_review", return_value=(_PROVIDER_JSON, ""))
+    @patch("app.codex_adversarial_review.run_adversarial_review")
+    @patch("app.config.get_review_codex_adversarial_config",
+           return_value=_codex_cfg())
+    def test_no_base_branch_skips_codex(self, _cfg, mock_codex, _claude):
+        # run_private_review passes no base_branch.
+        *_, backend = self._analyze()
+        assert backend == "provider"
+        mock_codex.assert_not_called()
+
+    @patch("app.review_runner._run_claude_review", return_value=(_PROVIDER_JSON, ""))
+    @patch("app.codex_adversarial_review.run_adversarial_review",
+           return_value=(None, "", "codex companion not found: /x.mjs"))
+    @patch("app.config.get_review_codex_adversarial_config",
+           return_value=_codex_cfg())
+    def test_failure_falls_back(self, _cfg, _codex, mock_claude):
+        data, _raw, _err, backend = self._analyze(base_branch="main")
+        assert backend == "provider"
+        assert data is not None
+        mock_claude.assert_called_once()
+
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.codex_adversarial_review.run_adversarial_review",
+           return_value=(None, "garbage", "companion output is not JSON"))
+    @patch("app.config.get_review_codex_adversarial_config",
+           return_value=_codex_cfg(fallback_to_default=False))
+    def test_failure_without_fallback_errors(self, _cfg, _codex, mock_claude):
+        data, raw, err, backend = self._analyze(base_branch="main")
+        assert (data, raw, backend) == (None, "", "codex")
+        assert "not JSON" in err
+        mock_claude.assert_not_called()
+
+    @patch("app.review_runner._reflect_review")
+    @patch("app.codex_adversarial_review.run_adversarial_review",
+           return_value=(copy.deepcopy(_CODEX_REVIEW), "{}", ""))
+    @patch("app.config.get_review_codex_adversarial_config",
+           return_value=_codex_cfg(run_reflection=True))
+    def test_reflection_runs_when_enabled(self, _cfg, _codex, mock_reflect):
+        self._analyze(base_branch="main")
+        mock_reflect.assert_called_once()
+
+    @patch("app.review_runner._reflect_review")
+    @patch("app.codex_adversarial_review.run_adversarial_review",
+           return_value=(copy.deepcopy(_CODEX_REVIEW), "{}", ""))
+    @patch("app.config.get_review_codex_adversarial_config",
+           return_value=_codex_cfg(run_reflection=False))
+    def test_reflection_skipped_when_disabled(self, _cfg, _codex, mock_reflect):
+        self._analyze(base_branch="main")
+        mock_reflect.assert_not_called()
+
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("OPEN", []))
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.find_bot_comment", return_value=None)
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._post_review_comment", return_value=(True, "", None))
+    @patch("app.review_runner._run_review_analysis",
+           return_value=(copy.deepcopy(_CODEX_REVIEW), "{}", None, "codex"))
+    @patch("app.config.get_review_codex_adversarial_config",
+           return_value=_codex_cfg())
+    @patch("app.review_runner.fetch_pr_context")
+    def test_run_review_footer_attributes_codex(
+        self, mock_fetch, _cfg, mock_analysis, mock_post, _gh, _rep, _bot,
+        _shas, _state, pr_context, review_skill_dir,
+    ):
+        mock_fetch.return_value = pr_context
+        success, _summary, _rd = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(), skill_dir=review_skill_dir,
+        )
+        assert success is True
+        assert mock_analysis.call_args.kwargs["base_branch"] == pr_context["base"]
+        assert mock_post.call_args.kwargs["provider_name"] == "codex"
+        assert mock_post.call_args.kwargs["model"] == "gpt-5.4"
