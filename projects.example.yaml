@@ -324,6 +324,9 @@ projects:
   #   path: "/Users/yourname/workspace/restricted-repo"
   #   github:
   #     authorized_users: ["alice", "bob"]  # Override global list for this project
+  #     pr_event_review:                     # Review on PR events (opened / pushed PRs)
+  #       enabled: true                      # default: false — see docs/messaging/github-pr-event-review.md
+  #       on_push: false                     # review only the first eligible head, not every push
 
   # Example: a project that uses a devcontainer (Ruby app with bundler, DB, etc.)
   # ruby-app:

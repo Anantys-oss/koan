@@ -1,10 +1,10 @@
 ---
 type: doc
 title: "GitHub Webhooks — Push-Based Notification Triggering"
-description: "Describes the opt-in push-based GitHub webhook receiver that collapses notification-polling latency while polling remains the reliability fallback."
+description: "Describes the opt-in push-based GitHub webhook receiver that collapses notification-polling latency — including the PR events behind review on PR events — while polling remains the reliability fallback."
 tags: [messaging]
 created: 2026-06-01
-updated: 2026-06-02
+updated: 2026-11-13
 ---
 
 # GitHub Webhooks — Push-Based Notification Triggering
@@ -140,9 +140,11 @@ This honors the same `github.webhook.port` / `host` config.
 | `pull_request_review` | `submitted` |
 | `commit_comment` | any |
 | `issues` | `assigned` |
-| `pull_request` | `assigned`, `review_requested` |
+| `pull_request` | `assigned`, `review_requested`; plus `opened`, `reopened`, `ready_for_review` (and `synchronize` with `on_push`) when a project enables [review on PR events](github-pr-event-review.md) |
 
-Everything else (pushes, labels, syncs, etc.) is ignored. Events from repos not
+Everything else (pushes, labels, and syncs unless review on PR events wants them)
+is ignored. The PR-event set is resolved when the receiver starts — restart the
+bridge after changing it. Events from repos not
 in your `projects.yaml` are authenticated but never trigger a poll.
 
 ## Security
