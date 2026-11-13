@@ -17,6 +17,12 @@ Config schema in config.yaml:
       reply_rate_limit: 5             # max replies per user per hour
       ack_enabled: false              # post acknowledgment when a command is queued (opt-in)
       check_interval_seconds: 60       # optional provider override
+      pr_event_review:                # review on PR events (opt-in, default off)
+        enabled: false
+        on_push: true                 # re-review each new head SHA
+        include_drafts: false
+        max_per_cycle: 3              # per repo per scan, min 1
+        scan_interval_minutes: 5      # per-repo throttle, 0 = every poll
 
 Per-project override in projects.yaml:
     projects:
@@ -24,6 +30,8 @@ Per-project override in projects.yaml:
         github:
           authorized_users: ["alice", "bob"]
           reply_authorized_users: ["*"]
+          pr_event_review:            # keys override config.yaml one by one
+            enabled: true
 """
 
 import logging
@@ -295,6 +303,77 @@ def get_mention_scan_interval_minutes(config: dict) -> int:
         return max(0, val)
     except (ValueError, TypeError):
         return 5
+
+
+# pull_request actions that mean "this PR's reviewable state may have changed".
+# "synchronize" (new commits) is opt-out via pr_event_review.on_push.
+PR_EVENT_REVIEW_BASE_ACTIONS = frozenset({"opened", "reopened", "ready_for_review"})
+PR_EVENT_REVIEW_PUSH_ACTION = "synchronize"
+
+_PR_EVENT_REVIEW_DEFAULTS = {
+    "enabled": False,
+    "on_push": True,
+    "include_drafts": False,
+    "max_per_cycle": 3,
+    "scan_interval_minutes": 5,
+}
+
+
+def _int_at_least(value, default: int, floor: int) -> int:
+    try:
+        return max(floor, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def get_pr_event_review_config(config: dict, project_name: Optional[str] = None,
+                               projects_config: Optional[dict] = None) -> dict:
+    """Resolve ``github.pr_event_review``: defaults < config.yaml < projects.yaml.
+
+    Each key resolves independently, so a project can set only
+    ``enabled: true`` and inherit the global ``max_per_cycle``.
+    """
+    merged = dict(_PR_EVENT_REVIEW_DEFAULTS)
+    github = config.get("github") or {}
+    block = github.get("pr_event_review")
+    if isinstance(block, dict):
+        merged.update(block)
+    if project_name and projects_config:
+        from app.projects_config import get_project_github_pr_event_review
+        merged.update(get_project_github_pr_event_review(projects_config, project_name))
+    return {
+        "enabled": bool(merged["enabled"]),
+        "on_push": bool(merged["on_push"]),
+        "include_drafts": bool(merged["include_drafts"]),
+        "max_per_cycle": _int_at_least(merged["max_per_cycle"], 3, 1),
+        "scan_interval_minutes": _int_at_least(merged["scan_interval_minutes"], 5, 0),
+    }
+
+
+def get_pr_event_review_actions(review_cfg: dict) -> frozenset:
+    """``pull_request`` actions a resolved pr_event_review config reacts to."""
+    if not review_cfg.get("enabled"):
+        return frozenset()
+    if review_cfg.get("on_push"):
+        return PR_EVENT_REVIEW_BASE_ACTIONS | {PR_EVENT_REVIEW_PUSH_ACTION}
+    return PR_EVENT_REVIEW_BASE_ACTIONS
+
+
+def get_pr_event_review_webhook_actions(config: dict,
+                                        projects_config: Optional[dict]) -> frozenset:
+    """Union of actions any project with pr_event_review enabled wants polled.
+
+    Only projects listed in projects.yaml are scanned, so only they count.
+    """
+    projects = (projects_config or {}).get("projects") or {}
+    if not isinstance(projects, dict):
+        return frozenset()
+    actions: set = set()
+    for name in projects:
+        if isinstance(name, str):
+            actions |= get_pr_event_review_actions(
+                get_pr_event_review_config(config, name, projects_config))
+    return frozenset(actions)
 
 
 def get_github_ack_enabled(config: dict) -> bool:

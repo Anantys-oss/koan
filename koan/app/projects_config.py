@@ -796,6 +796,18 @@ def get_project_github_natural_language(config: dict, project_name: str) -> Opti
     return bool(value)
 
 
+def get_project_github_pr_event_review(config: dict, project_name: str) -> dict:
+    """Get the per-project github.pr_event_review override from projects.yaml.
+
+    Returns only the keys the project sets ({} when it sets none); the caller
+    layers them over the global config.yaml block.
+    """
+    project_cfg = get_project_config(config, project_name)
+    github = project_cfg.get("github", {}) or {}
+    block = github.get("pr_event_review")
+    return dict(block) if isinstance(block, dict) else {}
+
+
 def get_project_security_review(config: dict, project_name: str) -> dict:
     """Get differential security review config for a project from projects.yaml.
 
