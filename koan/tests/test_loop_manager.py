@@ -1097,6 +1097,42 @@ class TestGitHubNotificationBackoff:
         assert lm._consecutive_empty_checks == 0
         mock_mention_scan.assert_called_once()
 
+    def _run_with_pr_event_scan(self, tmp_path, scan_return, force=False):
+        from app.github_notifications import FetchResult
+        from app.loop_manager import process_github_notifications
+
+        with patch("app.utils.load_config",
+                   return_value={"github": {"nickname": "koan-bot"}}), \
+             patch("app.loop_manager._load_github_config",
+                   return_value={"bot_username": "koan-bot", "max_age": 300}), \
+             patch("app.loop_manager._build_skill_registry", return_value=MagicMock()), \
+             patch("app.loop_manager._get_known_repos_from_projects",
+                   return_value={"sukria/koan"}), \
+             patch("app.projects_config.load_projects_config", return_value={}), \
+             patch("app.github_notifications.fetch_unread_notifications",
+                   return_value=FetchResult([], [])), \
+             patch("app.github_command_handler.scan_recent_mention_missions",
+                   return_value=0), \
+             patch("app.github_command_handler.scan_requested_review_missions",
+                   return_value=0), \
+             patch("app.github_pr_event_review.scan_pr_event_review_missions",
+                   return_value=scan_return) as mock_scan:
+            result = process_github_notifications(str(tmp_path), str(tmp_path), force=force)
+        return result, mock_scan
+
+    def test_pr_event_review_scan_counts_as_created_mission(self, tmp_path):
+        import app.loop_manager as lm
+
+        lm._consecutive_empty_checks = 3
+        result, mock_scan = self._run_with_pr_event_scan(tmp_path, 2)
+        assert result == 2
+        assert lm._consecutive_empty_checks == 0
+        assert mock_scan.call_args.kwargs["force"] is False
+
+    def test_pr_event_review_scan_receives_force(self, tmp_path):
+        _, mock_scan = self._run_with_pr_event_scan(tmp_path, 0, force=True)
+        assert mock_scan.call_args.kwargs["force"] is True
+
     @patch("app.loop_manager._load_github_config")
     @patch("app.loop_manager._build_skill_registry")
     @patch("app.loop_manager._get_known_repos_from_projects")

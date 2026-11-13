@@ -1086,6 +1086,23 @@ def process_github_notifications(
         except (ImportError, OSError, RuntimeError, subprocess.SubprocessError) as e:
             log.warning("GitHub requested-review scan failed: %s", e, exc_info=True)
 
+        # Review on PR events (opt-in, github.pr_event_review): queue /review
+        # for PRs opened or pushed since the last scan. A forced poll (webhook
+        # or /check_notifications) bypasses the scan's per-repo throttle.
+        try:
+            from app.github_pr_event_review import scan_pr_event_review_missions
+
+            scanned_pr_events = scan_pr_event_review_missions(
+                projects_config, config, registry, instance_dir, force=force,
+            )
+            if scanned_pr_events > 0:
+                _github_log(
+                    f"Queued {scanned_pr_events} PR-event review mission(s)"
+                )
+                missions_created += scanned_pr_events
+        except (ImportError, OSError, RuntimeError, subprocess.SubprocessError) as e:
+            log.warning("GitHub PR-event review scan failed: %s", e, exc_info=True)
+
         # Drain non-actionable notifications (ci_activity, state_change,
         # etc.) to prevent accumulation that blocks future @mention detection.
         # When old notifications pile up on a thread, new @mentions may update
