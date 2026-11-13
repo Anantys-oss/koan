@@ -4,7 +4,7 @@ title: "Component Spec — Git & GitHub"
 description: "Design contract for everything touching git history or the GitHub API: branch/PR creation, sync, webhook/notification handling, and rebase/recreate/CI-fix workflows."
 tags: [git-github]
 created: 2026-06-27
-updated: 2026-09-10
+updated: 2026-11-13
 ---
 
 # Component Spec — Git & GitHub
@@ -13,7 +13,7 @@ updated: 2026-09-10
 `github_skill_helpers.py`, `github_config.py`, `github_notifications.py`,
 `github_command_handler.py`, `github_webhook.py`, `rebase_pr.py`, `recreate_pr.py`,
 `claude_step.py`, `remote_rename_detector.py`, `head_tracker.py`, `git_prep.py`,
-`force_push_guard.py`
+`force_push_guard.py`, `github_pr_event_review.py`
 
 ## Purpose
 
@@ -30,8 +30,9 @@ workflows.
 | `github.py::pr_create()` / `issue_create()` | Centralized PR/issue creation (always draft PRs). |
 | `git_auto_merge.py` | Configurable per-project auto-merge; runs after `security_review.py`. |
 | `git_sync.py` | Branch tracking, sync awareness, time-throttled cleanup (24h/project), orphan-branch detection → outbox. |
-| `github_webhook.py::maybe_start_from_config()` | Opt-in HMAC-verified push receiver; writes `.koan-check-notifications` to collapse poll latency 60-180s → ~10s. Polling remains the fallback. |
+| `github_webhook.py::maybe_start_from_config()` | Opt-in HMAC-verified push receiver; writes `.koan-check-notifications` to collapse poll latency 60-180s → ~10s. Polling remains the fallback. The `pull_request` filter (`assigned`, `review_requested`) widens to `opened`/`reopened`/`ready_for_review` (+ `synchronize` when `on_push`) **only** when some project enables `github.pr_event_review`; the set is resolved once at receiver start. It never queues missions. |
 | `github_command_handler.py` | @mention → mission: validate → permission check → react → create mission. Also the assignment fallback (`process_single_notification` processes @mentions first, then `_try_assignment_notification`): `review_requested` → `/review`, `assign` → `/implement`. When `review_draft_skip.enabled` is true, a `review_requested` on a **draft** PR is a soft skip (mark read, no thread/cooldown tracking): because no dedup state is written, any re-surfaced request is re-evaluated fresh. An explicit `/review` once the PR is ready is the remedy — the gate does **not** rely on automatic resume (GitHub does not reliably re-fire `review_requested` on the draft→ready transition), so an info notification is sent on deferral to avoid silent loss; explicit `/review` mentions are never gated. When `review_pause_label` is a non-empty string and a `review_requested` subject's labels include that exact name, soft-skip (mark read, no thread/cooldown, INFO notify). Empty `review_pause_label` disables the check. Labels are fetched free on the existing `_fetch_subject_info` call. |
+| `github_pr_event_review.py::scan_pr_event_review_missions()` | Opt-in review on PR events (`github.pr_event_review.enabled`, default off; per-project override in `projects.yaml`). Runs inside the GitHub poll after the requested-review scan and queues a `/review` mission for the PR's URL, tagged with the owning project and the 📬 marker, for open PRs updated after the repo's seed time and within `github.max_age_hours`. Skips drafts (unless `include_drafts`), PRs carrying `review_pause_label`, PRs authored by the bot or opened from a branch starting with the configured branch prefix (`get_branch_prefix()`, default `koan/`; Kōan PRs belong to `autoreview`), and authors failing `github.authorized_users`. Dedup key `pr_event_review:{repo}#{n}:{head_sha}` (`:first` when `on_push: false`); honors and sets the 30-min review cooldown (a cooldown defers, it does not consume the SHA); at most `max_per_cycle` per repo per scan. A repo's first scan only seeds (no backlog burst). Per-repo throttle `scan_interval_minutes`, bypassed by a forced poll. A failed fetch leaves the repo unthrottled. |
 | `claude_step.py::run_claude_step()` | Runs one agent step, then decides whether it produced a commit. `commit_if_changes` (dirty worktree ⇒ runner commit) **or** a HEAD move the agent made itself — same ref, different SHA, no ancestry claim so `--amend` counts — sets `StepResult.committed`; the agent-authored case also sets `self_committed`. The HEAD snapshot is best-effort: an unavailable pre- or post-snapshot falls back to worktree-only detection, never blocks the step. Not credited: a commit on a *different* ref (the pipeline restores the expected branch), or a HEAD that only moved backwards along its own history (`git reset --hard HEAD~1` drops commits rather than producing work; the ancestry probe fails open, leaving `force_push_guard` as the net). |
 | `claude_step.py::run_ci_fix_loop()` | Shared CI-fix loop; `use_polling` toggles polling vs single-shot recheck; caller supplies `prompt_builder`. |
 | `claude_step.py::_rebase_onto_target()` | Strict PR rebase: target is **only** `{base_remote}/{base}` (the remote matching the PR's base repo, resolved by `rebase_pr._find_remote_for_repo`); fails closed when no remote matches or the target fetch fails; always a plain `git rebase` (never `--onto`); post-rebase sanity gate before any push. Structured failure codes via `result_meta` (`no_base_remote` / `fetch_failed` / `rebase_failed` / `sanity_check_failed`). |
@@ -155,6 +156,11 @@ workflows.
   fixes, and only the first message names the holding path. Origin: 92 logged prep
   failures reported `a branch named 'X' already exists` — the fallback's error — while
   the real cause, `is already used by worktree at ...`, never once reached the log.
+- **Review on PR events is poll-driven and opt-in.** Only the scan queues these
+  reviews; the webhook merely forces the scan sooner, so a dropped delivery delays a
+  review by at most one scan interval and never loses it. It never reviews a PR the
+  bot authored or a PR whose head branch starts with the configured branch prefix,
+  and enabling it never reviews PRs last updated before the repo's first scan.
 
 ### Mission status indicators (koan/mission)
 
