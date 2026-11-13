@@ -113,18 +113,26 @@ def _updated_ts(pr: dict) -> Optional[float]:
         return None
 
 
-def _skip_reason(pr: dict, review_cfg: dict, ctx: _ScanContext,
-                 not_before: float) -> str:
-    """Why ``pr`` is not a candidate, or "" when it is."""
-    updated = _updated_ts(pr)
-    if updated is None or updated < not_before:
-        return "not updated since seed / outside max_age_hours"
+def _held_reason(pr: dict, review_cfg: dict, ctx: _ScanContext) -> str:
+    """Draft / pause-label hold that a later event can lift, or ""."""
     if pr.get("isDraft") and not review_cfg["include_drafts"]:
         return "draft"
     labels = pr.get("labels") if isinstance(pr.get("labels"), list) else []
     names = {str(lbl.get("name", "")) for lbl in labels if isinstance(lbl, dict)}
     if ctx.pause_label and ctx.pause_label in names:
         return "pause label"
+    return ""
+
+
+def _skip_reason(pr: dict, review_cfg: dict, ctx: _ScanContext,
+                 not_before: float) -> str:
+    """Why ``pr`` is not a candidate, or "" when it is."""
+    updated = _updated_ts(pr)
+    if updated is None or updated < not_before:
+        return "not updated since seed / outside max_age_hours"
+    held = _held_reason(pr, review_cfg, ctx)
+    if held:
+        return held
     author = pr.get("author") if isinstance(pr.get("author"), dict) else {}
     login = str(author.get("login", "")).lower()
     if not login or author.get("is_bot") or login in ctx.bot_logins:
@@ -148,18 +156,24 @@ def _not_before(ctx: _ScanContext, repo_slug: str) -> Optional[float]:
     return max(seeded_at, time.time() - ctx.max_age_hours * 3600)
 
 
-def _track_seed_heads(repo_slug: str, prs: List[dict], on_push: bool,
+def _track_seed_heads(repo_slug: str, prs: List[dict], review_cfg: dict,
                       ctx: _ScanContext) -> None:
-    """Mark every head open at seed time as handled.
+    """Mark every reviewable head open at seed time as handled.
 
     A later comment or label bumps ``updatedAt`` past the seed without any
     PR event; without this baseline that pre-seed head would be reviewed.
+    Drafts and paused PRs stay untracked: their "ready for review" or
+    unpause is a real event that must still queue a review.
     """
     from app.github_notification_tracker import track_thread
 
     for pr in prs:
-        if pr.get("number") and pr.get("headRefOid"):
-            track_thread(ctx.tracker_dir, _dedup_key(repo_slug, pr, on_push))
+        if not (pr.get("number") and pr.get("headRefOid")):
+            continue
+        if _held_reason(pr, review_cfg, ctx):
+            continue
+        track_thread(ctx.tracker_dir,
+                     _dedup_key(repo_slug, pr, review_cfg["on_push"]))
 
 
 def _deferred_or_handled(pr: dict, repo_slug: str, key: str,
@@ -219,7 +233,7 @@ def _process_repo(project_name: str, repo_slug: str, prs: List[dict],
         ctx.config, project_name, ctx.projects_config)
     not_before = _not_before(ctx, repo_slug)
     if not_before is None:
-        _track_seed_heads(repo_slug, prs, review_cfg["on_push"], ctx)
+        _track_seed_heads(repo_slug, prs, review_cfg, ctx)
         log.info("PR-event review: seeded %s — only PRs updated from now on count",
                  repo_slug)
         return 0

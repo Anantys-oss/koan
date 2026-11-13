@@ -133,6 +133,18 @@ class TestPrEventReviewScan:
         queued, _ = _scan(inst, registry, [_pr(sha="sha-2")])
         assert queued == 1
 
+    def test_draft_at_seed_reviewed_when_marked_ready(self, inst, registry):
+        _scan(inst, registry, [_pr(draft=True, updated_ago=7200)])
+        _seed(inst)
+        queued, _ = _scan(inst, registry, [_pr(draft=False)])
+        assert queued == 1
+
+    def test_paused_at_seed_reviewed_when_unpaused(self, inst, registry):
+        _scan(inst, registry, [_pr(labels=("PauseReview",), updated_ago=7200)])
+        _seed(inst)
+        queued, _ = _scan(inst, registry, [_pr()])
+        assert queued == 1
+
     def test_same_sha_not_requeued(self, inst, registry):
         _seed(inst)
         _scan(inst, registry, [_pr()])
