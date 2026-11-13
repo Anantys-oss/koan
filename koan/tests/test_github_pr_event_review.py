@@ -11,6 +11,7 @@ from app.github_notification_tracker import (
     clear_review_cooldown,
     get_pr_event_seeded_at,
     set_review_cooldown,
+    track_thread,
 )
 from app.github_pr_event_review import scan_pr_event_review_missions
 from app.skills import Skill, SkillCommand, SkillRegistry
@@ -214,3 +215,19 @@ class TestPrEventReviewScan:
     def test_disabled_project_not_fetched(self, inst, registry):
         _, fetch = _scan(inst, registry, [_pr()], projects=_projects(enabled=False))
         fetch.assert_not_called()
+
+    def test_head_queued_by_requested_review_scan_not_requeued(self, inst, registry):
+        _seed(inst)
+        track_thread(str(inst), "review_scan:sukria/koan#42:sha-aaaa")
+        set_review_cooldown(str(inst), "sukria", "koan", "42")
+        during, _ = _scan(inst, registry, [_pr()])
+        clear_review_cooldown(str(inst), "sukria", "koan", "42")
+        after, _ = _scan(inst, registry, [_pr()])
+        assert (during, after) == (0, 0)
+
+    def test_reenable_after_disable_reseeds(self, inst, registry):
+        _seed(inst)
+        _scan(inst, registry, [_pr()], projects=_projects(enabled=False))
+        queued, _ = _scan(inst, registry, [_pr()])
+        assert queued == 0
+        assert get_pr_event_seeded_at(str(inst), "sukria/koan") > time.time() - 60

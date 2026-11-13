@@ -40,15 +40,17 @@ A PR is queued when all of these hold:
 
 - It was updated **after the repo's first scan** and within `github.max_age_hours`.
   The first scan after enabling only records a starting point — existing PRs are
-  never reviewed in a burst.
+  never reviewed in a burst. Disabling the feature forgets that starting point,
+  so re-enabling it later starts fresh too.
 - It is not a draft (unless `include_drafts`) and has no `review_pause_label` label.
 - It was not opened by the bot or from a `koan/` (branch-prefix) branch — Kōan's
   own PRs are covered by `/autoreview`.
 - Its author passes `github.authorized_users` (per-project override honored;
   `"*"` means "has write access").
-- Its head commit has not been reviewed by this feature yet, no `/review` for it
-  is already queued, and it is outside the 30-minute review cooldown (a push
-  during the cooldown is reviewed once the cooldown ends).
+- Its head commit has not been reviewed by this feature (or queued by the
+  requested-review scan) yet, no `/review` for it is already queued, and it is
+  outside the 30-minute review cooldown (a push during the cooldown is reviewed
+  once the cooldown ends).
 
 The queued mission looks like
 `- [project:my-toolkit] /review https://github.com/my-org/my-toolkit/pull/7 📬`.

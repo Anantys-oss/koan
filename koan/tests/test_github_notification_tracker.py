@@ -424,3 +424,14 @@ class TestPrEventSeed:
 
         (Path(instance_dir) / _TRACKER_FILE_PR_EVENT_SEED).write_text("{not json")
         assert get_pr_event_seeded_at(instance_dir, "o/r") is None
+
+    def test_pr_event_seed_prune_drops_unlisted_repos(self, instance_dir):
+        from app.github_notification_tracker import (
+            get_pr_event_seeded_at, mark_pr_event_seeded, prune_pr_event_seeds,
+        )
+
+        mark_pr_event_seeded(instance_dir, "o/keep")
+        mark_pr_event_seeded(instance_dir, "o/drop")
+        prune_pr_event_seeds(instance_dir, {"o/keep"})
+        assert get_pr_event_seeded_at(instance_dir, "o/keep") is not None
+        assert get_pr_event_seeded_at(instance_dir, "o/drop") is None

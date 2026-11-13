@@ -148,20 +148,37 @@ def _not_before(ctx: _ScanContext, repo_slug: str) -> Optional[float]:
     return max(seeded_at, time.time() - ctx.max_age_hours * 3600)
 
 
+def _deferred_or_handled(pr: dict, repo_slug: str, key: str,
+                         ctx: _ScanContext) -> bool:
+    """True when this head needs no review from this scan right now.
+
+    A head the requested-review scan already queued is consumed (tracked)
+    so it is not reviewed twice once the shared cooldown lapses. A cooldown
+    hit alone stays untracked on purpose: retried once the cooldown lapses.
+    """
+    from app.github_notification_tracker import (
+        is_review_on_cooldown,
+        is_thread_tracked,
+        track_thread,
+    )
+
+    # Same key format as github_command_handler.scan_requested_review_missions.
+    request_key = f"review_scan:{repo_slug}#{pr['number']}:{pr['headRefOid']}"
+    if is_thread_tracked(ctx.tracker_dir, request_key):
+        track_thread(ctx.tracker_dir, key)
+        return True
+    owner, repo = repo_slug.split("/", 1)
+    return is_review_on_cooldown(ctx.tracker_dir, owner, repo, str(pr["number"]))
+
+
 def _queue_pr_review(pr: dict, project_name: str, repo_slug: str,
                      key: str, ctx: _ScanContext) -> bool:
     """Queue ``/review`` for one authorized candidate. True when inserted."""
-    from app.github_notification_tracker import (
-        is_review_on_cooldown,
-        set_review_cooldown,
-        track_thread,
-    )
+    from app.github_notification_tracker import set_review_cooldown, track_thread
     from app.utils import insert_pending_mission
 
     owner, repo = repo_slug.split("/", 1)
     number, web_url = str(pr["number"]), str(pr["url"])
-    if is_review_on_cooldown(ctx.tracker_dir, owner, repo, number):
-        return False  # untracked on purpose: retried once the cooldown lapses
     if _active_mission_exists_for_url(ctx.missions_path, web_url):
         track_thread(ctx.tracker_dir, key)
         return False
@@ -207,6 +224,8 @@ def _process_repo(project_name: str, repo_slug: str, prs: List[dict],
         key = _dedup_key(repo_slug, pr, review_cfg["on_push"])
         if is_thread_tracked(ctx.tracker_dir, key):
             continue
+        if _deferred_or_handled(pr, repo_slug, key, ctx):
+            continue
         if not check_user_permission(owner, repo, pr["author"]["login"], allowed):
             continue
         if _queue_pr_review(pr, project_name, repo_slug, key, ctx):
@@ -236,15 +255,28 @@ def _build_context(projects_config: Optional[dict], config: dict,
     )
 
 
-def _due_repos(ctx: _ScanContext, force: bool) -> List[Tuple[str, str]]:
-    from app.github_notification_tracker import is_repo_scan_due
-
-    due = []
+def _enabled_repos(ctx: _ScanContext) -> List[Tuple[str, str, dict]]:
+    """``(project, repo, resolved config)`` for every enabled project repo."""
+    enabled = []
     for project_name, repo_slug in _project_review_scan_repos(ctx.projects_config):
         review_cfg = get_pr_event_review_config(
             ctx.config, project_name, ctx.projects_config)
-        if not review_cfg["enabled"]:
-            continue
+        if review_cfg["enabled"]:
+            enabled.append((project_name, repo_slug, review_cfg))
+    return enabled
+
+
+def _due_repos(ctx: _ScanContext, force: bool) -> List[Tuple[str, str]]:
+    from app.github_notification_tracker import (
+        is_repo_scan_due,
+        prune_pr_event_seeds,
+    )
+
+    enabled = _enabled_repos(ctx)
+    # Forget seeds of repos no longer enabled, so re-enabling re-seeds.
+    prune_pr_event_seeds(ctx.tracker_dir, {slug for _, slug, _ in enabled})
+    due = []
+    for project_name, repo_slug, review_cfg in enabled:
         interval = review_cfg["scan_interval_minutes"] * 60
         throttle_key = _throttle_key(repo_slug)
         if force or is_repo_scan_due(ctx.tracker_dir, throttle_key, interval):

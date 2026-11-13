@@ -374,6 +374,33 @@ def mark_pr_event_seeded(instance_dir: str, repo_slug: str) -> None:
         log.debug("mark_pr_event_seeded: failed to record %s: %s", repo_slug, e)
 
 
+def prune_pr_event_seeds(instance_dir: str, keep: set) -> None:
+    """Forget seeds of repos not in ``keep`` (feature disabled or project gone).
+
+    Re-enabling then re-seeds instead of reviewing every PR updated within
+    ``max_age_hours`` of the stale seed. Writes only when something is dropped.
+    """
+    path = _pr_event_seed_path(instance_dir)
+    try:
+        data = json.loads(path.read_text()) if path.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        return
+    if not isinstance(data, dict) or set(data) <= keep:
+        return
+    try:
+        from app.locked_file import locked_json_modify
+
+        def _update(current):
+            for slug in [s for s in current if s not in keep]:
+                del current[slug]
+
+        locked_json_modify(
+            path, _update, validator=lambda d: d if isinstance(d, dict) else {},
+        )
+    except Exception as e:  # noqa: BLE001 — best-effort; must not break the scan
+        log.debug("prune_pr_event_seeds: failed: %s", e)
+
+
 # ---------------------------------------------------------------------------
 # Per-thread reply circuit breaker — caps bot comments per thread per window
 # ---------------------------------------------------------------------------
