@@ -8717,7 +8717,7 @@ class TestMaybePostInlineCommentsBatch:
         with patch(cfg_target, return_value=cfg), \
              patch("app.review_runner._fetch_existing_inline_anchors_checked",
                    side_effect=[(set(), True), (set(), False)]), \
-             patch("app.review_runner._submit_batch_review", return_value=(False, 0, EVENT_NOT_APPLIED)), \
+             patch("app.review_runner._submit_batch_review", return_value=(False, 0, EVENT_UNKNOWN)), \
              patch("app.review_runner._post_inline_finding_comments") as mock_indiv:
             result = _maybe_post_inline_comments(
                 "o", "r", "42", review_data, "abc123",
@@ -8725,6 +8725,28 @@ class TestMaybePostInlineCommentsBatch:
             )
         assert result == (0, 1, EVENT_UNKNOWN)
         mock_indiv.assert_not_called()
+
+    def test_definitive_rejection_falls_back_without_recheck(self):
+        """A 4xx create proves no review exists → fall back even if a recheck
+        listing would fail, and report not-applied so the verdict still posts."""
+        from app.review_runner import _maybe_post_inline_comments
+        review_data = {"file_comments": [_inline_finding(line=3)]}
+        cfg = {"enabled": True, "max_comments": 25}
+        cfg_target = "app.review_runner.get_review_inline_comments_config"
+        with patch(cfg_target, return_value=cfg), \
+             patch("app.review_runner._fetch_existing_inline_anchors_checked",
+                   side_effect=[(set(), True), (set(), False)]) as mock_list, \
+             patch("app.review_runner._submit_batch_review",
+                   return_value=(False, 0, EVENT_NOT_APPLIED)), \
+             patch("app.review_runner._post_inline_finding_comments",
+                   return_value=(1, 1)) as mock_indiv:
+            result = _maybe_post_inline_comments(
+                "o", "r", "42", review_data, "abc123",
+                event="REQUEST_CHANGES", body="blockers",
+            )
+        assert result == (1, 1, EVENT_NOT_APPLIED)
+        mock_indiv.assert_called_once()
+        assert mock_list.call_count == 1
 
     def test_unknown_create_failure_skips_fallback_when_nothing_visible(self):
         """Timeout-class create failure + empty recheck → post nothing.
@@ -8780,7 +8802,7 @@ class TestMaybePostInlineCommentsBatch:
         with patch(cfg_target, return_value=cfg), \
              patch("app.review_runner._fetch_existing_inline_anchors_checked",
                    side_effect=[(set(), True), (landed, True)]), \
-             patch("app.review_runner._submit_batch_review", return_value=(False, 0, EVENT_NOT_APPLIED)), \
+             patch("app.review_runner._submit_batch_review", return_value=(False, 0, EVENT_UNKNOWN)), \
              patch("app.review_runner._post_inline_finding_comments",
                    return_value=(1, 1)) as mock_indiv:
             posted, attempted, event_state = _maybe_post_inline_comments(
@@ -8804,7 +8826,7 @@ class TestMaybePostInlineCommentsBatch:
         with patch(cfg_target, return_value=cfg), \
              patch("app.review_runner._fetch_existing_inline_anchors_checked",
                    side_effect=[(set(), True), (landed, True)]), \
-             patch("app.review_runner._submit_batch_review", return_value=(False, 0, EVENT_NOT_APPLIED)), \
+             patch("app.review_runner._submit_batch_review", return_value=(False, 0, EVENT_UNKNOWN)), \
              patch("app.review_runner._post_inline_finding_comments") as mock_indiv:
             result = _maybe_post_inline_comments(
                 "o", "r", "42", review_data, "abc123",

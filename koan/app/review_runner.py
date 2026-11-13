@@ -3575,9 +3575,15 @@ def _maybe_post_inline_comments(
     # that times out client-side may still have been accepted server-side.
     # Confirm against the PR before falling back, otherwise we duplicate the
     # comment set and report "0 of N posted" while N are visibly on the PR.
-    landed, recheck_ok = _fetch_existing_inline_anchors_checked(
-        owner, repo, pr_number,
-    )
+    # A definitive GitHub rejection (4xx) already proves nothing was created,
+    # so the recheck is unnecessary there — and a failed recheck must not
+    # turn that known-safe fallback (plus the separate verdict) into a no-op.
+    if create_state == EVENT_NOT_APPLIED:
+        landed, recheck_ok = set(), True
+    else:
+        landed, recheck_ok = _fetch_existing_inline_anchors_checked(
+            owner, repo, pr_number,
+        )
     if not recheck_ok:
         # Same rule as the pre-flight check: idempotency is a precondition, not
         # a best effort. Here it binds harder — the batch POST may have been
