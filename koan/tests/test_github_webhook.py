@@ -767,3 +767,66 @@ class TestMain:
                             lambda *a, **k: _FakeServer())
         assert wh.main() == 0
         assert captured.get("shutdown") is True
+
+
+# --- review on PR events: widened pull_request filter -----------------------
+
+
+class TestPrEventReviewWebhook:
+    SYNC = frozenset({"opened", "reopened", "ready_for_review", "synchronize"})
+
+    def test_pr_event_review_synchronize_actionable_when_enabled(self):
+        from app.github_webhook import is_actionable_event
+
+        assert is_actionable_event(
+            "pull_request", {"action": "synchronize"}, extra_pr_actions=self.SYNC,
+        ) is True
+
+    def test_pr_event_review_opened_ignored_by_default(self):
+        from app.github_webhook import is_actionable_event
+
+        assert is_actionable_event("pull_request", {"action": "opened"}) is False
+
+    def test_pr_event_review_handle_event_writes_signal(self, tmp_path):
+        from app.github_webhook import handle_event
+
+        payload = {"action": "opened", "repository": {"full_name": "a/b"}}
+        assert handle_event("pull_request", payload, str(tmp_path), None,
+                            extra_pr_actions=self.SYNC) is True
+        assert (tmp_path / CHECK_NOTIFICATIONS_FILE).exists()
+
+    def test_pr_event_review_handler_binds_extra_actions(self, tmp_path):
+        from app.github_webhook import _make_handler
+
+        cls = _make_handler(SECRET, str(tmp_path), None, extra_pr_actions=self.SYNC)
+        handler = cls.__new__(cls)
+        body = json.dumps({"action": "synchronize",
+                           "repository": {"full_name": "a/b"}}).encode()
+        handler.headers = {"Content-Length": str(len(body)),
+                           "X-Hub-Signature-256": _sign(body),
+                           "X-GitHub-Event": "pull_request"}
+        handler.rfile = io.BytesIO(body)
+        handler.wfile = io.BytesIO()
+        handler._respond = lambda code, resp_body="": None
+        handler.do_POST()
+        assert (tmp_path / CHECK_NOTIFICATIONS_FILE).exists()
+
+    def test_pr_event_review_resolve_actions_from_projects(self, monkeypatch):
+        import app.github_webhook as wh
+
+        projects = {"projects": {"app": {
+            "github": {"pr_event_review": {"enabled": True, "on_push": False}},
+        }}}
+        monkeypatch.setattr("app.projects_config.load_projects_config",
+                            lambda _root: projects)
+        assert wh._resolve_extra_pr_actions("/tmp", {}) == frozenset(
+            {"opened", "reopened", "ready_for_review"})
+
+    def test_pr_event_review_resolve_actions_failure_is_empty(self, monkeypatch):
+        import app.github_webhook as wh
+
+        def boom(_root):
+            raise ValueError("bad projects.yaml")
+
+        monkeypatch.setattr("app.projects_config.load_projects_config", boom)
+        assert wh._resolve_extra_pr_actions("/tmp", {}) == frozenset()

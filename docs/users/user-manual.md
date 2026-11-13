@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered walkthrough of Kōan, from first missions through REST/MCP skill discovery, parallel sessions, exploration, and configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-09-17
+updated: 2026-11-13
 ---
 
 # Kōan User Manual
@@ -257,6 +257,15 @@ the notifications API, Kōan still queues `/review <pr-url>` from the PR's
 requested-reviewer state. To limit API usage, each repo is rescanned at most
 once per `github.review_scan_interval_minutes` (default 15; set `0` to scan
 every cycle).
+
+**Review on PR events (opt-in).** With `github.pr_event_review.enabled: true`
+(globally in `config.yaml` or per project in `projects.yaml`), GitHub polling
+also queues `/review <pr-url>` when a PR is opened, reopened, marked ready for
+review, or — unless `on_push: false` — gets new commits. Drafts, PRs carrying
+`review_pause_label`, Kōan's own PRs, and authors outside
+`github.authorized_users` are skipped, and the first scan after enabling only
+records a starting point, so already-open PRs are not reviewed in a burst. See
+`docs/messaging/github-pr-event-review.md`.
 
 <details>
 <summary>Use cases</summary>

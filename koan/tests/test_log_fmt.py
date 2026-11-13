@@ -1,9 +1,18 @@
 """Tests for the display-side make-logs formatter."""
 import io
 
+import pytest
 from app.log_fmt import _Palette, render_cli, run
 
 PLAIN = _Palette(enabled=False)  # no ANSI → deterministic assertions
+
+
+@pytest.fixture(autouse=True)
+def _no_color_env(monkeypatch):
+    # run() honours KOAN_FORCE_COLOR, which Kōan sets for its own sessions;
+    # without clearing it these assertions see ANSI codes.
+    monkeypatch.delenv("KOAN_FORCE_COLOR", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
 
 
 def r(body):

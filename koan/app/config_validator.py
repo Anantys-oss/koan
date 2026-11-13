@@ -189,6 +189,7 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "ack_enabled": "bool",
         "max_replies_per_thread_per_hour": "int",
         "webhook": "dict",
+        "pr_event_review": "dict",
     },
     "schedule": {
         "deep_hours": "str",

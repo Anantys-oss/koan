@@ -32,7 +32,7 @@ import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Optional, Set
+from typing import FrozenSet, Optional, Set
 
 from app.github_config import DEFAULT_WEBHOOK_HOST, DEFAULT_WEBHOOK_PORT
 from app.signals import CHECK_NOTIFICATIONS_FILE
@@ -63,6 +63,8 @@ _last_signal_time = 0.0
 # on. For "issues" and "pull_request" we additionally filter on the action so a
 # label/sync/push edit doesn't trigger a needless poll. Everything here is
 # re-validated by the actual poll — this filter only reduces noise.
+# When a project enables github.pr_event_review, the pull_request filter is
+# widened at startup with that feature's actions (``extra_pr_actions``).
 _COMMENT_EVENTS = frozenset({
     "issue_comment",
     "pull_request_review_comment",
@@ -106,11 +108,14 @@ def extract_repo_full_name(payload: dict) -> str:
     return full_name.lower()
 
 
-def is_actionable_event(event_type: str, payload: dict) -> bool:
+def is_actionable_event(event_type: str, payload: dict,
+                        extra_pr_actions: FrozenSet[str] = frozenset()) -> bool:
     """Decide whether a webhook event should trigger a notification poll.
 
     The poll re-validates everything (dedup, permissions, @mention parsing), so
     this filter is purely about avoiding pointless polls on irrelevant events.
+    ``extra_pr_actions`` adds the pull_request actions review on PR events
+    wants (see ``_resolve_extra_pr_actions``).
     """
     if event_type in _COMMENT_EVENTS:
         # Only act on newly created/submitted comments, not edits/deletes.
@@ -122,14 +127,15 @@ def is_actionable_event(event_type: str, payload: dict) -> bool:
     if event_type == "issues":
         return action in _ISSUE_ACTIONS
     if event_type == "pull_request":
-        return action in _PR_ACTIONS
+        return action in _PR_ACTIONS or action in extra_pr_actions
     return False
 
 
 def should_trigger(event_type: str, payload: dict,
-                   known_repos: Optional[Set[str]]) -> bool:
+                   known_repos: Optional[Set[str]],
+                   extra_pr_actions: FrozenSet[str] = frozenset()) -> bool:
     """Combine repo filtering and event filtering into a single decision."""
-    if not is_actionable_event(event_type, payload):
+    if not is_actionable_event(event_type, payload, extra_pr_actions):
         return False
     # `is not None` (not truthiness): an empty set means "filter to nothing"
     # (reject every repo), whereas None means "no repo filter configured".
@@ -189,13 +195,14 @@ def write_check_signal_debounced(koan_root: str) -> bool:
 
 
 def handle_event(event_type: str, payload: dict, koan_root: str,
-                 known_repos: Optional[Set[str]]) -> bool:
+                 known_repos: Optional[Set[str]],
+                 extra_pr_actions: FrozenSet[str] = frozenset()) -> bool:
     """Process a parsed webhook event; trigger a poll if relevant.
 
     Returns:
         True if a poll was triggered (signal written), False otherwise.
     """
-    if not should_trigger(event_type, payload, known_repos):
+    if not should_trigger(event_type, payload, known_repos, extra_pr_actions):
         log.debug(
             "Webhook: ignoring event=%s action=%s repo=%s",
             event_type, payload.get("action"), extract_repo_full_name(payload),
@@ -212,7 +219,8 @@ def handle_event(event_type: str, payload: dict, koan_root: str,
 
 
 def _make_handler(secret: str, koan_root: str,
-                  known_repos: Optional[Set[str]]):
+                  known_repos: Optional[Set[str]],
+                  extra_pr_actions: FrozenSet[str] = frozenset()):
     """Build a BaseHTTPRequestHandler subclass bound to the given config."""
 
     class _WebhookHandler(BaseHTTPRequestHandler):
@@ -276,7 +284,8 @@ def _make_handler(secret: str, koan_root: str,
                 return
 
             try:
-                handle_event(event_type, payload, koan_root, known_repos)
+                handle_event(event_type, payload, koan_root, known_repos,
+                             extra_pr_actions=extra_pr_actions)
             except Exception as e:  # never 500 on internal handling errors
                 log.warning("Webhook: handler error for %s: %s", event_type, e)
 
@@ -295,7 +304,8 @@ def _make_handler(secret: str, koan_root: str,
 def create_server(koan_root: str, secret: str,
                   port: int = DEFAULT_WEBHOOK_PORT,
                   host: str = DEFAULT_WEBHOOK_HOST,
-                  known_repos: Optional[Set[str]] = None) -> ThreadingHTTPServer:
+                  known_repos: Optional[Set[str]] = None,
+                  extra_pr_actions: FrozenSet[str] = frozenset()) -> ThreadingHTTPServer:
     """Create (but do not start) the webhook HTTP server.
 
     Raises:
@@ -307,7 +317,8 @@ def create_server(koan_root: str, secret: str,
             "Refusing to start webhook server without a secret. "
             "Set KOAN_GITHUB_WEBHOOK_SECRET."
         )
-    handler_cls = _make_handler(secret, str(koan_root), known_repos)
+    handler_cls = _make_handler(secret, str(koan_root), known_repos,
+                                extra_pr_actions=extra_pr_actions)
     server = ThreadingHTTPServer((host, port), handler_cls)
     return server
 
@@ -316,6 +327,7 @@ def start_webhook_server(koan_root: str, secret: str,
                          port: int = DEFAULT_WEBHOOK_PORT,
                          host: str = DEFAULT_WEBHOOK_HOST,
                          known_repos: Optional[Set[str]] = None,
+                         extra_pr_actions: FrozenSet[str] = frozenset(),
                          background: bool = True) -> ThreadingHTTPServer:
     """Start the webhook receiver.
 
@@ -327,7 +339,8 @@ def start_webhook_server(koan_root: str, secret: str,
         The HTTPServer instance.
     """
     server = create_server(koan_root, secret, port=port, host=host,
-                           known_repos=known_repos)
+                           known_repos=known_repos,
+                           extra_pr_actions=extra_pr_actions)
     if background:
         thread = threading.Thread(
             target=server.serve_forever,
@@ -368,10 +381,12 @@ def maybe_start_from_config(koan_root: str) -> Optional[ThreadingHTTPServer]:
         port = get_github_webhook_port(config)
         host = get_github_webhook_host(config)
         known_repos = _resolve_known_repos(koan_root)
+        extra_pr_actions = _resolve_extra_pr_actions(koan_root, config)
 
         return start_webhook_server(
             koan_root, secret, port=port, host=host,
-            known_repos=known_repos, background=True,
+            known_repos=known_repos, extra_pr_actions=extra_pr_actions,
+            background=True,
         )
     except OSError as e:
         log.warning("GitHub webhook receiver could not bind: %s", e)
@@ -389,6 +404,23 @@ def _resolve_known_repos(koan_root: str) -> Optional[Set[str]]:
     except Exception as e:
         log.debug("Webhook: could not resolve known repos: %s", e)
         return None
+
+
+def _resolve_extra_pr_actions(koan_root: str, config: dict) -> FrozenSet[str]:
+    """pull_request actions that should force a poll for review on PR events.
+
+    Resolved once at receiver start, so a github.pr_event_review change
+    reaches the webhook filter after a bridge restart (the poll-driven scan
+    itself picks it up on its next cycle). Never raises: empty set on error.
+    """
+    try:
+        from app.github_config import get_pr_event_review_webhook_actions
+        from app.projects_config import load_projects_config
+
+        return get_pr_event_review_webhook_actions(config, load_projects_config(koan_root))
+    except Exception as e:
+        log.debug("Webhook: could not resolve PR-event review actions: %s", e)
+        return frozenset()
 
 
 def main() -> int:
@@ -416,9 +448,11 @@ def main() -> int:
     port = get_github_webhook_port(config)
     host = get_github_webhook_host(config)
     known_repos = _resolve_known_repos(koan_root)
+    extra_pr_actions = _resolve_extra_pr_actions(koan_root, config)
 
     server = create_server(koan_root, secret, port=port, host=host,
-                           known_repos=known_repos)
+                           known_repos=known_repos,
+                           extra_pr_actions=extra_pr_actions)
     log.info("GitHub webhook receiver listening on %s:%d (Ctrl-C to stop)",
              host, port)
     try:

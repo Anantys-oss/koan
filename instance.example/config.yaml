@@ -1103,6 +1103,16 @@ page_cache_reclaim:
 #   # Secret is read from the KOAN_GITHUB_WEBHOOK_SECRET env var, NOT this file.
 #   # Configure the same secret in the GitHub repo webhook settings (content
 #   # type application/json). See docs/messaging/github-webhooks.md.
+#   pr_event_review:                  # Review on PR events (opt-in, default: off)
+#     enabled: false                  # Queue /review when a PR is opened, reopened, marked
+#                                     # ready, or (with on_push) gets new commits.
+#                                     # Per-project override: projects.yaml github.pr_event_review
+#     on_push: true                   # Re-review each new head SHA (default: true)
+#     include_drafts: false           # Also review draft PRs (default: false)
+#     max_per_cycle: 3                # Max reviews queued per repo per scan (default: 3, min: 1)
+#     scan_interval_minutes: 5        # Min minutes between scans of one repo (default: 5; 0 = every poll)
+#                                     # A webhook-forced poll bypasses this throttle.
+#                                     # See docs/messaging/github-pr-event-review.md.
 
 # Jira notification-driven commands
 # Enable Kōan to respond to @mentions in Jira issue comments.
