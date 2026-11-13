@@ -4,7 +4,7 @@ title: "Skill Spec — review"
 description: "Documents the `/review` skill that queues a code-review mission on PRs/issues, posting findings as a comment with severity-driven LGTM logic and re-review comment handling, covered by the eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-10-13
+updated: 2026-11-05
 ---
 
 # Skill Spec — `review`
@@ -374,7 +374,22 @@ deterministic Python (`review_identity`, `review_reuse`, `review_reconcile`,
   alone; promotion to `warning` requires naming concrete harm, per the same bar as
   FR-008–010. The focused `--errors` / `--comments` passes deliberately omit it.
   `reflect.md` scores a concrete structural finding in the 5-7 band (8-10 when the
-  diff shows the mess) and a vague one at 0-2.
+  diff shows the mess) and a vague one at 0-2. The file-size signal is backed
+  by a deterministic **File Growth Signals** fact block: on the pinned-worktree
+  path (`run_review`) the runner measures before/after line counts for every
+  changed file (merge-base → head) and injects the changed files at/over the
+  ~1000-line fallback limit as a table the reviewer must cite instead of
+  running `wc -l` itself. `run_private_review` has no pinned head and its
+  prompt is byte-identical; any lookup or git failure degrades to the empty
+  block (the `wc -l` heuristic remains).
+- **Strict quality calibration (ultra only).** `/ultrareview` renders a
+  strict-calibration section in the architecture prompt: three structural
+  signals (a file crossing the size limit, ad-hoc branching in shared code,
+  unnecessary abstraction) are presumptive `warning`/🟡 instead of
+  `suggestion`/🟢 — arguable down, never `critical`/🔴. The default pass,
+  `--architecture` alone, and the FR-008–010 yellow-tier bar are untouched;
+  `ultra` is already part of the reuse `request_signature`, so strict and
+  non-strict runs are never reused for each other.
 - **Exhaustive single-pass (FR-025).** The default prompt aims to surface every
   genuine issue in one pass (no finding cap), so later reviews have less to add;
   higher recall still flows through the same bar (no blocking-set inflation).

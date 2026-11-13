@@ -1,5 +1,7 @@
 ### Structural Quality — be ambitious, not just correct
 
+{FILE_GROWTH}
+
 Correct code that leaves the codebase messier is not a good change. Alongside
 hunting defects, ask whether the diff could be **reframed** so that complexity
 disappears instead of being rearranged.
@@ -30,9 +32,11 @@ Signals worth naming when you see them:
 - **File-size explosion** — a change that pushes an already-large file
   substantially larger. Use the size limit the reviewed repo's own convention
   docs state when there is one; fall back to ~1000 lines only for repos that
-  state none. Check it with the read-only shell (`wc -l path/to/file.py`) rather
-  than guessing. This is a smell, not a rule: a large file that stayed clearly
-  organized is fine.
+  state none. If the File Growth Signals table above covers the file, its row
+  is the measured count — cite it, do not re-run `wc -l`. Otherwise check it
+  with the read-only shell (`wc -l path/to/file.py`) rather than guessing.
+  This is a smell, not a rule: a large file that stayed clearly organized is
+  fine.
 
 When you raise one of these, propose the **structural** remedy: delete the layer,
 reframe the state so the branches vanish, move the logic to the module that

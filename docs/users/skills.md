@@ -103,7 +103,11 @@ flows, feature logic landing in a shared module, a bespoke helper duplicating a
 canonical one, thin pass-through wrappers, and files the PR pushes past a healthy
 size (the limit your repo's convention docs state, else ~1000 lines). Findings
 name the structural remedy rather than a cosmetic one. The severity bar is unchanged: these are 🟢 Suggestions unless the reviewer
-can name concrete harm, so they never block a merge on style alone.
+can name concrete harm, so they never block a merge on style alone. The
+file-size signal is backed by a measured **File Growth Signals** table —
+base→head line counts for changed files at or over ~1000 lines — and
+`/ultrareview` treats those signals (plus ad-hoc branching and unnecessary
+abstraction) as presumptive 🟡 Important.
 
 **Inline comments (opt-in):** Set `review_inline_comments.enabled: true` in
 `config.yaml` to also post each finding as an inline PR comment anchored to its

@@ -98,6 +98,8 @@ reporting. Flag unverifiable claims explicitly.
   not just the principle violated.
 - Do NOT modify any files. This is a read-only review.
 
+{STRICT_QUALITY}
+
 ### Output Format
 
 Structure your review as markdown with this exact format:
