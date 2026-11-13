@@ -199,7 +199,10 @@ def _process_repo(project_name: str, repo_slug: str, prs: List[dict],
             break
         if not (pr.get("number") and pr.get("url") and pr.get("headRefOid")):
             continue
-        if _skip_reason(pr, review_cfg, ctx, not_before):
+        reason = _skip_reason(pr, review_cfg, ctx, not_before)
+        if reason:
+            log.debug("PR-event review: skip %s#%s (%s)",
+                      repo_slug, pr.get("number"), reason)
             continue
         key = _dedup_key(repo_slug, pr, review_cfg["on_push"])
         if is_thread_tracked(ctx.tracker_dir, key):
