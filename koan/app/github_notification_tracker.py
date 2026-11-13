@@ -14,6 +14,8 @@ Three parallel trackers live here:
   records one timestamped key per bot reply, for the per-thread reply circuit
   breaker. Kept in its own file (see the breaker section below) so its high
   churn cannot evict durable dedup/cooldown keys.
+- **PR-event review seed** (``instance/.koan-pr-event-review-seed.json``):
+  one first-scan timestamp per repo for review on PR events; no TTL.
 
 All survive process restarts and use the same cap/locking pattern; the first
 two prune on a 7-day TTL, the reply-breaker counter on a 1-hour window.
@@ -23,6 +25,7 @@ import json
 import logging
 import time
 from pathlib import Path
+from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -320,6 +323,55 @@ def mark_repo_mention_scanned(instance_dir: str, repo_slug: str) -> None:
         locked_json_modify(_mention_scan_path(instance_dir), _update)
     except Exception as e:  # noqa: BLE001 — best-effort; must not break the scan
         log.debug("mark_repo_mention_scanned: failed to record %s: %s", repo_slug, e)
+
+
+# ---------------------------------------------------------------------------
+# PR-event review seed — first-scan timestamp per repo
+# ---------------------------------------------------------------------------
+#
+# The PR-event review scan only reviews PRs updated after it first saw a repo,
+# so enabling the feature never bursts reviews over the open-PR backlog. One
+# key per repo and NO TTL: an expiring marker would re-seed and silently skip
+# PRs pushed in the gap.
+
+_TRACKER_FILE_PR_EVENT_SEED = ".koan-pr-event-review-seed.json"
+
+
+def _pr_event_seed_path(instance_dir: str) -> Path:
+    return Path(instance_dir) / _TRACKER_FILE_PR_EVENT_SEED
+
+
+def get_pr_event_seeded_at(instance_dir: str, repo_slug: str) -> Optional[float]:
+    """Return when ``repo_slug`` was first PR-event-scanned, or None.
+
+    A missing or corrupt file reads as unseeded: re-seeding only skips the
+    backlog, never bursts it.
+    """
+    path = _pr_event_seed_path(instance_dir)
+    try:
+        data = json.loads(path.read_text()) if path.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        return None
+    ts = data.get(repo_slug) if isinstance(data, dict) else None
+    return float(ts) if isinstance(ts, (int, float)) else None
+
+
+def mark_pr_event_seeded(instance_dir: str, repo_slug: str) -> None:
+    """Record now as ``repo_slug``'s seed time, keeping an existing value."""
+    if not repo_slug:
+        return
+    try:
+        from app.locked_file import locked_json_modify
+
+        def _update(data):
+            data.setdefault(repo_slug, time.time())
+
+        locked_json_modify(
+            _pr_event_seed_path(instance_dir), _update,
+            validator=lambda d: d if isinstance(d, dict) else {},
+        )
+    except Exception as e:  # noqa: BLE001 — best-effort; must not break the scan
+        log.debug("mark_pr_event_seeded: failed to record %s: %s", repo_slug, e)
 
 
 # ---------------------------------------------------------------------------

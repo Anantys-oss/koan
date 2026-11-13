@@ -395,3 +395,32 @@ class TestReviewScanThrottle:
     def test_empty_repo_slug_noop(self, instance_dir):
         mark_repo_scanned(instance_dir, "")
         assert not _review_scan_path(instance_dir).exists()
+
+
+class TestPrEventSeed:
+    def test_pr_event_seed_unseeded_repo_returns_none(self, instance_dir):
+        from app.github_notification_tracker import get_pr_event_seeded_at
+
+        assert get_pr_event_seeded_at(instance_dir, "o/r") is None
+
+    def test_pr_event_seed_mark_keeps_first_value(self, instance_dir):
+        from app.github_notification_tracker import (
+            get_pr_event_seeded_at, mark_pr_event_seeded,
+        )
+
+        mark_pr_event_seeded(instance_dir, "o/r")
+        first = get_pr_event_seeded_at(instance_dir, "o/r")
+        time.sleep(0.01)
+        mark_pr_event_seeded(instance_dir, "o/r")
+        assert first is not None
+        assert get_pr_event_seeded_at(instance_dir, "o/r") == first
+
+    def test_pr_event_seed_corrupt_file_reads_unseeded(self, instance_dir):
+        from pathlib import Path
+
+        from app.github_notification_tracker import (
+            _TRACKER_FILE_PR_EVENT_SEED, get_pr_event_seeded_at,
+        )
+
+        (Path(instance_dir) / _TRACKER_FILE_PR_EVENT_SEED).write_text("{not json")
+        assert get_pr_event_seeded_at(instance_dir, "o/r") is None
