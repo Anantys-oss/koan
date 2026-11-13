@@ -120,6 +120,19 @@ class TestPrEventReviewScan:
         assert _reviews(inst) == 0
         assert get_pr_event_seeded_at(str(inst), "sukria/koan") is not None
 
+    def test_activity_on_pre_seed_head_not_reviewed(self, inst, registry):
+        _scan(inst, registry, [_pr(updated_ago=7200)])
+        _seed(inst)  # backdate the seed: the bump below is clearly after it
+        queued, _ = _scan(inst, registry, [_pr()])
+        assert queued == 0
+        assert _reviews(inst) == 0
+
+    def test_push_after_seed_reviews_pre_seed_pr(self, inst, registry):
+        _scan(inst, registry, [_pr(sha="sha-1", updated_ago=7200)])
+        _seed(inst)
+        queued, _ = _scan(inst, registry, [_pr(sha="sha-2")])
+        assert queued == 1
+
     def test_same_sha_not_requeued(self, inst, registry):
         _seed(inst)
         _scan(inst, registry, [_pr()])

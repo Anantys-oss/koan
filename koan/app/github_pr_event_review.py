@@ -148,6 +148,20 @@ def _not_before(ctx: _ScanContext, repo_slug: str) -> Optional[float]:
     return max(seeded_at, time.time() - ctx.max_age_hours * 3600)
 
 
+def _track_seed_heads(repo_slug: str, prs: List[dict], on_push: bool,
+                      ctx: _ScanContext) -> None:
+    """Mark every head open at seed time as handled.
+
+    A later comment or label bumps ``updatedAt`` past the seed without any
+    PR event; without this baseline that pre-seed head would be reviewed.
+    """
+    from app.github_notification_tracker import track_thread
+
+    for pr in prs:
+        if pr.get("number") and pr.get("headRefOid"):
+            track_thread(ctx.tracker_dir, _dedup_key(repo_slug, pr, on_push))
+
+
 def _deferred_or_handled(pr: dict, repo_slug: str, key: str,
                          ctx: _ScanContext) -> bool:
     """True when this head needs no review from this scan right now.
@@ -205,6 +219,7 @@ def _process_repo(project_name: str, repo_slug: str, prs: List[dict],
         ctx.config, project_name, ctx.projects_config)
     not_before = _not_before(ctx, repo_slug)
     if not_before is None:
+        _track_seed_heads(repo_slug, prs, review_cfg["on_push"], ctx)
         log.info("PR-event review: seeded %s — only PRs updated from now on count",
                  repo_slug)
         return 0
