@@ -145,6 +145,25 @@ class TestFoldPlanAgentSections(unittest.TestCase):
         folded = fold_plan_agent_sections("Intro line.\n\n" + PLAN)
         self.assertTrue(folded.startswith("Intro line."))
 
+    def test_heading_inside_code_fence_is_not_a_section(self):
+        fenced = (
+            "### File Map\n\n```markdown\n### Summary\n\nfake\n```\n\n"
+            "```python\n# comment\n### Open Questions\n```\n\n"
+        )
+        folded = fold_plan_agent_sections(PLAN.replace("### File Map\n\n", fenced))
+        visible, hidden = folded.split(f"<summary>{_PLAN_FOLD_LABEL}</summary>", 1)
+        self.assertIn("What this achieves.", visible)
+        self.assertNotIn("fake", visible)
+        self.assertIn("```markdown\n### Summary\n\nfake\n```", hidden)
+        self.assertIn("```python\n# comment\n### Open Questions\n```", hidden)
+        self.assertEqual(folded.count("<details>"), folded.count("</details>"))
+
+    def test_duplicate_human_section_is_not_dropped(self):
+        body = PLAN + "\n### Summary\n\nSecond summary.\n"
+        folded = fold_plan_agent_sections(body)
+        self.assertIn("What this achieves.", folded)
+        self.assertIn("Second summary.", folded)
+
     def test_h2_level_plan(self):
         folded = fold_plan_agent_sections(PLAN.replace("### ", "## "))
         self.assertIn("<details>", folded)

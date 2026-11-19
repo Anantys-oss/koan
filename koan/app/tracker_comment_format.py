@@ -291,6 +291,30 @@ _PLAN_FOLD_LABEL = (
 )
 _PLAN_SUMMARY_HEADING_RE = re.compile(r"^(#{2,4})\s+summary\s*$", re.IGNORECASE | re.MULTILINE)
 _PLAN_PHASE_RE = re.compile(r"^#{2,5}\s+Phase\s+\d+\b", re.IGNORECASE | re.MULTILINE)
+_PLAN_FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})")
+
+
+def _mask_fenced_code(body: str) -> str:
+    """Blank out fenced code lines, keeping every offset of ``body`` intact.
+
+    A ``# comment`` or ``## Summary`` inside a code block is not a heading;
+    matching headings on the masked text and slicing the original keeps the
+    code verbatim while never splitting a section — or a ``<details>`` — at
+    a line that only looks like one.
+    """
+    out = []
+    fence = ""
+    for line in body.splitlines(keepends=True):
+        match = _PLAN_FENCE_RE.match(line)
+        if not fence and match:
+            fence = match.group(1)
+        elif fence and match and match.group(1)[0] == fence[0] and len(match.group(1)) >= len(fence):
+            fence = ""
+        elif not fence:
+            out.append(line)
+            continue
+        out.append(re.sub(r"[^\n]", " ", line))
+    return "".join(out)
 
 
 def _split_plan_sections(body: str, level: int):
@@ -301,7 +325,7 @@ def _split_plan_sections(body: str, level: int):
     their section.
     """
     heading_re = re.compile(rf"^#{{{level}}}(?!#)\s+(.+?)\s*$", re.MULTILINE)
-    matches = list(heading_re.finditer(body))
+    matches = list(heading_re.finditer(_mask_fenced_code(body)))
     if not matches:
         return [("", body)]
     out = [("", body[: matches[0].start()])]
@@ -334,13 +358,14 @@ def fold_plan_agent_sections(body: str) -> str:
     """
     if not body or _PLAN_FOLD_LABEL in body:
         return body
-    match = _PLAN_SUMMARY_HEADING_RE.search(body)
+    masked = _mask_fenced_code(body)
+    match = _PLAN_SUMMARY_HEADING_RE.search(masked)
     if not match:
         return body
 
     level = len(match.group(1))
     sections = _split_plan_sections(body, level)
-    phase_count = len(_PLAN_PHASE_RE.findall(body))
+    phase_count = len(_PLAN_PHASE_RE.findall(masked))
 
     preamble = ""
     assessment = ""
@@ -352,7 +377,7 @@ def fold_plan_agent_sections(body: str) -> str:
             preamble = text.strip()
         elif key == _PLAN_ASSESSMENT_SECTION:
             assessment = _plan_assessment_line(text, phase_count)
-        elif key in _PLAN_HUMAN_SECTIONS:
+        elif key in _PLAN_HUMAN_SECTIONS and key not in human:
             human[key] = text.strip()
         else:
             agent.append(text.strip())
