@@ -41,6 +41,8 @@ Simplicity and maintainability trump cleverness. Apply these when improving the 
 
 Output ONLY the improved plan. No preamble, no "Here's the fixed plan:", no commentary after. Start directly with the plan title line.
 
+{@include plan-assessment-section}
+
 {@include plan-phases-format}
 
 {@include plan-tail-sections}

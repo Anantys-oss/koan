@@ -280,6 +280,108 @@ def build_pr_comment_failure(
     return "\n".join(lines)
 
 
+# Sections of a generated plan that are written for the human reading the
+# tracker, in the order they are rendered. Everything else is the brief the
+# `/implement` agent consumes and is folded out of sight.
+_PLAN_HUMAN_SECTIONS = ("summary", "open questions", "verification criteria")
+_PLAN_ASSESSMENT_SECTION = "plan assessment"
+_PLAN_FOLD_LABEL = (
+    "\U0001F916 Implementation brief for the agent "
+    "(alternatives, file map, phases, corner cases, testing, risks)"
+)
+_PLAN_SUMMARY_HEADING_RE = re.compile(r"^(#{2,4})\s+summary\s*$", re.IGNORECASE | re.MULTILINE)
+_PLAN_PHASE_RE = re.compile(r"^#{2,5}\s+Phase\s+\d+\b", re.IGNORECASE | re.MULTILINE)
+
+
+def _split_plan_sections(body: str, level: int):
+    """Split a plan body into ``(heading, section_text)`` pairs at one level.
+
+    The text before the first heading is returned under an empty heading so a
+    preamble is never dropped. Deeper headings (phase titles) stay inside
+    their section.
+    """
+    heading_re = re.compile(rf"^#{{{level}}}(?!#)\s+(.+?)\s*$", re.MULTILINE)
+    matches = list(heading_re.finditer(body))
+    if not matches:
+        return [("", body)]
+    out = [("", body[: matches[0].start()])]
+    for i, match in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
+        out.append((match.group(1), body[match.start():end]))
+    return out
+
+
+def _plan_assessment_line(section_text: str, phase_count: int) -> str:
+    """Render the one-line plan assessment, with the computed phase count."""
+    lines = [
+        line.strip() for line in section_text.splitlines()[1:] if line.strip()
+    ]
+    parts = [lines[0]] if lines else []
+    if phase_count:
+        parts.append(f"**Phases:** {phase_count}")
+    return " · ".join(parts)
+
+
+def fold_plan_agent_sections(body: str) -> str:
+    """Collapse the agent-facing half of a plan body into one ``<details>``.
+
+    Keeps the assessment line, Summary, Open Questions and Verification
+    Criteria visible, in that order, and folds every other section into a
+    single labelled block. A pure text transform: the folded sections keep
+    their markdown verbatim, so `/implement` still reads them out of the
+    posted comment. Fails open — an unrecognisable or already-folded body is
+    returned unchanged.
+    """
+    if not body or _PLAN_FOLD_LABEL in body:
+        return body
+    match = _PLAN_SUMMARY_HEADING_RE.search(body)
+    if not match:
+        return body
+
+    level = len(match.group(1))
+    sections = _split_plan_sections(body, level)
+    phase_count = len(_PLAN_PHASE_RE.findall(body))
+
+    preamble = ""
+    assessment = ""
+    human: dict = {}
+    agent = []
+    for heading, text in sections:
+        key = heading.strip().lower()
+        if not heading:
+            preamble = text.strip()
+        elif key == _PLAN_ASSESSMENT_SECTION:
+            assessment = _plan_assessment_line(text, phase_count)
+        elif key in _PLAN_HUMAN_SECTIONS:
+            human[key] = text.strip()
+        else:
+            agent.append(text.strip())
+
+    visible = [part for part in (preamble, assessment) if part]
+    visible.extend(human[key] for key in _PLAN_HUMAN_SECTIONS if key in human)
+    if not agent:
+        return "\n\n".join(visible) + "\n" if visible else body
+
+    folded = (
+        "<details>\n"
+        f"<summary>{_PLAN_FOLD_LABEL}</summary>\n\n"
+        + "\n\n".join(agent)
+        + "\n\n</details>"
+    )
+    return "\n\n".join(visible + [folded]) + "\n"
+
+
+def fold_plan_for_tracker(provider: str, body: str) -> str:
+    """Fold a plan body for GitHub; leave other providers untouched.
+
+    Jira has no ``<details>`` equivalent — ``flatten_github_markdown_for_jira``
+    strips the wrapper — so folding there would only add an orphan label.
+    """
+    if provider == "jira":
+        return body
+    return fold_plan_agent_sections(body)
+
+
 def build_plan_comment_success(provider: str, title: str, body: str) -> str:
     """Format the `/plan` iteration comment for a target tracker."""
     if provider == "jira":
@@ -292,7 +394,7 @@ def build_plan_comment_success(provider: str, title: str, body: str) -> str:
 
     from app.pr_footer import build_koan_footer
     return (
-        f"## {title}\n\n{body}\n\n---\n"
+        f"## {title}\n\n{fold_plan_agent_sections(body)}\n\n---\n"
         f"{build_koan_footer()}"
     )
 

@@ -40,6 +40,7 @@ from app.prompts import load_prompt_or_skill
 from app.tracker_comment_format import (
     build_plan_comment_failure,
     build_plan_comment_success,
+    fold_plan_for_tracker,
 )
 from app.url_skill_args import merge_context_with_base_branch
 
@@ -148,8 +149,6 @@ def _run_new_plan(
 
     title = _extract_title(plan)
     plan_body = _strip_title_line(plan)
-    from app.pr_footer import build_koan_footer
-    issue_body = f"{plan_body}\n\n---\n{build_koan_footer()}"
 
     if not tracker_is_configured(project_name, project_path):
         _messaging.report_outcome(
@@ -159,6 +158,11 @@ def _run_new_plan(
         return True, "Plan generated inline (no issue tracker configured)."
 
     provider = tracker_provider(project_name, project_path)
+
+    from app.pr_footer import build_koan_footer
+    issue_body = (
+        f"{fold_plan_for_tracker(provider, plan_body)}\n\n---\n{build_koan_footer()}"
+    )
 
     labels = [_PLAN_LABEL] if tracker_supports_labels(project_name, project_path) else None
     try:

@@ -41,6 +41,8 @@ Write the updated plan in the following structure (use markdown, no code fences 
 
 {@include plan-title-instruction}
 
+{@include plan-assessment-section}
+
 ### Changes in this iteration
 
 Bulleted list of what changed since the previous version and why. Reference specific comments or commenters where relevant.

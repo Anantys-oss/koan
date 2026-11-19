@@ -71,6 +71,8 @@ Write your plan in the following structure (use markdown, no code fences around 
 
 {@include plan-title-instruction}
 
+{@include plan-assessment-section}
+
 ### Summary
 
 One paragraph explaining what this plan achieves and why it matters.
