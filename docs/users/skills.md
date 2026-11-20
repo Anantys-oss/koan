@@ -4,7 +4,7 @@ title: "Skills Reference"
 description: "Complete reference for Koan slash commands across messaging, GitHub mentions, and the curated REST/MCP skill catalog."
 tags: [users]
 created: 2026-05-28
-updated: 2026-09-11
+updated: 2026-11-05
 ---
 
 # Skills Reference
@@ -164,6 +164,12 @@ recommendation. The change is always attributed to the commenter. Disable with
 or per-project) for a more thorough multi-perspective pass that catches more in a
 single review (higher token/time cost). Off by default — the normal `/review` is
 unchanged.
+
+**Codex adversarial backend (opt-in).** Set `review_codex_adversarial.enabled: true`
+plus `companion_script` to have `/review` analyse PRs with the codex-plugin-cc
+companion's adversarial review; findings are posted in the normal format and Kōan
+falls back to the provider review on failure. Off by default. See
+[Codex adversarial review backend](../providers/codex.md#codex-adversarial-review-backend-separate-from-provider-mode).
 
 **Large diffs & partial-coverage warning:** Review diffs are packed to fit a
 token budget by the diff compressor (`optimizations.review_compressor.token_budget`,

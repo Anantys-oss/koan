@@ -3,7 +3,7 @@
 * [CLI reference](claude-cli-commands-official.md) - Official upstream Claude Code CLI reference listing all commands and flags.
 * [Claude Code CLI Provider](claude.md) - Setup and configuration guide for Kōan's default Claude Code CLI provider, including models, tools, per-role CLI config, MCP, and devcontainer mode.
 * [Cline CLI Provider](cline.md) - Setup and feature-mapping guide for using Cline CLI as Kōan's underlying multi-backend AI provider.
-* [OpenAI Codex CLI Provider](codex.md) - Setup and behavior guide for using OpenAI's Codex CLI as Kōan's provider, including quota/usage handling and troubleshooting.
+* [OpenAI Codex CLI Provider](codex.md) - Setup and behavior guide for using OpenAI's Codex CLI as Kōan's provider, plus the opt-in codex-plugin-cc adversarial `/review` backend, quota handling and troubleshooting.
 * [GitHub Copilot CLI Provider](copilot.md) - Setup guide and feature/tool-mapping differences for using GitHub Copilot CLI as Kōan's provider.
 * [Fake CLI Provider (test/dev only)](fake.md) - Fail-closed no-op CLI provider used for deterministic, offline tests of the skill pipeline; refuses to run unless KOAN_ALLOW_FAKE_PROVIDER=1 is set.
 * [Gemini CLI Provider](gemini.md) - Setup and behavior guide for using Google's Gemini CLI as Kōan's provider, including headless stream-json, auth, models, and limitations.
