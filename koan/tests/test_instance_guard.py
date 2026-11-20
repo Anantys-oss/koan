@@ -1,8 +1,10 @@
-"""Tests for scripts/instance_guard.py — the instance/ leak gate.
+"""Tests for the instance leak rules and the standalone guard CLI.
 
-The guard lives under scripts/ (not on pytest's pythonpath), so it is loaded by file
-path via importlib. Tests exercise the pure functions and the CLI exit-code contract;
-the impure ``tracked_files`` (git) is not tested here.
+The pure rules live in the app package (``app.instance_leak_rules`` — on pytest's
+pythonpath via pyproject ``pythonpath = ["koan"]``); ``scripts/instance_guard.py``
+is the CLI wrapper around them, loaded by file path since scripts/ is not on the
+pythonpath. Tests exercise the pure functions and the CLI exit-code contract; the
+impure ``tracked_files`` (git) is not tested here.
 """
 
 import importlib.util
@@ -11,11 +13,13 @@ from pathlib import Path
 
 import pytest
 
+from app.instance_leak_rules import classify, find_violations
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _GUARD_PATH = _REPO_ROOT / "scripts" / "instance_guard.py"
 
 
-def _load_guard():
+def _load_cli():
     spec = importlib.util.spec_from_file_location("instance_guard", _GUARD_PATH)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -23,7 +27,7 @@ def _load_guard():
     return module
 
 
-guard = _load_guard()
+cli = _load_cli()
 
 
 # --- classify --------------------------------------------------------------
@@ -39,7 +43,7 @@ guard = _load_guard()
     ],
 )
 def test_classify_instance_violation(path):
-    assert guard.classify(path) == "instance"
+    assert classify(path) == "instance"
 
 
 @pytest.mark.parametrize(
@@ -51,7 +55,7 @@ def test_classify_instance_violation(path):
     ],
 )
 def test_classify_example_skills_violation(path):
-    assert guard.classify(path) == "instance-example-skills"
+    assert classify(path) == "instance-example-skills"
 
 
 @pytest.mark.parametrize(
@@ -71,7 +75,7 @@ def test_classify_projects_config_violation(path):
     ``projects.example.yaml`` (the template) must stay allowed — see
     ``test_classify_allowed``.
     """
-    assert guard.classify(path) == "projects-config"
+    assert classify(path) == "projects-config"
 
 
 @pytest.mark.parametrize(
@@ -89,12 +93,12 @@ def test_classify_projects_config_violation(path):
     ],
 )
 def test_classify_allowed(path):
-    assert guard.classify(path) is None
+    assert classify(path) is None
 
 
 def test_instance_example_itself_is_allowed():
     """The template tree is tracked on purpose — only its skills/ subtree is banned."""
-    assert guard.classify("instance.example/README.md") is None
+    assert classify("instance.example/README.md") is None
 
 
 # --- find_violations -------------------------------------------------------
@@ -107,7 +111,7 @@ def test_find_violations_returns_sorted_pairs():
         "projects.yaml.bak-20261030-222007",
         "koan/app/main.py",
     ]
-    result = guard.find_violations(paths)
+    result = find_violations(paths)
     assert result == [
         ("instance.example/skills/a/SKILL.md", "instance-example-skills"),
         ("instance/a.md", "instance"),
@@ -118,19 +122,19 @@ def test_find_violations_returns_sorted_pairs():
 
 def test_find_violations_empty_when_clean():
     paths = ["instance.example/config.yaml", "koan/skills/core/fix/SKILL.md", "README.md"]
-    assert guard.find_violations(paths) == []
+    assert find_violations(paths) == []
 
 
 # --- CLI contract ----------------------------------------------------------
 
 def test_main_passes_on_clean_paths(capsys):
-    code = guard.main(["--path", "instance.example/config.yaml", "--path", "README.md"])
+    code = cli.main(["--path", "instance.example/config.yaml", "--path", "README.md"])
     assert code == 0
     assert "PASSED" in capsys.readouterr().out
 
 
 def test_main_fails_on_instance_leak(capsys):
-    code = guard.main(["--path", "instance/missions.md"])
+    code = cli.main(["--path", "instance/missions.md"])
     assert code == 1
     err = capsys.readouterr().err
     assert "FAILED" in err
@@ -138,7 +142,7 @@ def test_main_fails_on_instance_leak(capsys):
 
 
 def test_main_fails_on_example_skill(capsys):
-    code = guard.main(["--path", "instance.example/skills/my_team/my_fix/SKILL.md"])
+    code = cli.main(["--path", "instance.example/skills/my_team/my_fix/SKILL.md"])
     assert code == 1
     err = capsys.readouterr().err
     assert "FAILED" in err
@@ -146,7 +150,7 @@ def test_main_fails_on_example_skill(capsys):
 
 
 def test_main_reports_both_reasons(capsys):
-    code = guard.main(
+    code = cli.main(
         ["--path", "instance/missions.md", "--path", "instance.example/skills/x/SKILL.md"]
     )
     assert code == 1
@@ -156,7 +160,7 @@ def test_main_reports_both_reasons(capsys):
 
 
 def test_main_fails_on_projects_yaml_leak(capsys):
-    code = guard.main(["--path", "projects.yaml.bak-20261030-222007"])
+    code = cli.main(["--path", "projects.yaml.bak-20261030-222007"])
     assert code == 1
     err = capsys.readouterr().err
     assert "FAILED" in err
@@ -164,6 +168,6 @@ def test_main_fails_on_projects_yaml_leak(capsys):
 
 
 def test_main_allows_projects_example_yaml(capsys):
-    code = guard.main(["--path", "projects.example.yaml"])
+    code = cli.main(["--path", "projects.example.yaml"])
     assert code == 0
     assert "PASSED" in capsys.readouterr().out
