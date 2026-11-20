@@ -1098,7 +1098,8 @@ class TestExtractTitle:
         assert _extract_title(plan) == "Fix upload crash when the bucket can't be read"
 
     def test_all_narration_falls_back_to_first_line(self):
-        assert _extract_title("Let me look at this.\n\nBody") == "Let me look at this."
+        plan = "Let me look at this.\n\nI'll start with the upload code."
+        assert _extract_title(plan) == "Let me look at this."
 
     def test_long_title_cut_at_word_boundary(self):
         title = _extract_title("Fix " + "bucket " * 40)
