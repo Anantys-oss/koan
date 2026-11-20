@@ -204,6 +204,10 @@ class TestValidConfigProducesNoWarnings:
         }
         assert validate_config(config) == []
 
+    def test_github_pr_event_review_is_known(self):
+        config = {"github": {"pr_event_review": {"enabled": True, "on_push": False}}}
+        assert validate_config(config) == []
+
     def test_unlimited_quota_is_known_under_usage(self):
         # The code reads usage.unlimited_quota — not a top-level key.
         assert validate_config({"usage": {"unlimited_quota": True}}) == []

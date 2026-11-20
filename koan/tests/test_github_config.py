@@ -357,3 +357,74 @@ class TestGetGithubReplyRateLimit:
 
     def test_negative_floored(self):
         assert get_github_reply_rate_limit({"github": {"reply_rate_limit": -5}}) == 1
+
+
+class TestPrEventReviewConfig:
+    ALL = frozenset({"opened", "reopened", "ready_for_review", "synchronize"})
+    NO_PUSH = frozenset({"opened", "reopened", "ready_for_review"})
+
+    def test_pr_event_review_defaults_disabled(self):
+        from app.github_config import get_pr_event_review_config
+
+        assert get_pr_event_review_config({}) == {
+            "enabled": False,
+            "on_push": True,
+            "include_drafts": False,
+            "max_per_cycle": 3,
+            "scan_interval_minutes": 5,
+        }
+
+    def test_pr_event_review_global_block_applies(self):
+        from app.github_config import get_pr_event_review_config
+
+        cfg = get_pr_event_review_config(
+            {"github": {"pr_event_review": {"enabled": True, "max_per_cycle": 7}}}
+        )
+        assert cfg["enabled"] is True
+        assert cfg["max_per_cycle"] == 7
+
+    def test_pr_event_review_project_override_wins_per_key(self):
+        from app.github_config import get_pr_event_review_config
+
+        config = {"github": {"pr_event_review": {"enabled": False, "max_per_cycle": 7}}}
+        projects = {"projects": {"app": {
+            "path": "/p", "github": {"pr_event_review": {"enabled": True}},
+        }}}
+        cfg = get_pr_event_review_config(config, "app", projects)
+        assert cfg["enabled"] is True
+        assert cfg["max_per_cycle"] == 7  # inherited from config.yaml
+
+    def test_pr_event_review_invalid_values_fall_back(self):
+        from app.github_config import get_pr_event_review_config
+
+        cfg = get_pr_event_review_config({"github": {"pr_event_review": {
+            "max_per_cycle": "lots", "scan_interval_minutes": -4,
+        }}})
+        assert cfg["max_per_cycle"] == 3
+        assert cfg["scan_interval_minutes"] == 0
+
+    def test_pr_event_review_actions_include_synchronize_with_on_push(self):
+        from app.github_config import get_pr_event_review_actions
+
+        assert get_pr_event_review_actions({"enabled": True, "on_push": True}) == self.ALL
+
+    def test_pr_event_review_actions_without_on_push(self):
+        from app.github_config import get_pr_event_review_actions
+
+        assert get_pr_event_review_actions({"enabled": True, "on_push": False}) == self.NO_PUSH
+
+    def test_pr_event_review_webhook_actions_union_over_projects(self):
+        from app.github_config import get_pr_event_review_webhook_actions
+
+        projects = {"projects": {
+            "a": {"github": {"pr_event_review": {"enabled": True, "on_push": False}}},
+            "b": {"github": {"pr_event_review": {"enabled": True}}},
+            "c": {},
+        }}
+        assert get_pr_event_review_webhook_actions({}, projects) == self.ALL
+
+    def test_pr_event_review_webhook_actions_empty_when_disabled(self):
+        from app.github_config import get_pr_event_review_webhook_actions
+
+        assert get_pr_event_review_webhook_actions({}, {"projects": {"a": {}}}) == frozenset()
+        assert get_pr_event_review_webhook_actions({}, None) == frozenset()

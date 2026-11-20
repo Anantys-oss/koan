@@ -2327,3 +2327,20 @@ class TestGetProjectHookSkills:
 
         monkeypatch.setattr(pc, "load_projects_config", _boom)
         assert pc.get_project_hook_skills("myapp") is False
+
+
+def test_get_project_github_pr_event_review_returns_override():
+    from app.projects_config import get_project_github_pr_event_review
+
+    config = {"projects": {"app": {
+        "path": "/p", "github": {"pr_event_review": {"enabled": True}},
+    }}}
+    assert get_project_github_pr_event_review(config, "app") == {"enabled": True}
+
+
+def test_get_project_github_pr_event_review_missing_is_empty():
+    from app.projects_config import get_project_github_pr_event_review
+
+    config = {"projects": {"app": {"path": "/p", "github": {"authorized_users": ["a"]}}}}
+    assert get_project_github_pr_event_review(config, "app") == {}
+    assert get_project_github_pr_event_review(config, "unknown") == {}

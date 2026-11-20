@@ -3,7 +3,8 @@
 * [Discord Messaging Provider](discord.md) - Setup guide for using Discord as Kōan's messaging bridge via REST polling instead of the Gateway/WebSocket API.
 * [GitHub alert callouts](github-alerts.md) - How to emit GitHub alert callouts (NOTE/TIP/IMPORTANT/WARNING/CAUTION) via build_alert(), when to reach for each type, and the parsimony rule.
 * [GitHub Notification-Driven Commands](github-commands.md) - Full reference for triggering Kōan via `@mention` commands in GitHub PR/issue comments, including config, dedup, security, and fallback scanning.
-* [GitHub Webhooks — Push-Based Notification Triggering](github-webhooks.md) - Describes the opt-in push-based GitHub webhook receiver that collapses notification-polling latency while polling remains the reliability fallback.
+* [Review on PR Events — Automatic /review on Opened and Pushed PRs](github-pr-event-review.md) - Opt-in per-project mode that queues /review when a PR is opened, reopened, marked ready, or pushed — poll-driven, with optional webhook latency assist.
+* [GitHub Webhooks — Push-Based Notification Triggering](github-webhooks.md) - Describes the opt-in push-based GitHub webhook receiver that collapses notification-polling latency — including the PR events behind review on PR events — while polling remains the reliability fallback.
 * [Jira Integration](jira-integration.md) - Full reference for controlling Kōan via `@mention` commands in Jira issue comments, including project mapping, ADF parsing, and coexistence with GitHub.
 * [Matrix Setup Guide](matrix.md) - Setup guide for using a Matrix homeserver as Kōan's messaging provider via the Client-Server HTTP API.
 * [Messaging level (bridge verbosity)](messaging-level.md) - Explains the `messaging.level` setting (`normal`/`debug`) that controls how much lifecycle/progress chatter Kōan's Telegram/Slack bridge sends versus only logs.
