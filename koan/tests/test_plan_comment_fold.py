@@ -71,13 +71,20 @@ None.
 - Should we also fold the summary?
 """
 
+ASSESSMENT_BULLETS = (
+    "- **Complexity:** M\n"
+    "- **Risk:** Low\n"
+    "- **Comment:** one isolated text transform\n"
+    "- **Phases:** 2\n"
+)
+
 
 class TestFoldPlanAgentSections(unittest.TestCase):
     def test_human_sections_stay_visible_and_ordered(self):
         folded = fold_plan_agent_sections(PLAN)
         visible = folded.split("<details>\n<summary>")[0]
         self.assertIn("**Complexity:** M", visible)
-        self.assertIn("**Phases:** 2", visible)
+        self.assertIn("- **Phases:** 2", visible)
         self.assertIn("### Summary", visible)
         self.assertIn("### Open Questions", visible)
         self.assertIn("### Verification Criteria", visible)
@@ -167,13 +174,27 @@ class TestFoldPlanAgentSections(unittest.TestCase):
     def test_assessment_in_inline_backticks_renders_as_markdown(self):
         line = "**Complexity:** M · **Risk:** Low · **Why:** one isolated text transform"
         folded = fold_plan_agent_sections(PLAN.replace(line, f"`{line}`"))
-        self.assertIn(f"{line} · **Phases:** 2", folded)
-        self.assertNotIn(f"`{line}", folded)
+        self.assertTrue(folded.startswith(ASSESSMENT_BULLETS))
+        self.assertNotIn("`**Complexity", folded)
 
     def test_assessment_in_code_fence_renders_as_markdown(self):
         line = "**Complexity:** M · **Risk:** Low · **Why:** one isolated text transform"
         folded = fold_plan_agent_sections(PLAN.replace(line, f"```\n{line}\n```"))
-        self.assertTrue(folded.startswith(f"{line} · **Phases:** 2\n"))
+        self.assertTrue(folded.startswith(ASSESSMENT_BULLETS))
+
+    def test_one_line_assessment_renders_as_bullets(self):
+        folded = fold_plan_agent_sections(PLAN)
+        self.assertTrue(folded.startswith(ASSESSMENT_BULLETS))
+        self.assertNotIn("**Why:**", folded)
+
+    def test_bulleted_assessment_renders_as_bullets(self):
+        line = "**Complexity:** M · **Risk:** Low · **Why:** one isolated text transform"
+        bullets = (
+            "- **Complexity:** M\n- **Risk:** Low\n"
+            "- **Comment:** one isolated text transform"
+        )
+        folded = fold_plan_agent_sections(PLAN.replace(line, bullets))
+        self.assertTrue(folded.startswith(ASSESSMENT_BULLETS))
 
     def test_changes_in_this_iteration_stays_visible(self):
         body = PLAN.replace(

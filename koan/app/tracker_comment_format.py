@@ -340,8 +340,18 @@ def _split_plan_sections(body: str, level: int):
     return out
 
 
+_PLAN_ASSESSMENT_SPLIT_RE = re.compile(r"\s+[·|]\s+(?=\*\*)")
+_PLAN_ASSESSMENT_BULLET_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
+_PLAN_ASSESSMENT_WHY_RE = re.compile(r"^\*\*Why:\*\*", re.IGNORECASE)
+
+
 def _plan_assessment_line(section_text: str, phase_count: int) -> str:
-    """Render the one-line plan assessment, with the computed phase count."""
+    """Render the plan assessment as a bullet list, with the computed phase count.
+
+    Accepts either the bullet-list format the prompt asks for or the older
+    single ``A · B · C`` line, and always renders one bullet per element:
+    Complexity, Risk, Comment, Phases.
+    """
     # The model tends to copy the format example verbatim — inline backticks
     # or a code fence — which renders the line as code instead of markdown.
     lines = [
@@ -349,11 +359,16 @@ def _plan_assessment_line(section_text: str, phase_count: int) -> str:
         for line in section_text.splitlines()[1:]
         if line.strip() and not _PLAN_FENCE_RE.match(line)
     ]
-    lines = [line for line in lines if line]
-    parts = [lines[0]] if lines else []
+    parts = []
+    for line in lines:
+        line = _PLAN_ASSESSMENT_BULLET_RE.sub("", line).strip().strip("`").strip()
+        for part in _PLAN_ASSESSMENT_SPLIT_RE.split(line):
+            part = part.strip()
+            if part:
+                parts.append(_PLAN_ASSESSMENT_WHY_RE.sub("**Comment:**", part))
     if phase_count:
         parts.append(f"**Phases:** {phase_count}")
-    return " · ".join(parts)
+    return "\n".join(f"- {part}" for part in parts)
 
 
 def fold_plan_agent_sections(body: str) -> str:
