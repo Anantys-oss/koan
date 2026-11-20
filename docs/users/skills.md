@@ -108,8 +108,14 @@ can name concrete harm, so they never block a merge on style alone.
 **Inline comments (opt-in):** Set `review_inline_comments.enabled: true` in
 `config.yaml` to also post each finding as an inline PR comment anchored to its
 code location, in addition to the bucketed summary comment (which is unchanged).
-Each inline thread shows the same severity marker (🔴/🟡/🟢) and the full finding
-detail, so reviewers can react or resolve in place. Cap the volume with
+When enabled, Kōan submits those inline findings as **one** GitHub pull-request
+review (single notification for the comment set), and attaches the formal
+APPROVE / REQUEST_CHANGES verdict to that same review when verdicts are on.
+If GitHub rejects the batch API call (e.g. a line is not part of the diff), it
+falls back to posting comments individually; if the call fails in a way that
+leaves the outcome in doubt (a network timeout or server error), Kōan posts
+nothing rather than risk a duplicate review, and the next `/review` resolves
+it. Cap volume with
 `review_inline_comments.max_comments` (default 25). Re-running `/review` is
 idempotent (already-anchored findings are skipped); multi-line findings anchor
 to their full range; if all posts fail, you are notified. Disabled by default.

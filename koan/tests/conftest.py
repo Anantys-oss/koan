@@ -218,6 +218,12 @@ def isolate_env(monkeypatch):
     # Host-pinned CLI binary (e.g. a gateway shim) breaks tests that assert
     # the default binary; tests needing it set it explicitly.
     monkeypatch.delenv("KOAN_CLAUDE_CLI_PATH", raising=False)
+    # log_fmt decides colour from the ambient env, so a host (or an agent-driven
+    # run) that exports either of these flips every formatter assertion from
+    # plain text to ANSI-wrapped. Tests that want colour build their own
+    # ``_Palette(enabled=True)`` or set the flag via monkeypatch.
+    monkeypatch.delenv("KOAN_FORCE_COLOR", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
     # Reset projects_merged module-level cache so parallel workers don't
     # see stale project lists from a prior test's KOAN_ROOT.
     try:
