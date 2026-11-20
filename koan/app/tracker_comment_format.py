@@ -283,7 +283,12 @@ def build_pr_comment_failure(
 # Sections of a generated plan that are written for the human reading the
 # tracker, in the order they are rendered. Everything else is the brief the
 # `/implement` agent consumes and is folded out of sight.
-_PLAN_HUMAN_SECTIONS = ("summary", "open questions", "verification criteria")
+_PLAN_HUMAN_SECTIONS = (
+    "changes in this iteration",
+    "summary",
+    "open questions",
+    "verification criteria",
+)
 _PLAN_ASSESSMENT_SECTION = "plan assessment"
 _PLAN_FOLD_LABEL = (
     "\U0001F916 Implementation brief for the agent "
@@ -337,9 +342,14 @@ def _split_plan_sections(body: str, level: int):
 
 def _plan_assessment_line(section_text: str, phase_count: int) -> str:
     """Render the one-line plan assessment, with the computed phase count."""
+    # The model tends to copy the format example verbatim — inline backticks
+    # or a code fence — which renders the line as code instead of markdown.
     lines = [
-        line.strip() for line in section_text.splitlines()[1:] if line.strip()
+        line.strip().strip("`").strip()
+        for line in section_text.splitlines()[1:]
+        if line.strip() and not _PLAN_FENCE_RE.match(line)
     ]
+    lines = [line for line in lines if line]
     parts = [lines[0]] if lines else []
     if phase_count:
         parts.append(f"**Phases:** {phase_count}")

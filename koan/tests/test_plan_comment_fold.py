@@ -164,6 +164,27 @@ class TestFoldPlanAgentSections(unittest.TestCase):
         self.assertIn("What this achieves.", folded)
         self.assertIn("Second summary.", folded)
 
+    def test_assessment_in_inline_backticks_renders_as_markdown(self):
+        line = "**Complexity:** M · **Risk:** Low · **Why:** one isolated text transform"
+        folded = fold_plan_agent_sections(PLAN.replace(line, f"`{line}`"))
+        self.assertIn(f"{line} · **Phases:** 2", folded)
+        self.assertNotIn(f"`{line}", folded)
+
+    def test_assessment_in_code_fence_renders_as_markdown(self):
+        line = "**Complexity:** M · **Risk:** Low · **Why:** one isolated text transform"
+        folded = fold_plan_agent_sections(PLAN.replace(line, f"```\n{line}\n```"))
+        self.assertTrue(folded.startswith(f"{line} · **Phases:** 2\n"))
+
+    def test_changes_in_this_iteration_stays_visible(self):
+        body = PLAN.replace(
+            "### Summary", "### Changes in this iteration\n\n- Addressed feedback.\n\n### Summary"
+        )
+        visible = fold_plan_agent_sections(body).split("<details>\n<summary>")[0]
+        self.assertIn("- Addressed feedback.", visible)
+        self.assertLess(
+            visible.index("### Changes in this iteration"), visible.index("### Summary")
+        )
+
     def test_h2_level_plan(self):
         folded = fold_plan_agent_sections(PLAN.replace("### ", "## "))
         self.assertIn("<details>", folded)
