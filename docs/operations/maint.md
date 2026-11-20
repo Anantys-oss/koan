@@ -4,7 +4,7 @@ title: "Maintenance & Release"
 description: "Covers Kōan's release pipeline (/koan.incubate preps, release.yml executes), branch philosophy (`main` / `incubating` / `stable` branch + `latest` tag), the ${NEXT} changelog flow into CHANGES.md, versioning scheme, and recovery steps."
 tags: [operations]
 created: 2026-05-28
-updated: 2026-07-14
+updated: 2026-11-04
 ---
 
 # Maintenance & Release
@@ -66,11 +66,15 @@ sole executor of a release.
 > the first dispatch: `git branch -f stable <incubating-commit> && git
 > push --force-with-lease origin refs/heads/stable`.
 
-The ad-hoc `publish-container.yml` workflow remains the out-of-band channel for
-publishing dev images without cutting a release: dispatch it on `main` or
-`incubating` (any other ref is refused) with a tag such as `devel` (the default)
-or `pr-123`. The release-owned tags — `stable`, `latest`, and semver — are
-rejected there; they are minted only by `release.yml`.
+Dev images need no release either: every push to `main` runs
+`publish-dev-container.yml`, which publishes `sha-<full-commit-sha>` (immutable)
+and the rolling `devel` tag, cancelling any superseded in-flight build. The
+ad-hoc `publish-container.yml` workflow remains the out-of-band channel for other
+dev images: dispatch it on `main` or `incubating` (any other ref is refused) with
+a tag such as `test` (the default) or `pr-123`. It refuses `devel` and `sha-*`,
+which only the automatic workflow publishes, and the release-owned tags — `stable`,
+`latest`, and semver — are never minted by either; only `release.yml` publishes
+them.
 
 ## Version scheme
 

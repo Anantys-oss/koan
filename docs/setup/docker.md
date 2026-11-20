@@ -4,7 +4,7 @@ title: "Docker Setup"
 description: "Covers Docker Compose setup for Koan (pull vs. build from source), workspace project mounts, authentication (Claude/GitHub), volume layout, and troubleshooting common container issues."
 tags: [setup]
 created: 2026-05-28
-updated: 2026-07-18
+updated: 2026-11-04
 ---
 
 # Docker Setup
@@ -84,19 +84,33 @@ make docker-pull-up
 > make docker-pull-up KOAN_IMAGE=ghcr.io/anantys-oss/koan:1.0   # major.minor
 > ```
 >
-> Available tags: `latest`, `stable`, per-version (`X.Y` / `X.Y.Z`), and a rolling
-> `devel` tag (see below).
+> Available tags: `latest`, `stable`, per-version (`X.Y` / `X.Y.Z`), a rolling
+> `devel` tag, and per-commit `sha-<full-commit-sha>` tags (see below).
 
-> **Rolling `:devel` image.** A fresh image can be published on demand — **without
-> cutting a release** — via the **🐳 Publish Container** workflow (repo Actions →
-> "Run workflow", tag defaults to `devel`). It is built by the same job that produces
-> release images, but pushes **only** the requested tag: `:devel` is a moving target
-> (overwritten on each manual publish) and never updates `:latest` or `:stable`,
-> which move only on a real release.
+> **Dev images from `main`.** Every push to `main` runs the **🐳 Publish Dev
+> Container** workflow (`.github/workflows/publish-dev-container.yml`), so a fix
+> that landed after the last release is pullable **without cutting a release**. It
+> pushes two tags:
+>
+> - `:sha-<full-commit-sha>` — immutable, pinned to that exact `main` commit
+>   (`git rev-parse HEAD` gives the suffix).
+> - `:devel` — rolling, always the newest `main` build.
+>
+> A newer push cancels an in-flight build, so `:devel` never regresses to a stale
+> commit; a cancelled commit simply gets no `sha-` tag (any later one contains it).
+> Neither tag ever updates `:latest` or `:stable`, which move only on a real release.
+> The build is **not gated on tests**: `:devel` is the newest `main` build, not a
+> verified one — pin a known-good `sha-` tag if that matters.
 >
 > ```bash
 > make docker-pull-up KOAN_IMAGE=ghcr.io/anantys-oss/koan:devel
+> make docker-pull-up KOAN_IMAGE=ghcr.io/anantys-oss/koan:sha-<full-commit-sha>
 > ```
+>
+> The **🐳 Publish Container** workflow (repo Actions → "Run workflow") remains for
+> on-demand images from `main` or `incubating` with a custom tag (default `test`);
+> it pushes **only** the requested tag. `devel` and `sha-*` are reserved for the
+> automatic workflow there, alongside the release-owned `stable` / `latest` / semver tags.
 
 > **UID/GID on the prebuilt image.** The published image runs as UID/GID
 > **1000**. On Linux hosts whose user isn't 1000, bind-mounted `instance/` and
@@ -214,10 +228,11 @@ if they shipped, a CLI session whose `cwd` fell inside the image's `/app` checko
 could auto-load them (the leak class addressed at runtime by isolating session
 `cwd`). Excluding them removes the material from the artifact entirely.
 
-This is enforced at build time: `docker-publish.yml` (the shared build/push
-workflow behind both the release and manual-publish flows) runs
-`scripts/verify_image_clean.sh` against the freshly built image and fails the
-build if any of that tooling is found under `/app`. See issue #2383.
+`scripts/verify_image_clean.sh` checks a freshly built image and fails if any of
+that tooling is found under `/app`. It is **not yet wired** into
+`docker-publish.yml` (the shared build/push workflow behind the release, dev, and
+manual-publish flows), so published images currently rely on `.dockerignore`
+alone. Wiring it in is tracked in issue #2383.
 
 ### Recommended dev packages
 
