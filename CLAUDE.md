@@ -6,6 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Kōan is an autonomous background agent that uses idle Claude API quota to work on local projects. It runs as a continuous loop, pulling missions from a shared queue (an authoritative SQLite mission store; `missions.md` is a generated read-only export — see `specs/004-mission-store/`), executing them via Claude Code CLI, and communicating progress via Telegram. Philosophy: "The agent proposes. The human decides." — no unsupervised code modifications.
 
+## Language: English only
+
+**Everything in this repository is written in English, with no exception**: code,
+comments, docstrings, commits, branch names, PRs, review and issue comments,
+`docs/`, `specs/`, system prompts, log strings, test names. Reply in English on
+this repo's issues and PRs even when the thread was opened in another language.
+
+The only non-English text is what a running instance owns at runtime, in the
+operator's private instance directory: `soul.md` and `language.json`. Never
+hardcode a non-English reply in the codebase.
+
 ## On-demand guidance (nested CLAUDE.md)
 
 This root file is intentionally small. Detailed, scope-specific guidance lives in nested `CLAUDE.md` files that Claude Code auto-loads when you work in that subtree:

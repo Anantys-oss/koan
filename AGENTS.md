@@ -22,6 +22,23 @@ When existing docs or code mention Claude, treat that as Koan's Claude provider
 or legacy Claude Code workflow unless the task explicitly asks to use Claude
 Code.
 
+## Language: English Only
+
+**Everything in this repository is written in English, with no exception.** Code,
+identifiers, comments, docstrings, commit messages, branch names, PR titles and
+bodies, review comments, issue comments, `docs/` and `specs/` pages, system
+prompts, log and error strings, and test names.
+
+This holds whoever you are talking to and whatever language they used. A
+contributor who opens an issue in another language gets an English reply: this is
+a public open-source repository, and a thread half in another language is
+unreadable for the next person who hits the same bug.
+
+The only text that is not English is a user-facing string a running instance
+owns at runtime: an instance's `soul.md` personality and its `language.json`
+reply-language preference live in the operator's private instance directory, not
+here. Never hardcode a non-English reply in the codebase to serve them.
+
 ## Documentation First
 
 - `docs/` and `specs/` are each independent OKF v0.1 knowledge bundles — see
