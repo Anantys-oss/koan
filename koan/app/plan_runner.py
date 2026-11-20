@@ -40,6 +40,7 @@ from app.prompts import load_prompt_or_skill
 from app.tracker_comment_format import (
     build_plan_comment_failure,
     build_plan_comment_success,
+    fold_plan_for_tracker,
 )
 from app.url_skill_args import merge_context_with_base_branch
 
@@ -148,8 +149,6 @@ def _run_new_plan(
 
     title = _extract_title(plan)
     plan_body = _strip_title_line(plan)
-    from app.pr_footer import build_koan_footer
-    issue_body = f"{plan_body}\n\n---\n{build_koan_footer()}"
 
     if not tracker_is_configured(project_name, project_path):
         _messaging.report_outcome(
@@ -159,6 +158,11 @@ def _run_new_plan(
         return True, "Plan generated inline (no issue tracker configured)."
 
     provider = tracker_provider(project_name, project_path)
+
+    from app.pr_footer import build_koan_footer
+    issue_body = (
+        f"{fold_plan_for_tracker(provider, plan_body)}\n\n---\n{build_koan_footer()}"
+    )
 
     labels = [_PLAN_LABEL] if tracker_supports_labels(project_name, project_path) else None
     try:
@@ -1163,7 +1167,7 @@ def _extract_title(plan_text):
     as the very first line (no # prefix). This function extracts that line,
     stripping any accidental markdown formatting or CLI noise characters.
     """
-    lines = plan_text.strip().splitlines()
+    lines = _drop_narration_preamble(plan_text.strip().splitlines())
     for line in lines:
         line = line.strip()
         if not line:
@@ -1180,17 +1184,52 @@ def _extract_title(plan_text):
         ):
             continue
         if clean:
-            return clean[:120]
+            return _shorten_title(clean)
     return "Implementation Plan"
+
+
+_TITLE_MAX_LEN = 120
+
+# Agent narration the model sometimes emits before the title line ("I've
+# finished reading the code…"). An imperative plan title never opens this way.
+_NARRATION_RE = re.compile(
+    r"^(?:I['’](?:ve|ll|m|d)|I (?:have|will|am|now|read|looked|reviewed|explored)"
+    r"|Let me|Let['’]s|Here['’]s|Here is|Now[, ]|Okay|OK[,.]|Alright|Based on"
+    r"|After (?:reading|reviewing|exploring|looking)|Having)\b",
+    re.IGNORECASE,
+)
+
+
+def _drop_narration_preamble(lines):
+    """Skip leading narration lines so the real title line comes first.
+
+    Fails open: if every non-empty line looks like narration, keep them all.
+    """
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped and not _NARRATION_RE.match(stripped):
+            return lines[i:]
+    return lines
+
+
+def _shorten_title(title):
+    """Cap a title at a word boundary, marking the cut with an ellipsis."""
+    if len(title) <= _TITLE_MAX_LEN:
+        return title
+    cut = title[: _TITLE_MAX_LEN - 1]
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut.rstrip(" ,;:-") + "…"
 
 
 def _strip_title_line(plan_text):
     """Remove the first non-empty line (title) from the plan text.
 
     The title is used as the GitHub issue title, so we strip it from the
-    body to avoid duplication.
+    body to avoid duplication. Leading agent narration before the title is
+    dropped along with it.
     """
-    lines = plan_text.strip().splitlines()
+    lines = _drop_narration_preamble(plan_text.strip().splitlines())
     # Find and skip the first non-empty line
     for i, line in enumerate(lines):
         if line.strip():

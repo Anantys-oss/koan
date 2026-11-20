@@ -1089,6 +1089,23 @@ class TestExtractTitle:
     def test_noise_char_with_heading(self):
         assert _extract_title("# ● Noisy heading\n\nBody") == "Noisy heading"
 
+    def test_skips_narration_preamble(self):
+        plan = (
+            "I've finished reading the upload code and the docs.\n\n"
+            "Fix upload crash when the bucket can't be read\n\n"
+            "### Plan Assessment\n\n- **Complexity:** M"
+        )
+        assert _extract_title(plan) == "Fix upload crash when the bucket can't be read"
+
+    def test_all_narration_falls_back_to_first_line(self):
+        plan = "Let me look at this.\n\nI'll start with the upload code."
+        assert _extract_title(plan) == "Let me look at this."
+
+    def test_long_title_cut_at_word_boundary(self):
+        title = _extract_title("Fix " + "bucket " * 40)
+        assert len(title) <= 120
+        assert title.endswith("bucket…")
+
 
 # ---------------------------------------------------------------------------
 # _strip_title_line
@@ -1112,6 +1129,10 @@ class TestStripTitleLine:
 
     def test_title_only(self):
         assert _strip_title_line("Just a title") == "Just a title"
+
+    def test_drops_narration_preamble_with_title(self):
+        text = "I've read the code.\n\nReal title\n\n### Summary\n\nBody"
+        assert _strip_title_line(text).startswith("### Summary")
 
     def test_skips_leading_blank_lines(self):
         text = "\n\nActual title\n\nBody content"

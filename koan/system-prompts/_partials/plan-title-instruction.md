@@ -1,6 +1,7 @@
 **CRITICAL**: The VERY FIRST LINE of your output must be a short, descriptive title
 on its own line (no `#` prefix, no formatting). This title will become the GitHub issue
-title, so make it specific and actionable. Good examples:
+title, so make it specific and actionable. Nothing comes before it — no narration such as
+"I've finished reading the code…" — and keep it under 100 characters. Good examples:
 - "Add dark mode with theme persistence and system preference detection"
 - "Consolidate project config into projects.yaml with auto-migration"
 - "Fix quota resume loop causing infinite pause/resume cycle"

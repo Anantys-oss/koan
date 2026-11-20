@@ -280,6 +280,158 @@ def build_pr_comment_failure(
     return "\n".join(lines)
 
 
+# Sections of a generated plan that are written for the human reading the
+# tracker, in the order they are rendered. Everything else is the brief the
+# `/implement` agent consumes and is folded out of sight.
+_PLAN_HUMAN_SECTIONS = (
+    "changes in this iteration",
+    "summary",
+    "open questions",
+    "verification criteria",
+)
+_PLAN_ASSESSMENT_SECTION = "plan assessment"
+_PLAN_FOLD_LABEL = (
+    "\U0001F916 Implementation brief for the agent "
+    "(alternatives, file map, phases, corner cases, testing, risks)"
+)
+_PLAN_SUMMARY_HEADING_RE = re.compile(r"^(#{2,4})\s+summary\s*$", re.IGNORECASE | re.MULTILINE)
+_PLAN_PHASE_RE = re.compile(r"^#{2,5}\s+Phase\s+\d+\b", re.IGNORECASE | re.MULTILINE)
+_PLAN_FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})")
+
+
+def _mask_fenced_code(body: str) -> str:
+    """Blank out fenced code lines, keeping every offset of ``body`` intact.
+
+    A ``# comment`` or ``## Summary`` inside a code block is not a heading;
+    matching headings on the masked text and slicing the original keeps the
+    code verbatim while never splitting a section — or a ``<details>`` — at
+    a line that only looks like one.
+    """
+    out = []
+    fence = ""
+    for line in body.splitlines(keepends=True):
+        match = _PLAN_FENCE_RE.match(line)
+        if not fence and match:
+            fence = match.group(1)
+        elif fence and match and match.group(1)[0] == fence[0] and len(match.group(1)) >= len(fence):
+            fence = ""
+        elif not fence:
+            out.append(line)
+            continue
+        out.append(re.sub(r"[^\n]", " ", line))
+    return "".join(out)
+
+
+def _split_plan_sections(body: str, level: int):
+    """Split a plan body into ``(heading, section_text)`` pairs at one level.
+
+    The text before the first heading is returned under an empty heading so a
+    preamble is never dropped. Deeper headings (phase titles) stay inside
+    their section.
+    """
+    heading_re = re.compile(rf"^#{{{level}}}(?!#)\s+(.+?)\s*$", re.MULTILINE)
+    matches = list(heading_re.finditer(_mask_fenced_code(body)))
+    if not matches:
+        return [("", body)]
+    out = [("", body[: matches[0].start()])]
+    for i, match in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
+        out.append((match.group(1), body[match.start():end]))
+    return out
+
+
+_PLAN_ASSESSMENT_SPLIT_RE = re.compile(r"\s+[·|]\s+(?=\*\*)")
+_PLAN_ASSESSMENT_BULLET_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
+_PLAN_ASSESSMENT_WHY_RE = re.compile(r"^\*\*Why:\*\*", re.IGNORECASE)
+
+
+def _plan_assessment_line(section_text: str, phase_count: int) -> str:
+    """Render the plan assessment as a bullet list, with the computed phase count.
+
+    Accepts either the bullet-list format the prompt asks for or the older
+    single ``A · B · C`` line, and always renders one bullet per element:
+    Complexity, Risk, Comment, Phases.
+    """
+    # The model tends to copy the format example verbatim — inline backticks
+    # or a code fence — which renders the line as code instead of markdown.
+    lines = [
+        line.strip().strip("`").strip()
+        for line in section_text.splitlines()[1:]
+        if line.strip() and not _PLAN_FENCE_RE.match(line)
+    ]
+    parts = []
+    for line in lines:
+        line = _PLAN_ASSESSMENT_BULLET_RE.sub("", line).strip().strip("`").strip()
+        for part in _PLAN_ASSESSMENT_SPLIT_RE.split(line):
+            part = part.strip()
+            if part:
+                parts.append(_PLAN_ASSESSMENT_WHY_RE.sub("**Comment:**", part))
+    if phase_count:
+        parts.append(f"**Phases:** {phase_count}")
+    return "\n".join(f"- {part}" for part in parts)
+
+
+def fold_plan_agent_sections(body: str) -> str:
+    """Collapse the agent-facing half of a plan body into one ``<details>``.
+
+    Keeps the assessment line, Summary, Open Questions and Verification
+    Criteria visible, in that order, and folds every other section into a
+    single labelled block. A pure text transform: the folded sections keep
+    their markdown verbatim, so `/implement` still reads them out of the
+    posted comment. Fails open — an unrecognisable or already-folded body is
+    returned unchanged.
+    """
+    if not body or _PLAN_FOLD_LABEL in body:
+        return body
+    masked = _mask_fenced_code(body)
+    match = _PLAN_SUMMARY_HEADING_RE.search(masked)
+    if not match:
+        return body
+
+    level = len(match.group(1))
+    sections = _split_plan_sections(body, level)
+    phase_count = len(_PLAN_PHASE_RE.findall(masked))
+
+    preamble = ""
+    assessment = ""
+    human: dict = {}
+    agent = []
+    for heading, text in sections:
+        key = heading.strip().lower()
+        if not heading:
+            preamble = text.strip()
+        elif key == _PLAN_ASSESSMENT_SECTION:
+            assessment = _plan_assessment_line(text, phase_count)
+        elif key in _PLAN_HUMAN_SECTIONS and key not in human:
+            human[key] = text.strip()
+        else:
+            agent.append(text.strip())
+
+    visible = [part for part in (preamble, assessment) if part]
+    visible.extend(human[key] for key in _PLAN_HUMAN_SECTIONS if key in human)
+    if not agent:
+        return "\n\n".join(visible) + "\n" if visible else body
+
+    folded = (
+        "<details>\n"
+        f"<summary>{_PLAN_FOLD_LABEL}</summary>\n\n"
+        + "\n\n".join(agent)
+        + "\n\n</details>"
+    )
+    return "\n\n".join(visible + [folded]) + "\n"
+
+
+def fold_plan_for_tracker(provider: str, body: str) -> str:
+    """Fold a plan body for GitHub; leave other providers untouched.
+
+    Jira has no ``<details>`` equivalent — ``flatten_github_markdown_for_jira``
+    strips the wrapper — so folding there would only add an orphan label.
+    """
+    if provider == "jira":
+        return body
+    return fold_plan_agent_sections(body)
+
+
 def build_plan_comment_success(provider: str, title: str, body: str) -> str:
     """Format the `/plan` iteration comment for a target tracker."""
     if provider == "jira":
@@ -292,7 +444,7 @@ def build_plan_comment_success(provider: str, title: str, body: str) -> str:
 
     from app.pr_footer import build_koan_footer
     return (
-        f"## {title}\n\n{body}\n\n---\n"
+        f"## {title}\n\n{fold_plan_agent_sections(body)}\n\n---\n"
         f"{build_koan_footer()}"
     )
 
